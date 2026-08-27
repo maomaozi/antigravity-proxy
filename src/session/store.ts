@@ -93,6 +93,8 @@ export interface RequestTokenUsageSummary {
   inputTokens: number;
   cachedInputTokens: number | null;
   uncachedInputTokens: number | null;
+  cacheReportedRequests: number;
+  cacheReportedInputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
@@ -444,6 +446,8 @@ export class SessionBindingStore {
       input_tokens: number;
       cached_input_tokens: number;
       cached_input_tokens_reported: number;
+      cache_reported_input_tokens: number;
+      uncached_input_tokens: number;
       output_tokens: number;
       reasoning_tokens: number;
       total_tokens: number;
@@ -454,15 +458,17 @@ export class SessionBindingStore {
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(cached_input_tokens_reported), 0) AS cached_input_tokens_reported,
+        COALESCE(SUM(CASE WHEN cached_input_tokens_reported = 1 THEN input_tokens ELSE 0 END), 0) AS cache_reported_input_tokens,
+        COALESCE(SUM(CASE WHEN cached_input_tokens_reported = 1 THEN MAX(0, input_tokens - cached_input_tokens) ELSE 0 END), 0) AS uncached_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
         COALESCE(SUM(total_tokens), 0) AS total_tokens
       FROM request_token_usage ${where}
     `).get(...args);
     const requests = aggregate?.requests ?? 0;
-    const inputTokens = aggregate?.input_tokens ?? 0;
-    const cacheFullyReported = requests === 0 || (aggregate?.cached_input_tokens_reported ?? 0) === requests;
-    const cachedInputTokens = cacheFullyReported ? (aggregate?.cached_input_tokens ?? 0) : null;
+    const cacheReportedRequests = aggregate?.cached_input_tokens_reported ?? 0;
+    const hasCacheMetadata = requests === 0 || cacheReportedRequests > 0;
+    const cachedInputTokens = hasCacheMetadata ? (aggregate?.cached_input_tokens ?? 0) : null;
 
     return {
       records: rows.map(mapUsageRow),
@@ -470,9 +476,11 @@ export class SessionBindingStore {
       summary: {
         requests,
         sessions: aggregate?.sessions ?? 0,
-        inputTokens,
+        inputTokens: aggregate?.input_tokens ?? 0,
         cachedInputTokens,
-        uncachedInputTokens: cachedInputTokens === null ? null : Math.max(0, inputTokens - cachedInputTokens),
+        uncachedInputTokens: hasCacheMetadata ? (aggregate?.uncached_input_tokens ?? 0) : null,
+        cacheReportedRequests,
+        cacheReportedInputTokens: aggregate?.cache_reported_input_tokens ?? 0,
         outputTokens: aggregate?.output_tokens ?? 0,
         reasoningTokens: aggregate?.reasoning_tokens ?? 0,
         totalTokens: aggregate?.total_tokens ?? 0,

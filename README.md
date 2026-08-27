@@ -118,8 +118,10 @@ session, model, time range, request ID, or account. Input, cached input,
 uncached input, visible output, separately reported reasoning, and total tokens
 are retained. If the upstream response does not report cached input metadata,
 cached and uncached input are treated as unknown (`null`) rather than zero; the
-dashboard shows `—` / **Not reported** and does not calculate a cache rate for
-that scope. Set `REQUEST_USAGE_RETENTION_DAYS` to override the default usage
+dashboard shows `—` / **Not reported** for those records. Aggregate cached and
+uncached totals include the records that did report cache metadata, and the
+dashboard shows the reporting coverage when it is partial. Set
+`REQUEST_USAGE_RETENTION_DAYS` to override the default usage
 retention period, which otherwise follows `SESSION_BINDING_RETENTION_DAYS`.
 
 Session affinity is always preferred. For the same session and model, the proxy

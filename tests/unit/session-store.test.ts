@@ -180,8 +180,10 @@ describe("session binding store", () => {
       requests: 2,
       sessions: 2,
       inputTokens: 300,
-      cachedInputTokens: null,
-      uncachedInputTokens: null,
+      cachedInputTokens: 40,
+      uncachedInputTokens: 60,
+      cacheReportedRequests: 1,
+      cacheReportedInputTokens: 100,
       outputTokens: 30,
       reasoningTokens: 5,
       totalTokens: 335,
@@ -190,6 +192,8 @@ describe("session binding store", () => {
     expect(reportedOnly.total).toBe(1);
     expect(reportedOnly.summary.cachedInputTokens).toBe(40);
     expect(reportedOnly.summary.uncachedInputTokens).toBe(60);
+    expect(reportedOnly.summary.cacheReportedRequests).toBe(1);
+    expect(reportedOnly.summary.cacheReportedInputTokens).toBe(100);
     expect(store.listRequestTokenUsage({ model: "MODEL-B" }).records[0].requestId).toBe("request-b");
     expect(store.listRequestTokenUsage({ from: 1500, to: 2500 }).total).toBe(1);
     expect(store.listRequestTokenUsage({ search: "first@example.com" }).total).toBe(1);

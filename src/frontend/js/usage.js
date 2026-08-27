@@ -42,6 +42,10 @@ function renderUsageStats() {
     const input = Number(summary.inputTokens) || 0;
     const cacheReported = summary.cachedInputTokens !== null && summary.cachedInputTokens !== undefined;
     const cached = cacheReported ? Number(summary.cachedInputTokens) || 0 : null;
+    const reportedRequests = Number(summary.cacheReportedRequests) || 0;
+    const reportedInput = Number(summary.cacheReportedInputTokens) || 0;
+    const requests = Number(summary.requests) || 0;
+    const cacheCoverage = reportedRequests < requests ? ` · ${formatTokens(reportedRequests)}/${formatTokens(requests)} reported` : '';
     usageById('stat-requests').textContent = formatTokens(summary.requests);
     usageById('stat-sessions').textContent = `${formatTokens(summary.sessions)} sessions`;
     usageById('stat-input').textContent = formatTokens(input);
@@ -50,7 +54,7 @@ function renderUsageStats() {
         : `${formatTokens(summary.uncachedInputTokens)} uncached`;
     usageById('stat-cached').textContent = cacheReported ? formatTokens(cached) : '—';
     usageById('stat-cache-rate').textContent = cacheReported
-        ? `${input ? (cached / input * 100).toFixed(1) : '0.0'}% cache rate`
+        ? `${reportedInput ? (cached / reportedInput * 100).toFixed(1) : '0.0'}% cache rate${cacheCoverage}`
         : 'Not reported';
     usageById('stat-output').textContent = formatTokens(summary.outputTokens);
     usageById('stat-reasoning').textContent = formatTokens(summary.reasoningTokens);
