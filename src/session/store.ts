@@ -48,8 +48,8 @@ export interface RequestTokenUsage {
   endpoint: string | null;
   streamed: boolean;
   inputTokens: number;
-  cachedInputTokens: number;
-  uncachedInputTokens: number;
+  cachedInputTokens: number | null;
+  uncachedInputTokens: number | null;
   outputTokens: number;
   reasoningTokens: number;
   reasoningTokensReported: boolean;
@@ -69,7 +69,7 @@ export interface RecordRequestTokenUsageInput {
   endpoint?: string;
   streamed: boolean;
   inputTokens: number;
-  cachedInputTokens?: number;
+  cachedInputTokens?: number | null;
   outputTokens: number;
   reasoningTokens?: number;
   reasoningTokensReported?: boolean;
@@ -91,8 +91,8 @@ export interface RequestTokenUsageSummary {
   requests: number;
   sessions: number;
   inputTokens: number;
-  cachedInputTokens: number;
-  uncachedInputTokens: number;
+  cachedInputTokens: number | null;
+  uncachedInputTokens: number | null;
   outputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
@@ -132,6 +132,7 @@ interface RequestTokenUsageRow {
   streamed: number;
   input_tokens: number;
   cached_input_tokens: number;
+  cached_input_tokens_reported: number;
   output_tokens: number;
   reasoning_tokens: number;
   reasoning_tokens_reported: number;
@@ -176,8 +177,10 @@ function mapUsageRow(row: RequestTokenUsageRow): RequestTokenUsage {
     endpoint: row.endpoint,
     streamed: row.streamed === 1,
     inputTokens: row.input_tokens,
-    cachedInputTokens: row.cached_input_tokens,
-    uncachedInputTokens: Math.max(0, row.input_tokens - row.cached_input_tokens),
+    cachedInputTokens: row.cached_input_tokens_reported === 1 ? row.cached_input_tokens : null,
+    uncachedInputTokens: row.cached_input_tokens_reported === 1
+      ? Math.max(0, row.input_tokens - row.cached_input_tokens)
+      : null,
     outputTokens: row.output_tokens,
     reasoningTokens: row.reasoning_tokens,
     reasoningTokensReported: row.reasoning_tokens_reported === 1,
@@ -187,7 +190,7 @@ function mapUsageRow(row: RequestTokenUsageRow): RequestTokenUsage {
   };
 }
 
-function tokenCount(value: number | undefined): number {
+function tokenCount(value: number | null | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : 0;
 }
 
@@ -239,6 +242,7 @@ export class SessionBindingStore {
         streamed INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,
         cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens_reported INTEGER NOT NULL DEFAULT 0,
         output_tokens INTEGER NOT NULL DEFAULT 0,
         reasoning_tokens INTEGER NOT NULL DEFAULT 0,
         reasoning_tokens_reported INTEGER NOT NULL DEFAULT 0,
@@ -255,6 +259,11 @@ export class SessionBindingStore {
       CREATE INDEX IF NOT EXISTS idx_request_token_usage_account
         ON request_token_usage(account_email, created_at DESC);
     `);
+
+    const usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
+    if (!usageColumns.some(column => column.name === "cached_input_tokens_reported")) {
+      this.db.exec("ALTER TABLE request_token_usage ADD COLUMN cached_input_tokens_reported INTEGER NOT NULL DEFAULT 0;");
+    }
   }
 
   get(sessionKey: string, model: string): SessionBinding | null {
@@ -334,10 +343,10 @@ export class SessionBindingStore {
       INSERT INTO request_token_usage (
         request_id, session_key, session_id, session_source, session_inferred,
         account_email, model, model_family, upstream_model, pool, endpoint,
-        streamed, input_tokens, cached_input_tokens, output_tokens,
-        reasoning_tokens, reasoning_tokens_reported, total_tokens, created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        streamed, input_tokens, cached_input_tokens, cached_input_tokens_reported,
+        output_tokens, reasoning_tokens, reasoning_tokens_reported, total_tokens,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(request_id) DO UPDATE SET
         session_key = excluded.session_key,
         session_id = excluded.session_id,
@@ -352,6 +361,7 @@ export class SessionBindingStore {
         streamed = excluded.streamed,
         input_tokens = MAX(request_token_usage.input_tokens, excluded.input_tokens),
         cached_input_tokens = MAX(request_token_usage.cached_input_tokens, excluded.cached_input_tokens),
+        cached_input_tokens_reported = MAX(request_token_usage.cached_input_tokens_reported, excluded.cached_input_tokens_reported),
         output_tokens = MAX(request_token_usage.output_tokens, excluded.output_tokens),
         reasoning_tokens = MAX(request_token_usage.reasoning_tokens, excluded.reasoning_tokens),
         reasoning_tokens_reported = MAX(request_token_usage.reasoning_tokens_reported, excluded.reasoning_tokens_reported),
@@ -372,6 +382,7 @@ export class SessionBindingStore {
       input.streamed ? 1 : 0,
       tokenCount(input.inputTokens),
       tokenCount(input.cachedInputTokens),
+      input.cachedInputTokens === null || input.cachedInputTokens === undefined ? 0 : 1,
       tokenCount(input.outputTokens),
       tokenCount(input.reasoningTokens),
       input.reasoningTokensReported ? 1 : 0,
@@ -432,6 +443,7 @@ export class SessionBindingStore {
       sessions: number;
       input_tokens: number;
       cached_input_tokens: number;
+      cached_input_tokens_reported: number;
       output_tokens: number;
       reasoning_tokens: number;
       total_tokens: number;
@@ -441,23 +453,26 @@ export class SessionBindingStore {
         COUNT(DISTINCT session_key) AS sessions,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+        COALESCE(SUM(cached_input_tokens_reported), 0) AS cached_input_tokens_reported,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
         COALESCE(SUM(total_tokens), 0) AS total_tokens
       FROM request_token_usage ${where}
     `).get(...args);
+    const requests = aggregate?.requests ?? 0;
     const inputTokens = aggregate?.input_tokens ?? 0;
-    const cachedInputTokens = aggregate?.cached_input_tokens ?? 0;
+    const cacheFullyReported = requests === 0 || (aggregate?.cached_input_tokens_reported ?? 0) === requests;
+    const cachedInputTokens = cacheFullyReported ? (aggregate?.cached_input_tokens ?? 0) : null;
 
     return {
       records: rows.map(mapUsageRow),
-      total: aggregate?.requests ?? 0,
+      total: requests,
       summary: {
-        requests: aggregate?.requests ?? 0,
+        requests,
         sessions: aggregate?.sessions ?? 0,
         inputTokens,
         cachedInputTokens,
-        uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens),
+        uncachedInputTokens: cachedInputTokens === null ? null : Math.max(0, inputTokens - cachedInputTokens),
         outputTokens: aggregate?.output_tokens ?? 0,
         reasoningTokens: aggregate?.reasoning_tokens ?? 0,
         totalTokens: aggregate?.total_tokens ?? 0,

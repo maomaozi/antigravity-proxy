@@ -120,7 +120,10 @@ describe("session binding store", () => {
       createdAt: 1_700_000_000_000,
     };
 
-    store.recordRequestTokenUsage(base);
+    const initial = store.recordRequestTokenUsage(base);
+    expect(initial.cachedInputTokens).toBeNull();
+    expect(initial.uncachedInputTokens).toBeNull();
+
     const updated = store.recordRequestTokenUsage({
       ...base,
       cachedInputTokens: 750,
@@ -177,13 +180,16 @@ describe("session binding store", () => {
       requests: 2,
       sessions: 2,
       inputTokens: 300,
-      cachedInputTokens: 40,
-      uncachedInputTokens: 260,
+      cachedInputTokens: null,
+      uncachedInputTokens: null,
       outputTokens: 30,
       reasoningTokens: 5,
       totalTokens: 335,
     });
-    expect(store.listRequestTokenUsage({ sessionKey: identity.key }).total).toBe(1);
+    const reportedOnly = store.listRequestTokenUsage({ sessionKey: identity.key });
+    expect(reportedOnly.total).toBe(1);
+    expect(reportedOnly.summary.cachedInputTokens).toBe(40);
+    expect(reportedOnly.summary.uncachedInputTokens).toBe(60);
     expect(store.listRequestTokenUsage({ model: "MODEL-B" }).records[0].requestId).toBe("request-b");
     expect(store.listRequestTokenUsage({ from: 1500, to: 2500 }).total).toBe(1);
     expect(store.listRequestTokenUsage({ search: "first@example.com" }).total).toBe(1);

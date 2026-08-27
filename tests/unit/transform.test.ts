@@ -607,6 +607,17 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
     });
   });
 
+  test("distinguishes unreported cached input from a reported zero", () => {
+    expect(normalizeUpstreamTokenUsage({ totalTokenCount: 3 })?.cachedInputTokens).toBeNull();
+    expect(normalizeUpstreamTokenUsage({ cachedContentTokenCount: 0 })?.cachedInputTokens).toBe(0);
+
+    const result = transformGoogleEventToOpenAI({
+      candidates: [],
+      usageMetadata: { promptTokenCount: 3, totalTokenCount: 3 }
+    }, "model");
+    expect(result.usage.prompt_tokens_details.cached_tokens).toBeNull();
+  });
+
   test("distinguishes an unreported reasoning count from a reported zero", () => {
     expect(normalizeUpstreamTokenUsage({ totalTokenCount: 3 })?.reasoningTokensReported).toBe(false);
     expect(normalizeUpstreamTokenUsage({ thoughtsTokenCount: 0 })?.reasoningTokensReported).toBe(true);

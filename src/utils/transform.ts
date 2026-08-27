@@ -639,7 +639,7 @@ You are pair programming with a USER to solve their coding task. The task may re
 
 export interface UpstreamTokenUsage {
   inputTokens: number;
-  cachedInputTokens: number;
+  cachedInputTokens: number | null;
   outputTokens: number;
   reasoningTokens: number;
   reasoningTokensReported: boolean;
@@ -650,11 +650,15 @@ function usageCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
+function optionalUsageCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
+}
+
 export function normalizeUpstreamTokenUsage(metadata: any): UpstreamTokenUsage | undefined {
   if (!metadata || typeof metadata !== "object") return undefined;
   return {
     inputTokens: usageCount(metadata.promptTokenCount),
-    cachedInputTokens: usageCount(metadata.cachedContentTokenCount),
+    cachedInputTokens: optionalUsageCount(metadata.cachedContentTokenCount),
     outputTokens: usageCount(metadata.candidatesTokenCount),
     reasoningTokens: usageCount(metadata.thoughtsTokenCount),
     reasoningTokensReported: typeof metadata.thoughtsTokenCount === "number",

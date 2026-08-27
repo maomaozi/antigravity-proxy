@@ -40,13 +40,18 @@ function usageEndpoint(endpoint) {
 function renderUsageStats() {
     const summary = usageState.summary || {};
     const input = Number(summary.inputTokens) || 0;
-    const cached = Number(summary.cachedInputTokens) || 0;
+    const cacheReported = summary.cachedInputTokens !== null && summary.cachedInputTokens !== undefined;
+    const cached = cacheReported ? Number(summary.cachedInputTokens) || 0 : null;
     usageById('stat-requests').textContent = formatTokens(summary.requests);
     usageById('stat-sessions').textContent = `${formatTokens(summary.sessions)} sessions`;
     usageById('stat-input').textContent = formatTokens(input);
-    usageById('stat-uncached').textContent = `${formatTokens(summary.uncachedInputTokens)} uncached`;
-    usageById('stat-cached').textContent = formatTokens(cached);
-    usageById('stat-cache-rate').textContent = `${input ? (cached / input * 100).toFixed(1) : '0.0'}% cache rate`;
+    usageById('stat-uncached').textContent = summary.uncachedInputTokens === null || summary.uncachedInputTokens === undefined
+        ? 'Not reported'
+        : `${formatTokens(summary.uncachedInputTokens)} uncached`;
+    usageById('stat-cached').textContent = cacheReported ? formatTokens(cached) : '—';
+    usageById('stat-cache-rate').textContent = cacheReported
+        ? `${input ? (cached / input * 100).toFixed(1) : '0.0'}% cache rate`
+        : 'Not reported';
     usageById('stat-output').textContent = formatTokens(summary.outputTokens);
     usageById('stat-reasoning').textContent = formatTokens(summary.reasoningTokens);
     usageById('stat-total').textContent = formatTokens(summary.totalTokens);
@@ -58,7 +63,14 @@ function renderUsageTable() {
         table.innerHTML = '<tr><td colspan="10" class="p-12 text-center text-zinc-400">// No token usage records found</td></tr>';
     } else {
         table.innerHTML = usageState.records.map(row => {
-            const cacheRate = row.inputTokens ? (row.cachedInputTokens / row.inputTokens * 100).toFixed(1) : '0.0';
+            const cacheReported = row.cachedInputTokens !== null && row.cachedInputTokens !== undefined;
+            const cacheRate = cacheReported && row.inputTokens ? (row.cachedInputTokens / row.inputTokens * 100).toFixed(1) : '0.0';
+            const cached = cacheReported
+                ? `<div>${formatTokens(row.cachedInputTokens)}</div><div class="mt-1 text-[9px] opacity-70">${cacheRate}%</div>`
+                : '<div title="Upstream did not report cached input tokens">—</div><div class="mt-1 text-[9px] opacity-70">Not reported</div>';
+            const uncached = row.uncachedInputTokens === null || row.uncachedInputTokens === undefined
+                ? '<span title="Cannot derive uncached input without cache metadata">—</span>'
+                : formatTokens(row.uncachedInputTokens);
             const reasoning = row.reasoningTokensReported ? formatTokens(row.reasoningTokens) : '<span title="Upstream did not report reasoning separately">—</span>';
             return `<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
                 <td class="px-3 py-3 max-w-[220px]">
@@ -78,8 +90,8 @@ function renderUsageTable() {
                     <div class="mt-1 text-[9px] text-zinc-400"><span class="uppercase">${usageEscape(row.pool)}</span> · ${usageEscape(usageEndpoint(row.endpoint))} · ${row.streamed ? 'SSE' : 'JSON'}</div>
                 </td>
                 <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.inputTokens)}</td>
-                <td class="px-3 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400"><div>${formatTokens(row.cachedInputTokens)}</div><div class="mt-1 text-[9px] opacity-70">${cacheRate}%</div></td>
-                <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.uncachedInputTokens)}</td>
+                <td class="px-3 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">${cached}</td>
+                <td class="px-3 py-3 text-right tabular-nums">${uncached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.outputTokens)}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${reasoning}</td>
                 <td class="px-3 py-3 text-right tabular-nums font-bold">${formatTokens(row.totalTokens)}</td>
