@@ -40,7 +40,8 @@ PORT=3001 bun run start
 
 ## API Usage
 
-The API follows the OpenAI Chat Completions format. If the server is running on
+The proxy supports both OpenAI Chat Completions (`/v1/chat/completions`) and
+Responses (`/v1/responses`) request/stream formats. If the server is running on
 a different port, replace `3000` in the examples below.
 
 ### Basic Chat Completion
@@ -57,6 +58,36 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 ```
 
 Set `"stream": true` to receive an OpenAI-compatible SSE stream.
+
+### Responses API
+
+The Responses endpoint uses the same account routing, session affinity, retry,
+Gemini tool-call protocol handling, structured output, and usage persistence as
+Chat Completions:
+
+```bash
+curl http://127.0.0.1:3000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "antigravity-gemini-3.7-flash",
+    "input": "Explain what a reverse proxy is."
+  }'
+```
+
+Set `"stream": true` for Responses SSE events such as
+`response.created`, `response.output_text.delta`,
+`response.function_call_arguments.delta`, and the terminal
+`response.completed` / `response.incomplete` event. The endpoint supports the
+Responses equivalents of the existing Chat features: full-history text and
+data-URL image input, system `instructions`, reasoning effort, custom function
+tools and `function_call_output`, parallel tool calls, `text.format` JSON modes,
+`max_output_tokens`, `temperature`, `top_p`, `prompt_cache_key`, and metadata.
+
+Conversation history is currently stateless: resend the complete ordered
+`response.output` items with the next request. Server-managed Responses features
+that do not have an equivalent in the existing Chat implementation are rejected
+explicitly, including `previous_response_id`, `conversation`, `store: true`,
+background responses, built-in tools, file-ID input, and remote image URLs.
 
 ### Session Affinity
 

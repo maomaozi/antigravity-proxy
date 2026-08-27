@@ -61,12 +61,13 @@ function configuredCookieSession(headers: Headers): string | undefined {
   return undefined;
 }
 
-function historyAnchor(body: any): string | undefined {
-  if (!Array.isArray(body?.messages)) return undefined;
+function historyAnchor(body: any, messagesOverride?: unknown[]): string | undefined {
+  const messages = messagesOverride ?? body?.messages;
+  if (!Array.isArray(messages)) return undefined;
   const prefix: unknown[] = [];
   let foundUser = false;
 
-  for (const message of body.messages) {
+  for (const message of messages) {
     if (!message || typeof message !== "object") continue;
     const role = String(message.role || "").toLowerCase();
     if (role === "system" || role === "developer") {
@@ -90,7 +91,7 @@ function makeIdentity(id: string, source: string, inferred: boolean): SessionIde
   return { key: sha256(id), id, source, inferred };
 }
 
-export function resolveSessionIdentity(headers: Headers, body: any): SessionIdentity {
+export function resolveSessionIdentity(headers: Headers, body: any, historyMessages?: unknown[]): SessionIdentity {
   const candidates: Array<[string, unknown]> = [
     ["x-session-affinity", headers.get("x-session-affinity")],
     ["prompt_cache_key", body?.prompt_cache_key],
@@ -111,7 +112,7 @@ export function resolveSessionIdentity(headers: Headers, body: any): SessionIden
     if (id) return makeIdentity(id, source, false);
   }
 
-  const anchor = historyAnchor(body);
+  const anchor = historyAnchor(body, historyMessages);
   if (anchor) return makeIdentity(anchor, "history-anchor", true);
 
   return makeIdentity(`generated:${randomUUID()}`, "generated", true);

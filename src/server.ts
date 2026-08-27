@@ -11,6 +11,7 @@ import { type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
 import { validateCompletionRequestForGoogle } from "./utils/transform";
 import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionResult } from "./api/openai/chat";
+import { adaptResponsesRequest, createResponsesStreamEncoder, encodeResponsesResult, validateResponsesRequest } from "./api/openai/responses";
 import { executeCompletion } from "./api/completion-executor";
 import { OAUTH_CONFIG } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
@@ -153,6 +154,91 @@ Bun.serve({
 
       const finalResponse = encodeChatCompletionResult(requestId, completionRequest.model, execution.result);
       return new Response(JSON.stringify(finalResponse), {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "X-Antigravity-Attempts": execution.attempts.toString()
+        }
+      });
+    }
+
+    if (cleanPath === "/v1/responses" && req.method === "POST") {
+      const responsesBody = await req.json() as any;
+      const responsesValidationError = validateResponsesRequest(responsesBody);
+      if (responsesValidationError) {
+        return new Response(JSON.stringify({
+          error: {
+            message: responsesValidationError,
+            type: "invalid_request_error",
+            code: "invalid_request"
+          }
+        }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "X-Antigravity-Attempts": "0"
+          }
+        });
+      }
+
+      const completionRequest = adaptResponsesRequest(responsesBody);
+      const completionValidationError = validateCompletionRequestForGoogle(completionRequest);
+      if (completionValidationError) {
+        return new Response(JSON.stringify({
+          error: {
+            message: completionValidationError,
+            type: "invalid_request_error",
+            code: "invalid_request"
+          }
+        }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "X-Antigravity-Attempts": "0"
+          }
+        });
+      }
+
+      const responseId = "resp_" + Math.random().toString(36).substring(2, 14);
+      const createdAt = Math.floor(Date.now() / 1000);
+      const requestStartedAt = Date.now();
+      const sessionIdentity = resolveSessionIdentity(req.headers, responsesBody, completionRequest.messages);
+      const execution = await executeCompletion({
+        request: completionRequest,
+        sessionIdentity,
+        requestId: responseId,
+        requestStartedAt,
+      });
+
+      if (execution.kind === "error") {
+        return execution.response;
+      }
+
+      if (execution.kind === "stream") {
+        return new Response(execution.stream.pipeThrough(createResponsesStreamEncoder({
+          responseId,
+          model: completionRequest.model,
+          createdAt,
+          requestBody: responsesBody,
+        })), {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "X-Antigravity-Attempts": execution.attempts.toString()
+          }
+        });
+      }
+
+      return new Response(JSON.stringify(encodeResponsesResult({
+        responseId,
+        createdAt,
+        requestBody: responsesBody,
+        result: execution.result,
+      })), {
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",

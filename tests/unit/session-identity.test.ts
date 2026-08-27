@@ -69,3 +69,19 @@ describe("session identity resolution", () => {
     expect(first.source).toBe("generated");
   });
 });
+
+test("history fallback can use canonical messages for protocol-neutral affinity", () => {
+  const chat = resolveSessionIdentity(new Headers(), {
+    messages: [
+      { role: "system", content: "You are a coding agent" },
+      { role: "user", content: "Fix the scheduler" },
+    ],
+  });
+  const responses = resolveSessionIdentity(new Headers(), { input: "wire shape differs" }, [
+    { role: "system", content: "You are a coding agent" },
+    { role: "user", content: "Fix the scheduler" },
+    { role: "assistant", content: "Working on it" },
+  ]);
+  expect(responses.source).toBe("history-anchor");
+  expect(responses.key).toBe(chat.key);
+});
