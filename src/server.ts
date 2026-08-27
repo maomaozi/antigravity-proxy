@@ -9,7 +9,7 @@ const APP_VERSION = pkg.version || "0.0.0";
 import { initManager, getBestAccount, updateAccountUsage, addAccount, getAccounts, removeAccount, getStrategy, setStrategy, saveAccounts, emitAccountFlash, eventBus, getEarliestReset, markCooldown, ensureFingerprint, regenerateFingerprint, getCooldowns, resetAccount, flagAccountChallenge, flagModelUnsupported, updateAccountProject, getFamilyName, resetAllCooldowns } from "./auth/manager";
 import { type SelectionStrategy, type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
-import { transformToGoogleBody, transformGoogleEventToOpenAI, createOpenAIStreamTransformer, getOriginalToolName, toOpenAIUsage, type UpstreamTokenUsage } from "./utils/transform";
+import { transformToGoogleBody, transformGoogleEventToOpenAI, createOpenAIStreamTransformer, getOriginalToolName, toOpenAIUsage, validateOpenAIRequestForGoogle, type UpstreamTokenUsage } from "./utils/transform";
 import { OAUTH_CONFIG, getImpersonationHeaders, getGeminiCliHeaders, generateFingerprint } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { parseGoogleError } from "./utils/errors";
@@ -105,6 +105,23 @@ Bun.serve({
 
     if (cleanPath === "/v1/chat/completions" && req.method === "POST") {
       const openaiBody = await req.json() as any;
+      const validationError = validateOpenAIRequestForGoogle(openaiBody);
+      if (validationError) {
+        return new Response(JSON.stringify({
+          error: {
+            message: validationError,
+            type: "invalid_request_error",
+            code: "invalid_request"
+          }
+        }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "X-Antigravity-Attempts": "0"
+          }
+        });
+      }
       const requestId = "chatcmpl-" + Math.random().toString(36).substring(7);
       const requestStartedAt = Date.now();
       

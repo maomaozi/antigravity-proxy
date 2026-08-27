@@ -1,7 +1,8 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
-import { normalizeUpstreamTokenUsage, transformToGoogleBody, transformGoogleEventToOpenAI } from "../../src/utils/transform";
-import { loadProxyConfig } from "../../src/config/manager";
+import { createOpenAIStreamTransformer, normalizeUpstreamTokenUsage, transformToGoogleBody, transformGoogleEventToOpenAI, validateOpenAIRequestForGoogle } from "../../src/utils/transform";
+import { getProxyConfig, loadProxyConfig } from "../../src/config/manager";
+import { getSignature } from "../../src/utils/cache";
 
 beforeAll(async () => {
   await loadProxyConfig();
@@ -57,7 +58,10 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
     expect(result.model).toBe("gemini-3.7-flash-tiered");
     expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("high");
-    expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBe(32768);
+    expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
+    expect(result.request.generationConfig.temperature).toBeUndefined();
+    expect(result.request.generationConfig.topP).toBeUndefined();
+    expect(result.request.generationConfig.candidateCount).toBeUndefined();
   });
 
   test("Multi-turn conversation", () => {
@@ -201,6 +205,16 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(result.request.generationConfig.responseSchema).toBeUndefined();
   });
 
+  test("caps Gemini 3 output tokens at the model protocol limit", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash-high",
+      max_tokens: 999999,
+      messages: [{ role: "user", content: "Hi" }]
+    }, "p", false, "us-central1");
+
+    expect(result.request.generationConfig.maxOutputTokens).toBe(65536);
+  });
+
   test("Claude Opus 4.6 Thinking mapping and budget", () => {
     const openaiBody = {
       model: "antigravity-claude-opus-4-6-thinking-high",
@@ -333,7 +347,6 @@ describe("Unit Tests: transformToGoogleBody", () => {
         {
           role: "tool",
           tool_call_id: syntheticId,
-          name: "test_tool",
           content: '{"result":"ok"}'
         }
       ]
@@ -344,6 +357,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(funcCallPart.functionCall.id).toBe("call_abc:123");
     expect(funcCallPart.thoughtSignature).toBe("c2lnbmF0dXJl");
     expect(funcRespPart.functionResponse.id).toBe("call_abc:123");
+    expect(funcRespPart.functionResponse.name).toBe("test_tool");
   });
 
   test("prefers an explicit Gemini thought signature", () => {
@@ -364,6 +378,126 @@ describe("Unit Tests: transformToGoogleBody", () => {
     const funcCallPart = result.request.contents[0].parts.find((p: any) => p.functionCall);
     expect(funcCallPart.functionCall.id).toBe("call_abc123");
     expect(funcCallPart.thoughtSignature).toBe("explicit-signature");
+  });
+
+  test("groups parallel function responses and preserves call IDs and names", () => {
+    const firstId = "sig:first-signature:call_first";
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.1-pro",
+      messages: [
+        { role: "user", content: "Look up both" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: firstId, type: "function", function: { name: "lookup_a", arguments: "{}" } },
+            { id: "call_second", type: "function", function: { name: "lookup_b", arguments: "{}" } }
+          ]
+        },
+        { role: "tool", tool_call_id: firstId, content: '{"value":"a"}' },
+        { role: "tool", tool_call_id: "call_second", content: '{"value":"b"}' }
+      ]
+    }, "p", false, "us-central1");
+
+    expect(result.model).toBe("gemini-pro-agent");
+    expect(result.request.contents).toHaveLength(3);
+    const calls = result.request.contents[1].parts;
+    expect(calls[0].functionCall.id).toBe("call_first");
+    expect(calls[0].thoughtSignature).toBe("first-signature");
+    expect(calls[1].functionCall.id).toBe("call_second");
+    expect(calls[1].thoughtSignature).toBeUndefined();
+    const responses = result.request.contents[2].parts;
+    expect(responses).toHaveLength(2);
+    expect(responses.map((part: any) => part.functionResponse.name)).toEqual(["lookup_a", "lookup_b"]);
+    expect(responses.map((part: any) => part.functionResponse.id)).toEqual(["call_first", "call_second"]);
+  });
+
+  test("keeps sequential function response turns separate", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [
+        { role: "user", content: "Run in sequence" },
+        { role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "first", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_1", content: "one" },
+        { role: "assistant", tool_calls: [{ id: "call_2", type: "function", function: { name: "second", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_2", content: "two" }
+      ]
+    }, "p", false, "us-central1");
+
+    expect(result.request.contents.map((content: any) => content.role)).toEqual([
+      "user", "model", "user", "model", "user"
+    ]);
+    expect(result.request.contents[2].parts).toHaveLength(1);
+    expect(result.request.contents[4].parts).toHaveLength(1);
+  });
+
+  test("sanitizes colliding and overlong function names deterministically", () => {
+    const longName = `9.${"x".repeat(140)}`;
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [{ role: "user", content: "Use a tool" }],
+      tools: ["same.name", "same:name", longName].map(name => ({
+        type: "function",
+        function: { name, parameters: { type: "object", properties: {} } }
+      }))
+    }, "p", false, "us-central1");
+
+    const names = result.request.tools[0].functionDeclarations.map((declaration: any) => declaration.name);
+    expect(new Set(names).size).toBe(3);
+    expect(names.every((name: string) => /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/.test(name))).toBe(true);
+    expect(result.request.tools[0].functionDeclarations.every((declaration: any) => declaration.parameters === undefined)).toBe(true);
+  });
+
+  test("keeps supported Schema constraints and resolves local JSON Schema refs", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [{ role: "user", content: "Use a tool" }],
+      tools: [{
+        type: "function",
+        function: {
+          name: "constrained",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            $defs: {
+              count: { type: "integer", minimum: 1, maximum: 5 }
+            },
+            properties: {
+              count: { $ref: "#/$defs/count" },
+              label: { type: ["string", "null"], minLength: 2, examples: ["ok"] }
+            },
+            required: ["count"]
+          }
+        }
+      }]
+    }, "p", false, "us-central1");
+
+    const schema = result.request.tools[0].functionDeclarations[0].parameters;
+    expect(schema.additionalProperties).toBeUndefined();
+    expect(schema.$defs).toBeUndefined();
+    expect(schema.properties.count).toEqual({ type: "INTEGER", minimum: 1, maximum: 5 });
+    expect(schema.properties.label).toEqual({
+      type: "STRING",
+      nullable: true,
+      minLength: 2,
+      example: "ok"
+    });
+  });
+
+  test("uses the current googleSearch tool field", () => {
+    const config = getProxyConfig();
+    const previous = config.features.googleSearchGrounding;
+    config.features.googleSearchGrounding = true;
+    try {
+      const result = transformToGoogleBody({
+        model: "antigravity-gemini-3.7-flash",
+        messages: [{ role: "user", content: "Search" }]
+      }, "p", false, "us-central1");
+      expect(result.request.tools).toContainEqual({ googleSearch: {} });
+      expect(result.request.tools.some((tool: any) => tool.googleSearchRetrieval)).toBe(false);
+    } finally {
+      config.features.googleSearchGrounding = previous;
+    }
   });
 });
 
@@ -421,6 +555,23 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
     expect(toolCall.extra_content.google.thought_signature).toBe("signature-value");
   });
 
+  test("does not copy the first thought signature to later parallel calls", () => {
+    const result = transformGoogleEventToOpenAI({
+      candidates: [{
+        content: {
+          parts: [
+            { functionCall: { id: "call_a", name: "a", args: {} }, thoughtSignature: "signature-a" },
+            { functionCall: { id: "call_b", name: "b", args: {} } }
+          ]
+        }
+      }]
+    }, "gemini-3.7-flash");
+
+    expect(result.choices[0].delta.tool_calls[0].id).toBe("sig:signature-a:call_a");
+    expect(result.choices[0].delta.tool_calls[1].id).toBe("call_b");
+    expect(result.choices[0].delta.tool_calls[1].extra_content).toBeUndefined();
+  });
+
   test("Empty/Invalid response", () => {
     const googleData = { candidates: [] };
     const result = transformGoogleEventToOpenAI(googleData, "model");
@@ -459,5 +610,106 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
   test("distinguishes an unreported reasoning count from a reported zero", () => {
     expect(normalizeUpstreamTokenUsage({ totalTokenCount: 3 })?.reasoningTokensReported).toBe(false);
     expect(normalizeUpstreamTokenUsage({ thoughtsTokenCount: 0 })?.reasoningTokensReported).toBe(true);
+  });
+
+  test("caches a thought signature delivered in a later empty part", async () => {
+    const sessionId = `stream-signature-${crypto.randomUUID()}`;
+    const encoder = new TextEncoder();
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          candidates: [{ content: { parts: [{ thought: true, text: "reasoning" }] } }]
+        })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          candidates: [{
+            content: { parts: [{ thought: true, text: "", thoughtSignature: "late-signature" }] },
+            finishReason: "STOP"
+          }]
+        })}\n\n`));
+        controller.close();
+      }
+    });
+
+    await new Response(source.pipeThrough(
+      createOpenAIStreamTransformer("gemini-3.7-flash", "req-stream", false, sessionId)
+    )).text();
+    expect(getSignature(sessionId, "reasoning")).toBe("late-signature");
+  });
+
+  test("assigns stable unique indexes to parallel calls split across stream events", async () => {
+    const encoder = new TextEncoder();
+    const source = new ReadableStream({
+      start(controller) {
+        for (const [id, name] of [["call_a", "a"], ["call_b", "b"]]) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+            candidates: [{ content: { parts: [{ functionCall: { id, name, args: {} } }] } }]
+          })}\n\n`));
+        }
+        controller.close();
+      }
+    });
+
+    const output = await new Response(source.pipeThrough(
+      createOpenAIStreamTransformer("gemini-3.7-flash", "req-indexes", false)
+    )).text();
+    const events = output.trim().split("\n\n").map(line => JSON.parse(line.slice(6)));
+    expect(events.map(event => event.choices[0].delta.tool_calls[0].index)).toEqual([0, 1]);
+  });
+});
+
+describe("Unit Tests: Google request validation", () => {
+  test("rejects assistant prefill before contacting Google", () => {
+    expect(validateOpenAIRequestForGoogle({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [{ role: "user", content: "Hi" }, { role: "assistant", content: "prefix" }]
+    })).toContain("cannot end");
+  });
+
+  test("does not apply the Gemini 3 prefill rule to non-Gemini models", () => {
+    expect(validateOpenAIRequestForGoogle({
+      model: "antigravity-claude-sonnet-4-6-thinking",
+      messages: [{ role: "user", content: "Hi" }, { role: "assistant", content: "prefix" }]
+    })).toBeUndefined();
+  });
+
+  test("accepts name-less parallel responses that match pending call IDs", () => {
+    expect(validateOpenAIRequestForGoogle({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [
+        { role: "user", content: "Run both" },
+        { role: "assistant", tool_calls: [
+          { id: "call_a", function: { name: "a", arguments: "{}" } },
+          { id: "call_b", function: { name: "b", arguments: "{}" } }
+        ] },
+        { role: "tool", tool_call_id: "call_a", content: "a" },
+        { role: "tool", tool_call_id: "call_b", content: "b" }
+      ]
+    })).toBeUndefined();
+  });
+
+  test("rejects missing parallel responses and malformed arguments", () => {
+    expect(validateOpenAIRequestForGoogle({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [
+        { role: "user", content: "Run both" },
+        { role: "assistant", tool_calls: [
+          { id: "call_a", function: { name: "a", arguments: "{}" } },
+          { id: "call_b", function: { name: "b", arguments: "{}" } }
+        ] },
+        { role: "tool", tool_call_id: "call_a", content: "a" },
+        { role: "user", content: "continue" }
+      ]
+    })).toContain("call_b");
+
+    expect(validateOpenAIRequestForGoogle({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [
+        { role: "user", content: "Run" },
+        { role: "assistant", tool_calls: [
+          { id: "call_bad", function: { name: "bad", arguments: "{" } }
+        ] },
+        { role: "tool", tool_call_id: "call_bad", content: "x" }
+      ]
+    })).toContain("invalid JSON");
   });
 });

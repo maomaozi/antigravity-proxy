@@ -3,6 +3,8 @@ import { cleanJSONSchemaForAntigravity } from "./schema";
 import { getProxyConfig } from "../config/manager";
 
 const TOOL_NAME_REMAP_CACHE = new Map<string, string>();
+const SANITIZED_TOOL_NAME_CACHE = new Map<string, string>();
+const MAX_GOOGLE_FUNCTION_NAME_LENGTH = 128;
 
 interface ToolCallMetadata {
   callId: string;
@@ -36,31 +38,94 @@ function decodeToolCallMetadata(toolCallId: unknown, explicitSignature?: unknown
   };
 }
 
+function toolNameHash(name: string): string {
+  return new Bun.CryptoHasher("sha256").update(name).digest("hex").slice(0, 8);
+}
+
 function sanitizeFunctionName(name: string): string {
-  if (/^[a-zA-Z_]/.test(name) && /^[a-zA-Z0-9_]+$/.test(name)) {
+  if (/^[a-zA-Z_][a-zA-Z0-9_-]{0,127}$/.test(name)) {
     return name;
   }
 
   const cached = TOOL_NAME_REMAP_CACHE.get(name);
   if (cached) return cached;
 
-  let sanitized = name.replace(/[^a-zA-Z0-9_]/g, '_');
+  let sanitized = name.replace(/[^a-zA-Z0-9_-]/g, '_');
   if (/^[0-9]/.test(sanitized)) {
     sanitized = `fn_${sanitized}`;
   }
   if (!sanitized) {
-    sanitized = `fn_${Math.random().toString(36).substring(7)}`;
+    sanitized = "fn";
+  }
+
+  const suffix = `_${toolNameHash(name)}`;
+  sanitized = `${sanitized.slice(0, MAX_GOOGLE_FUNCTION_NAME_LENGTH - suffix.length)}${suffix}`;
+
+  const existingOriginal = SANITIZED_TOOL_NAME_CACHE.get(sanitized);
+  if (existingOriginal && existingOriginal !== name) {
+    const collisionSuffix = `_${toolNameHash(`${name}:${existingOriginal}`)}`;
+    sanitized = `${sanitized.slice(0, MAX_GOOGLE_FUNCTION_NAME_LENGTH - collisionSuffix.length)}${collisionSuffix}`;
   }
 
   TOOL_NAME_REMAP_CACHE.set(name, sanitized);
+  SANITIZED_TOOL_NAME_CACHE.set(sanitized, name);
   console.log(`[Sanitize] Renamed tool "${name}" → "${sanitized}"`);
   return sanitized;
 }
 
 export function getOriginalToolName(sanitizedName: string): string | undefined {
-  for (const [original, sanitized] of TOOL_NAME_REMAP_CACHE) {
-    if (sanitized === sanitizedName) return original;
+  return SANITIZED_TOOL_NAME_CACHE.get(sanitizedName);
+}
+
+export function validateOpenAIRequestForGoogle(openaiBody: any): string | undefined {
+  if (!openaiBody || typeof openaiBody !== "object") return "Request body must be a JSON object.";
+  if (typeof openaiBody.model !== "string" || !openaiBody.model.trim()) return "model is required.";
+  if (!Array.isArray(openaiBody.messages) || openaiBody.messages.length === 0) return "messages must be a non-empty array.";
+
+  const messages = openaiBody.messages.filter((message: any) => message?.role !== "system");
+  const lastMessage = messages.at(-1);
+  if (!lastMessage) return "At least one non-system message is required.";
+  const isGemini3Request = openaiBody.model.toLowerCase().includes("gemini-3");
+  if (isGemini3Request && (lastMessage.role === "assistant" || lastMessage.role === "model")) {
+    return "Gemini 3 requests cannot end with a model/assistant turn; add a user or tool response.";
   }
+
+  let pendingToolCalls = new Set<string>();
+  for (const message of messages) {
+    const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+
+    if (message?.role !== "tool" && pendingToolCalls.size > 0) {
+      return `Missing tool responses for call IDs: ${[...pendingToolCalls].join(", ")}.`;
+    }
+
+    if (toolCalls.length > 0) {
+      pendingToolCalls = new Set<string>();
+    }
+
+    for (const toolCall of toolCalls) {
+      const { callId } = decodeToolCallMetadata(toolCall?.id);
+      if (!callId) return "Every tool call must have a non-empty id.";
+      if (!toolCall?.function?.name) return `Tool call ${callId} must have a function name.`;
+      if (pendingToolCalls.has(callId)) return `Duplicate tool call id: ${callId}.`;
+      pendingToolCalls.add(callId);
+      if (typeof toolCall?.function?.arguments === "string") {
+        try {
+          JSON.parse(toolCall.function.arguments || "{}");
+        } catch {
+          return `Tool call ${callId || "<unknown>"} contains invalid JSON arguments.`;
+        }
+      }
+    }
+
+    if (message?.role === "tool") {
+      const { callId } = decodeToolCallMetadata(message.tool_call_id);
+      if (!callId || !pendingToolCalls.has(callId)) {
+        return `Tool response ${callId || "<unknown>"} has no matching pending function call.`;
+      }
+      pendingToolCalls.delete(callId);
+    }
+  }
+
   return undefined;
 }
 
@@ -258,125 +323,147 @@ export function transformToGoogleBody(
                googleModel = "claude-sonnet-4-5-thinking";
            }
        }
-   }
+  }
 
   // Extract system instruction (like plugin)
   const systemMessage = openaiBody.messages.find((m: any) => m.role === "system");
   const otherMessages = openaiBody.messages.filter((m: any) => m.role !== "system");
 
-  const contents = otherMessages.map((msg: any) => {
-    const parts = [];
-    
-    if (msg.role === "tool") {
-      let responseObj;
-      try {
-        responseObj = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
-      } catch {
-        responseObj = msg.content;
-      }
+  // OpenAI-compatible clients such as OpenCode omit `name` from role=tool
+  // messages. Recover it from the preceding assistant tool call using the
+  // original Google call ID so FunctionResponse.name matches FunctionCall.name.
+  const toolCallNames = new Map<string, string>();
+  for (const msg of otherMessages) {
+    for (const toolCall of msg.tool_calls || []) {
+      if (!toolCall.function?.name) continue;
+      const { callId } = decodeToolCallMetadata(toolCall.id);
+      const name = proxyConfig.features.sanitizeToolNames
+        ? sanitizeFunctionName(toolCall.function.name)
+        : toolCall.function.name;
+      if (callId) toolCallNames.set(callId, name);
+    }
+  }
 
-      if (typeof responseObj !== "object" || responseObj === null || Array.isArray(responseObj)) {
-        responseObj = { result: responseObj };
-      }
+  const toFunctionResponsePart = (msg: any) => {
+    let responseObj;
+    try {
+      responseObj = typeof msg.content === "string" ? JSON.parse(msg.content) : msg.content;
+    } catch {
+      responseObj = msg.content;
+    }
 
-      const funcResp: any = {
-        name: msg.name || "function_result",
+    if (typeof responseObj !== "object" || responseObj === null || Array.isArray(responseObj)) {
+      responseObj = { result: responseObj };
+    }
+
+    const { callId } = decodeToolCallMetadata(msg.tool_call_id);
+    // The name is part of Google's correlation contract. Prefer the name of
+    // the matching call even when an OpenAI client sends a stale/wrong name.
+    const responseName = toolCallNames.get(callId) || msg.name || "function_result";
+    return {
+      functionResponse: {
+        ...(callId ? { id: callId } : {}),
+        name: proxyConfig.features.sanitizeToolNames
+          ? sanitizeFunctionName(responseName)
+          : responseName,
         response: responseObj
-      };
-      
-      if (googleModel.includes("claude") || googleModel.includes("gemini-3")) {
-          funcResp.id = decodeToolCallMetadata(msg.tool_call_id).callId;
       }
+    };
+  };
 
-      parts.push({
-        functionResponse: funcResp
-      });
-    } else {
-      if ((msg.role === "assistant" || msg.role === "model") && sessionId) {
-        const thoughtText = msg.thought || msg.reasoning_content;
-        if (thoughtText) {
-          const sig = getSignature(sessionId, thoughtText);
-          if (sig) {
-            parts.push({ thought: true, text: thoughtText, thoughtSignature: sig });
-          } else if (proxyConfig.features.keepThinking) {
-            parts.push({ thought: true, text: thoughtText });
-          }
+  const contents: any[] = [];
+  for (let messageIndex = 0; messageIndex < otherMessages.length; messageIndex++) {
+    const msg = otherMessages[messageIndex];
+
+    if (msg.role === "tool") {
+      const parts = [];
+      while (messageIndex < otherMessages.length && otherMessages[messageIndex].role === "tool") {
+        parts.push(toFunctionResponsePart(otherMessages[messageIndex]));
+        messageIndex++;
+      }
+      messageIndex--;
+      contents.push({ role: "user", parts });
+      continue;
+    }
+
+    const parts: any[] = [];
+    if ((msg.role === "assistant" || msg.role === "model") && sessionId) {
+      const thoughtText = msg.thought || msg.reasoning_content;
+      if (thoughtText) {
+        const sig = getSignature(sessionId, thoughtText);
+        if (sig) {
+          parts.push({ thought: true, text: thoughtText, thoughtSignature: sig });
+        } else if (proxyConfig.features.keepThinking) {
+          parts.push({ thought: true, text: thoughtText });
         }
       }
+    }
 
-      if (msg.content) {
-          if (Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part.type === "text") {
-                parts.push({ text: part.text });
-              } else if (part.type === "image_url" && part.image_url?.url) {
-                const url = part.image_url.url;
-                if (url.startsWith("data:")) {
-                  const match = url.match(/^data:([^;]+);base64,(.+)$/);
-                  if (match) {
-                    parts.push({
-                      inlineData: {
-                        mimeType: match[1],
-                        data: match[2]
-                      }
-                    });
+    if (msg.content) {
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === "text") {
+            parts.push({ text: part.text });
+          } else if (part.type === "image_url" && part.image_url?.url) {
+            const url = part.image_url.url;
+            if (url.startsWith("data:")) {
+              const match = url.match(/^data:([^;]+);base64,(.+)$/);
+              if (match) {
+                parts.push({
+                  inlineData: {
+                    mimeType: match[1],
+                    data: match[2]
                   }
-                }
+                });
               }
             }
-          } else {
-             parts.push({ text: msg.content });
-          }
-      }
-
-      if (msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          if (tc.function) {
-            const explicitSignature = tc.extra_content?.google?.thought_signature;
-            const { callId, thoughtSignature } = decodeToolCallMetadata(tc.id, explicitSignature);
-
-            const funcCall: any = {
-              name: tc.function.name,
-              args: typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments || "{}") : tc.function.arguments
-            };
-            
-            if (googleModel.includes("claude") || googleModel.includes("gemini-3")) {
-                funcCall.id = callId;
-            }
-
-            const funcPart: any = {
-              functionCall: funcCall
-            };
-            
-            if (thoughtSignature) {
-              funcPart.thoughtSignature = thoughtSignature;
-            }
-
-            parts.push(funcPart);
           }
         }
+      } else {
+        parts.push({ text: msg.content });
       }
+    }
+
+    for (const tc of msg.tool_calls || []) {
+      if (!tc.function) continue;
+      const explicitSignature = tc.extra_content?.google?.thought_signature
+        || tc.providerOptions?.google?.thoughtSignature
+        || tc.provider_options?.google?.thought_signature;
+      const { callId, thoughtSignature } = decodeToolCallMetadata(tc.id, explicitSignature);
+      const funcPart: any = {
+        functionCall: {
+          ...(callId ? { id: callId } : {}),
+          name: proxyConfig.features.sanitizeToolNames
+            ? sanitizeFunctionName(tc.function.name)
+            : tc.function.name,
+          args: typeof tc.function.arguments === "string"
+            ? JSON.parse(tc.function.arguments || "{}")
+            : (tc.function.arguments || {})
+        }
+      };
+
+      if (thoughtSignature) {
+        funcPart.thoughtSignature = thoughtSignature;
+      }
+      parts.push(funcPart);
     }
 
     if (parts.length === 0) {
-        parts.push({ text: " " });
+      parts.push({ text: " " });
     }
 
-    return {
+    contents.push({
       role: (msg.role === "assistant" || msg.role === "model") ? "model" : "user",
       parts
-    };
-  });
+    });
+  }
 
   const isThinkingModel = rawModel.includes("-thinking") ||
                           rawModel.includes("gemini-3.7-flash") ||
                           rawModel.includes("gemini-3.6-flash") ||
                           rawModel.includes("gemini-3.5-flash") ||
                           rawModel.includes("gemini-3.1-pro");
-  const hasExplicitBudget = openaiBody.thinking_budget !== undefined || 
-                           openaiBody.thinking?.budget_tokens !== undefined ||
-                           openaiBody.providerOptions?.thinkingBudget !== undefined;
-  
+  const isGemini3ProtocolModel = rawModel.includes("gemini-3");
   let thinkingBudget = openaiBody.thinking_budget;
 
   // Support OpenAI-standard `thinking` parameter: { type: "enabled", budget_tokens: N }
@@ -419,16 +506,36 @@ You are pair programming with a USER to solve their coding task. The task may re
       };
   }
 
+  const requestedMaxTokens = Number(openaiBody.max_tokens);
+  const defaultMaxOutputTokens = isThinkingModel ? 64000 : 4096;
+  const normalizedMaxOutputTokens = Number.isFinite(requestedMaxTokens) && requestedMaxTokens > 0
+    ? Math.trunc(requestedMaxTokens)
+    : defaultMaxOutputTokens;
+  const modelOutputLimit = isGemini3ProtocolModel
+    ? 65536
+    : (googleModel.includes("claude") ? 64000 : (googleModel.includes("gpt-oss") ? 32768 : undefined));
+  const maxOutputTokens = modelOutputLimit
+    ? Math.min(normalizedMaxOutputTokens, modelOutputLimit)
+    : normalizedMaxOutputTokens;
+
+  const generationConfig: any = {
+    maxOutputTokens,
+    stopSequences: Array.isArray(openaiBody.stop)
+      ? openaiBody.stop
+      : (openaiBody.stop ? [openaiBody.stop] : undefined)
+  };
+
+  // Gemini 3.5+ rejects or ignores legacy sampling parameters and candidateCount.
+  if (!isGemini3ProtocolModel) {
+    generationConfig.temperature = openaiBody.temperature ?? 0.7;
+    generationConfig.topP = openaiBody.top_p ?? 0.95;
+    generationConfig.candidateCount = 1;
+  }
+
   const googleRequest: any = {
     contents,
     systemInstruction,
-    generationConfig: {
-      temperature: openaiBody.temperature ?? 0.7,
-      maxOutputTokens: (isThinkingModel || hasExplicitBudget) ? Math.max(openaiBody.max_tokens || 0, 64000) : (openaiBody.max_tokens ?? 4096),
-      topP: openaiBody.top_p ?? 0.95,
-      stopSequences: Array.isArray(openaiBody.stop) ? openaiBody.stop : (openaiBody.stop ? [openaiBody.stop] : undefined),
-      candidateCount: 1
-    },
+    generationConfig,
     safetySettings: [
       { category: "HARM_CATEGORY_HARASSMENT", threshold: process.env.SAFETY_THRESHOLD || "BLOCK_NONE" },
       { category: "HARM_CATEGORY_HATE_SPEECH", threshold: process.env.SAFETY_THRESHOLD || "BLOCK_NONE" },
@@ -463,14 +570,15 @@ You are pair programming with a USER to solve their coding task. The task may re
 
   const structuredClaudeResponse = hasStructuredResponse && googleModel.includes("claude");
   if ((isThinkingModel || googleModel.includes("gemini-3")) && !structuredClaudeResponse) {
-    googleRequest.generationConfig.thinkingConfig = {
-      includeThoughts: true,
-      thinkingBudget: thinkingBudget || 16000
-    };
-    
-    if (rawModel.includes("gemini")) {
-        googleRequest.generationConfig.thinkingConfig.thinkingLevel = extractedTier || "low";
-    }
+    googleRequest.generationConfig.thinkingConfig = isGemini3ProtocolModel
+      ? {
+          includeThoughts: true,
+          thinkingLevel: extractedTier || "low"
+        }
+      : {
+          includeThoughts: true,
+          thinkingBudget: thinkingBudget || 16000
+        };
   }
 
   if (openaiBody.tools) {
@@ -485,15 +593,18 @@ You are pair programming with a USER to solve their coding task. The task may re
         }
 
         let description = t.function.description || "";
-        const paramNames = Object.keys(cleanParams.properties || {}).filter(k => k !== "_placeholder");
+        const paramNames = Object.keys(cleanParams.properties || {});
         if (paramNames.length > 0) {
           description += ` [Parameters: ${paramNames.join(", ")}]`;
         }
 
+        const hasParameterSchema = paramNames.length > 0
+          || Object.keys(cleanParams).some(key => key !== "type" && key !== "properties");
+
         return {
           name: funcName,
-          description: description,
-          parameters: cleanParams
+          description: description.trim() || `Call ${funcName}.`,
+          ...(hasParameterSchema ? { parameters: cleanParams } : {})
         };
       })
     }];
@@ -507,13 +618,9 @@ You are pair programming with a USER to solve their coding task. The task may re
 
   const isGeminiModel = googleModel.includes("gemini");
   if (isGeminiModel && proxyConfig.features.googleSearchGrounding) {
-    const groundingTool: any = { googleSearchRetrieval: {} };
-    if (proxyConfig.features.groundingMode === 'always') {
-      groundingTool.googleSearchRetrieval.dynamicRetrievalConfig = {
-        mode: "MODE_UNSPECIFIED",
-        dynamicThreshold: 0.0
-      };
-    }
+    // Gemini 2.0+ uses googleSearch. googleSearchRetrieval is the legacy
+    // pre-2.0 field and is rejected by current Gemini 3 models.
+    const groundingTool: any = { googleSearch: {} };
     if (!googleRequest.tools) {
       googleRequest.tools = [];
     }
@@ -633,7 +740,9 @@ export function transformGoogleEventToOpenAI(googleData: any, model: string, req
 
     if (part.functionCall || part.function_call) {
       const call = part.functionCall || part.function_call;
-      const sig = part.thoughtSignature || part.thought_signature || extractedSignature || "";
+      // Gemini 3 parallel calls carry a signature only on the first function
+      // call part. Never inherit it onto later calls in the same response.
+      const sig = part.thoughtSignature || part.thought_signature || part.signature || "";
       const rawId = call.id || call.callId || call.call_id || "call_" + Math.random().toString(36).substring(7);
       const callId = (sig && !rawId.startsWith("sig:")) ? `sig:${sig}:${rawId}` : rawId;
       
@@ -706,12 +815,44 @@ export function createOpenAIStreamTransformer(
   const encoder = new TextEncoder();
   let buffer = "";
   let currentHasPriorToolCalls = hasPriorToolCalls;
+  let accumulatedThought = "";
+  let nextToolCallIndex = 0;
+  const toolCallIndexes = new Map<string, number>();
   const emitUsage = (usage: UpstreamTokenUsage | undefined) => {
     if (!usage || !onUsage) return;
     try {
       onUsage(usage);
     } catch (error) {
       console.warn("[Usage] Failed to process upstream token metadata:", error);
+    }
+  };
+  const rememberThoughtSignature = (openaiEvent: any) => {
+    if (typeof openaiEvent?._thought === "string" && openaiEvent._thought) {
+      accumulatedThought += openaiEvent._thought;
+    }
+
+    // Tool-call signatures belong to the functionCall part and are carried in
+    // the synthetic call ID/metadata. Only cache signatures for thought text.
+    const hasToolCalls = Boolean(openaiEvent?.choices?.[0]?.delta?.tool_calls?.length);
+    if (sessionId && openaiEvent?._signature && accumulatedThought && !hasToolCalls) {
+      cacheSignature(sessionId, accumulatedThought, openaiEvent._signature);
+      console.log(`[Cache] Signature cached for conversation ${sessionId}`);
+    }
+  };
+  const normalizeToolCallIndexes = (openaiEvent: any) => {
+    const toolCalls = openaiEvent?.choices?.[0]?.delta?.tool_calls;
+    if (!Array.isArray(toolCalls)) return;
+
+    for (const toolCall of toolCalls) {
+      const key = typeof toolCall.id === "string" && toolCall.id
+        ? toolCall.id
+        : `anonymous:${nextToolCallIndex}`;
+      let index = toolCallIndexes.get(key);
+      if (index === undefined) {
+        index = nextToolCallIndex++;
+        toolCallIndexes.set(key, index);
+      }
+      toolCall.index = index;
     }
   };
 
@@ -735,11 +876,9 @@ export function createOpenAIStreamTransformer(
             const openaiEvent = transformGoogleEventToOpenAI(googleEvent, model, requestId, currentHasPriorToolCalls);
             
             if (openaiEvent) {
+              normalizeToolCallIndexes(openaiEvent);
               emitUsage(openaiEvent._tokenUsage);
-              if (sessionId && openaiEvent._signature && openaiEvent._thought) {
-                  cacheSignature(sessionId, openaiEvent._thought, openaiEvent._signature);
-                  console.log(`[Cache] Signature cached for conversation ${sessionId}`);
-              }
+              rememberThoughtSignature(openaiEvent);
 
               const choice = openaiEvent.choices?.[0];
               const delta = choice?.delta;
@@ -770,7 +909,9 @@ export function createOpenAIStreamTransformer(
             const googleEvent = JSON.parse(dataStr);
             const openaiEvent = transformGoogleEventToOpenAI(googleEvent, model, requestId, currentHasPriorToolCalls);
             if (openaiEvent) {
+              normalizeToolCallIndexes(openaiEvent);
               emitUsage(openaiEvent._tokenUsage);
+              rememberThoughtSignature(openaiEvent);
               const { _signature, _thought, _tokenUsage, ...cleanEvent } = openaiEvent;
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(cleanEvent)}\n\n`));
             }
