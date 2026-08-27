@@ -4,6 +4,38 @@ import { getProxyConfig } from "../config/manager";
 
 const TOOL_NAME_REMAP_CACHE = new Map<string, string>();
 
+interface ToolCallMetadata {
+  callId: string;
+  thoughtSignature?: string;
+}
+
+function decodeToolCallMetadata(toolCallId: unknown, explicitSignature?: unknown): ToolCallMetadata {
+  const callId = typeof toolCallId === "string" ? toolCallId : "";
+  const thoughtSignature = typeof explicitSignature === "string" && explicitSignature
+    ? explicitSignature
+    : undefined;
+
+  if (!callId.startsWith("sig:")) {
+    return { callId, thoughtSignature };
+  }
+
+  const signatureEnd = callId.indexOf(":", 4);
+  if (signatureEnd === -1) {
+    return { callId, thoughtSignature };
+  }
+
+  const encodedSignature = callId.slice(4, signatureEnd);
+  const originalCallId = callId.slice(signatureEnd + 1);
+  if (!encodedSignature || !originalCallId) {
+    return { callId, thoughtSignature };
+  }
+
+  return {
+    callId: originalCallId,
+    thoughtSignature: thoughtSignature || encodedSignature
+  };
+}
+
 function sanitizeFunctionName(name: string): string {
   if (/^[a-zA-Z_]/.test(name) && /^[a-zA-Z0-9_]+$/.test(name)) {
     return name;
@@ -85,7 +117,15 @@ export function transformToGoogleBody(
   
   const tierMatch = rawModel.match(/-(low|medium|high)$/i);
   const thinkingTierMatch = rawModel.match(/-thinking-(low|medium|high)$/i);
-  let extractedTier = thinkingTierMatch ? thinkingTierMatch[1] : (tierMatch ? tierMatch[1] : undefined);
+  const reasoningEffort = typeof openaiBody.reasoning_effort === "string"
+    ? openaiBody.reasoning_effort.toLowerCase()
+    : undefined;
+  const requestTier = reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort)
+    ? reasoningEffort
+    : undefined;
+  let extractedTier = thinkingTierMatch
+    ? thinkingTierMatch[1]
+    : (tierMatch ? tierMatch[1] : requestTier);
 
   // Stable proxy IDs hide Antigravity's changing runtime IDs. Some display
   // tiers intentionally map to unexpectedly named backend models.
@@ -245,7 +285,7 @@ export function transformToGoogleBody(
       };
       
       if (googleModel.includes("claude") || googleModel.includes("gemini-3")) {
-          funcResp.id = msg.tool_call_id;
+          funcResp.id = decodeToolCallMetadata(msg.tool_call_id).callId;
       }
 
       parts.push({
@@ -292,14 +332,8 @@ export function transformToGoogleBody(
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
           if (tc.function) {
-            let sig = "";
-            let callId = tc.id || "";
-            if (callId.startsWith("sig:")) {
-              const idParts = callId.split(":");
-              if (idParts.length >= 3) {
-                sig = idParts[1];
-              }
-            }
+            const explicitSignature = tc.extra_content?.google?.thought_signature;
+            const { callId, thoughtSignature } = decodeToolCallMetadata(tc.id, explicitSignature);
 
             const funcCall: any = {
               name: tc.function.name,
@@ -307,15 +341,15 @@ export function transformToGoogleBody(
             };
             
             if (googleModel.includes("claude") || googleModel.includes("gemini-3")) {
-                funcCall.id = tc.id;
+                funcCall.id = callId;
             }
 
             const funcPart: any = {
               functionCall: funcCall
             };
             
-            if (sig) {
-              funcPart.thoughtSignature = sig;
+            if (thoughtSignature) {
+              funcPart.thoughtSignature = thoughtSignature;
             }
 
             parts.push(funcPart);
@@ -612,7 +646,12 @@ export function transformGoogleEventToOpenAI(googleData: any, model: string, req
         function: {
           name: funcName,
           arguments: typeof call.args === 'string' ? call.args : JSON.stringify(call.args || {})
-        }
+        },
+        ...(sig ? {
+          extra_content: {
+            google: { thought_signature: sig }
+          }
+        } : {})
       });
       if (sig) extractedSignature = sig;
     }

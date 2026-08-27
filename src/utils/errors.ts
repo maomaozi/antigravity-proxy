@@ -39,6 +39,11 @@ export function parseGoogleError(body: string): {
     
     if (err) {
       message = err.message;
+      if (err.status === "INVALID_ARGUMENT") {
+        reason = "invalid_argument";
+        status = 400;
+      }
+
       if (err.status === "RESOURCE_EXHAUSTED" || err.message?.includes("quota")) {
         isQuotaExhausted = true;
         reason = "quota_exhausted";
@@ -89,5 +94,5 @@ export function parseGoogleError(body: string): {
     }
   }
 
-  return { reason, validationUrl, isQuotaExhausted, isChallengeRequired, isModelUnsupported, status };
+  return { reason, validationUrl, isQuotaExhausted, isChallengeRequired, isModelUnsupported, status, message };
 }

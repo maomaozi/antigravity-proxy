@@ -48,6 +48,18 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("medium");
   });
 
+  test("uses OpenAI reasoning_effort for the thinking level", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      reasoning_effort: "high",
+      messages: [{ role: "user", content: "Hi" }]
+    }, "p", false, "us-central1");
+
+    expect(result.model).toBe("gemini-3.7-flash-tiered");
+    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("high");
+    expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBe(32768);
+  });
+
   test("Multi-turn conversation", () => {
     const openaiBody = {
       model: "gemini-1.5-pro",
@@ -302,6 +314,57 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(funcRespPart).toBeDefined();
     expect(funcRespPart.functionResponse.id).toBe("call_abc123");
   });
+
+  test("restores original Gemini tool IDs and thought signatures", () => {
+    const syntheticId = "sig:c2lnbmF0dXJl:call_abc:123";
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [
+        { role: "user", content: "Run the tool" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: syntheticId,
+            type: "function",
+            function: { name: "test_tool", arguments: "{}" }
+          }]
+        },
+        {
+          role: "tool",
+          tool_call_id: syntheticId,
+          name: "test_tool",
+          content: '{"result":"ok"}'
+        }
+      ]
+    }, "p", false, "us-central1");
+
+    const funcCallPart = result.request.contents[1].parts.find((p: any) => p.functionCall);
+    const funcRespPart = result.request.contents[2].parts.find((p: any) => p.functionResponse);
+    expect(funcCallPart.functionCall.id).toBe("call_abc:123");
+    expect(funcCallPart.thoughtSignature).toBe("c2lnbmF0dXJl");
+    expect(funcRespPart.functionResponse.id).toBe("call_abc:123");
+  });
+
+  test("prefers an explicit Gemini thought signature", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [{
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_abc123",
+          type: "function",
+          extra_content: { google: { thought_signature: "explicit-signature" } },
+          function: { name: "test_tool", arguments: "{}" }
+        }]
+      }]
+    }, "p", false, "us-central1");
+
+    const funcCallPart = result.request.contents[0].parts.find((p: any) => p.functionCall);
+    expect(funcCallPart.functionCall.id).toBe("call_abc123");
+    expect(funcCallPart.thoughtSignature).toBe("explicit-signature");
+  });
 });
 
 describe("Unit Tests: transformGoogleEventToOpenAI", () => {
@@ -339,6 +402,23 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
     expect(result.choices[0].delta.tool_calls).toHaveLength(1);
     expect(result.choices[0].delta.tool_calls[0].function.name).toBe("get_weather");
     expect(JSON.parse(result.choices[0].delta.tool_calls[0].function.arguments).location).toBe("London");
+  });
+
+  test("exposes Gemini thought signatures through OpenAI-compatible metadata", () => {
+    const result = transformGoogleEventToOpenAI({
+      candidates: [{
+        content: {
+          parts: [{
+            functionCall: { id: "call_abc123", name: "get_weather", args: {} },
+            thoughtSignature: "signature-value"
+          }]
+        }
+      }]
+    }, "gemini-3.7-flash");
+
+    const toolCall = result.choices[0].delta.tool_calls[0];
+    expect(toolCall.id).toBe("sig:signature-value:call_abc123");
+    expect(toolCall.extra_content.google.thought_signature).toBe("signature-value");
   });
 
   test("Empty/Invalid response", () => {

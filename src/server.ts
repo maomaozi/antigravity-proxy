@@ -335,6 +335,24 @@ Bun.serve({
                   attempts--;
                   continue;
                }
+
+               if (status === 400) {
+                  return new Response(JSON.stringify({
+                    error: {
+                      message: parsedError.message || "Upstream rejected the request as invalid.",
+                      type: "invalid_request_error",
+                      code: parsedError.reason,
+                      attempts: attemptLogs
+                    }
+                  }), {
+                    status: 400,
+                    headers: {
+                      "Content-Type": "application/json",
+                      "Access-Control-Allow-Origin": "*",
+                      "X-Antigravity-Attempts": attempts.toString()
+                    }
+                  });
+               }
                aggressive = false;
 
                await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", status);

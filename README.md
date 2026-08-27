@@ -168,19 +168,42 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
         "models": {
             "antigravity-gemini-3.7-flash": {
                 "name": "Gemini 3.7 Flash (Antigravity)",
-                "limit": { "context": 1048576, "output": 65536 }
+                "limit": { "context": 1048576, "output": 65536 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "medium": { "reasoningEffort": "medium" },
+                    "high": { "reasoningEffort": "high" }
+                }
             },
             "antigravity-gemini-3.6-flash": {
                 "name": "Gemini 3.6 Flash (Antigravity)",
-                "limit": { "context": 1048576, "output": 65536 }
+                "limit": { "context": 1048576, "output": 65536 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "medium": { "reasoningEffort": "medium" },
+                    "high": { "reasoningEffort": "high" }
+                }
             },
             "antigravity-gemini-3.5-flash": {
                 "name": "Gemini 3.5 Flash (Antigravity)",
-                "limit": { "context": 1048576, "output": 65536 }
+                "limit": { "context": 1048576, "output": 65536 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "medium": { "reasoningEffort": "medium" },
+                    "high": { "reasoningEffort": "high" }
+                }
             },
             "antigravity-gemini-3.1-pro": {
                 "name": "Gemini 3.1 Pro (Antigravity)",
-                "limit": { "context": 1048576, "output": 65535 }
+                "limit": { "context": 1048576, "output": 65535 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "high": { "reasoningEffort": "high" }
+                }
             },
             "antigravity-claude-sonnet-4-6-thinking": {
                 "name": "Claude Sonnet 4.6 Thinking (Antigravity)",
@@ -201,7 +224,13 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
 
 ### Thinking Levels
 
-Select a Gemini thinking level by appending it to the model ID:
+In OpenCode, use `Ctrl+T` (the `variant_cycle` keybind) to switch between the
+`low`, `medium`, and `high` variants declared above. OpenCode sends the selected
+variant as the standard `reasoning_effort` request field, which the proxy maps to
+the corresponding Antigravity thinking level.
+
+Other OpenAI-compatible clients can set `reasoning_effort` directly or append a
+thinking level to the model ID:
 
 | Model | Levels | Default |
 | --- | --- | --- |
