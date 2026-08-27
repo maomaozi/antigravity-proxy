@@ -1,6 +1,8 @@
 import { getSignature, cacheSignature } from "./cache";
 import { cleanJSONSchemaForAntigravity } from "./schema";
 import { getProxyConfig } from "../config/manager";
+import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
+import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionChunk } from "../api/openai/chat";
 
 const TOOL_NAME_REMAP_CACHE = new Map<string, string>();
 const SANITIZED_TOOL_NAME_CACHE = new Map<string, string>();
@@ -77,22 +79,22 @@ export function getOriginalToolName(sanitizedName: string): string | undefined {
   return SANITIZED_TOOL_NAME_CACHE.get(sanitizedName);
 }
 
-export function validateOpenAIRequestForGoogle(openaiBody: any): string | undefined {
-  if (!openaiBody || typeof openaiBody !== "object") return "Request body must be a JSON object.";
-  if (typeof openaiBody.model !== "string" || !openaiBody.model.trim()) return "model is required.";
-  if (!Array.isArray(openaiBody.messages) || openaiBody.messages.length === 0) return "messages must be a non-empty array.";
+export function validateCompletionRequestForGoogle(request: CompletionRequest): string | undefined {
+  if (!request || typeof request !== "object") return "Request body must be a JSON object.";
+  if (typeof request.model !== "string" || !request.model.trim()) return "model is required.";
+  if (!Array.isArray(request.messages) || request.messages.length === 0) return "messages must be a non-empty array.";
 
-  const messages = openaiBody.messages.filter((message: any) => message?.role !== "system");
+  const messages = request.messages.filter(message => message?.role !== "system");
   const lastMessage = messages.at(-1);
   if (!lastMessage) return "At least one non-system message is required.";
-  const isGemini3Request = openaiBody.model.toLowerCase().includes("gemini-3");
+  const isGemini3Request = request.model.toLowerCase().includes("gemini-3");
   if (isGemini3Request && (lastMessage.role === "assistant" || lastMessage.role === "model")) {
     return "Gemini 3 requests cannot end with a model/assistant turn; add a user or tool response.";
   }
 
   let pendingToolCalls = new Set<string>();
   for (const message of messages) {
-    const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    const toolCalls = Array.isArray(message?.toolCalls) ? message.toolCalls : [];
 
     if (message?.role !== "tool" && pendingToolCalls.size > 0) {
       return `Missing tool responses for call IDs: ${[...pendingToolCalls].join(", ")}.`;
@@ -105,12 +107,12 @@ export function validateOpenAIRequestForGoogle(openaiBody: any): string | undefi
     for (const toolCall of toolCalls) {
       const { callId } = decodeToolCallMetadata(toolCall?.id);
       if (!callId) return "Every tool call must have a non-empty id.";
-      if (!toolCall?.function?.name) return `Tool call ${callId} must have a function name.`;
+      if (!toolCall?.name) return `Tool call ${callId} must have a function name.`;
       if (pendingToolCalls.has(callId)) return `Duplicate tool call id: ${callId}.`;
       pendingToolCalls.add(callId);
-      if (typeof toolCall?.function?.arguments === "string") {
+      if (typeof toolCall?.arguments === "string") {
         try {
-          JSON.parse(toolCall.function.arguments || "{}");
+          JSON.parse(toolCall.arguments || "{}");
         } catch {
           return `Tool call ${callId || "<unknown>"} contains invalid JSON arguments.`;
         }
@@ -118,7 +120,7 @@ export function validateOpenAIRequestForGoogle(openaiBody: any): string | undefi
     }
 
     if (message?.role === "tool") {
-      const { callId } = decodeToolCallMetadata(message.tool_call_id);
+      const { callId } = decodeToolCallMetadata(message.toolCallId);
       if (!callId || !pendingToolCalls.has(callId)) {
         return `Tool response ${callId || "<unknown>"} has no matching pending function call.`;
       }
@@ -127,6 +129,11 @@ export function validateOpenAIRequestForGoogle(openaiBody: any): string | undefi
   }
 
   return undefined;
+}
+
+export function validateOpenAIRequestForGoogle(openaiBody: any): string | undefined {
+  if (!openaiBody || typeof openaiBody !== "object") return "Request body must be a JSON object.";
+  return validateCompletionRequestForGoogle(adaptChatCompletionRequest(openaiBody));
 }
 
 const CLAUDE_MODEL_REGISTRY = [
@@ -167,8 +174,8 @@ function resolveModelId(modelId: string): string {
     return cleanId;
 }
 
-export function transformToGoogleBody(
-  openaiBody: any, 
+export function transformCompletionToGoogleBody(
+  request: CompletionRequest,
   projectId: string, 
   isCli: boolean, 
   location: string, 
@@ -176,14 +183,14 @@ export function transformToGoogleBody(
   aggressive: boolean = false
 ): any {
   const proxyConfig = getProxyConfig();
-  const rawModel = (openaiBody.model || "").toLowerCase();
-  const resolvedModel = resolveModelId(openaiBody.model);
+  const rawModel = (request.model || "").toLowerCase();
+  const resolvedModel = resolveModelId(request.model);
   let googleModel = resolvedModel;
   
   const tierMatch = rawModel.match(/-(low|medium|high)$/i);
   const thinkingTierMatch = rawModel.match(/-thinking-(low|medium|high)$/i);
-  const reasoningEffort = typeof openaiBody.reasoning_effort === "string"
-    ? openaiBody.reasoning_effort.toLowerCase()
+  const reasoningEffort = typeof request.reasoningEffort === "string"
+    ? request.reasoningEffort.toLowerCase()
     : undefined;
   const requestTier = reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort)
     ? reasoningEffort
@@ -326,20 +333,20 @@ export function transformToGoogleBody(
   }
 
   // Extract system instruction (like plugin)
-  const systemMessage = openaiBody.messages.find((m: any) => m.role === "system");
-  const otherMessages = openaiBody.messages.filter((m: any) => m.role !== "system");
+  const systemMessage = request.messages.find(m => m.role === "system");
+  const otherMessages = request.messages.filter(m => m.role !== "system");
 
   // OpenAI-compatible clients such as OpenCode omit `name` from role=tool
   // messages. Recover it from the preceding assistant tool call using the
   // original Google call ID so FunctionResponse.name matches FunctionCall.name.
   const toolCallNames = new Map<string, string>();
   for (const msg of otherMessages) {
-    for (const toolCall of msg.tool_calls || []) {
-      if (!toolCall.function?.name) continue;
+    for (const toolCall of msg.toolCalls || []) {
+      if (!toolCall.name) continue;
       const { callId } = decodeToolCallMetadata(toolCall.id);
       const name = proxyConfig.features.sanitizeToolNames
-        ? sanitizeFunctionName(toolCall.function.name)
-        : toolCall.function.name;
+        ? sanitizeFunctionName(toolCall.name)
+        : toolCall.name;
       if (callId) toolCallNames.set(callId, name);
     }
   }
@@ -356,7 +363,7 @@ export function transformToGoogleBody(
       responseObj = { result: responseObj };
     }
 
-    const { callId } = decodeToolCallMetadata(msg.tool_call_id);
+    const { callId } = decodeToolCallMetadata(msg.toolCallId);
     // The name is part of Google's correlation contract. Prefer the name of
     // the matching call even when an OpenAI client sends a stale/wrong name.
     const responseName = toolCallNames.get(callId) || msg.name || "function_result";
@@ -388,7 +395,7 @@ export function transformToGoogleBody(
 
     const parts: any[] = [];
     if ((msg.role === "assistant" || msg.role === "model") && sessionId) {
-      const thoughtText = msg.thought || msg.reasoning_content;
+      const thoughtText = msg.reasoningContent;
       if (thoughtText) {
         const sig = getSignature(sessionId, thoughtText);
         if (sig) {
@@ -404,8 +411,8 @@ export function transformToGoogleBody(
         for (const part of msg.content) {
           if (part.type === "text") {
             parts.push({ text: part.text });
-          } else if (part.type === "image_url" && part.image_url?.url) {
-            const url = part.image_url.url;
+           } else if (part.type === "image" && part.url) {
+            const url = part.url;
             if (url.startsWith("data:")) {
               const match = url.match(/^data:([^;]+);base64,(.+)$/);
               if (match) {
@@ -424,21 +431,18 @@ export function transformToGoogleBody(
       }
     }
 
-    for (const tc of msg.tool_calls || []) {
-      if (!tc.function) continue;
-      const explicitSignature = tc.extra_content?.google?.thought_signature
-        || tc.providerOptions?.google?.thoughtSignature
-        || tc.provider_options?.google?.thought_signature;
+    for (const tc of msg.toolCalls || []) {
+      const explicitSignature = tc.thoughtSignature;
       const { callId, thoughtSignature } = decodeToolCallMetadata(tc.id, explicitSignature);
       const funcPart: any = {
         functionCall: {
           ...(callId ? { id: callId } : {}),
           name: proxyConfig.features.sanitizeToolNames
-            ? sanitizeFunctionName(tc.function.name)
-            : tc.function.name,
-          args: typeof tc.function.arguments === "string"
-            ? JSON.parse(tc.function.arguments || "{}")
-            : (tc.function.arguments || {})
+            ? sanitizeFunctionName(tc.name)
+            : tc.name,
+          args: typeof tc.arguments === "string"
+            ? JSON.parse(tc.arguments || "{}")
+            : (tc.arguments || {})
         }
       };
 
@@ -464,17 +468,7 @@ export function transformToGoogleBody(
                           rawModel.includes("gemini-3.5-flash") ||
                           rawModel.includes("gemini-3.1-pro");
   const isGemini3ProtocolModel = rawModel.includes("gemini-3");
-  let thinkingBudget = openaiBody.thinking_budget;
-
-  // Support OpenAI-standard `thinking` parameter: { type: "enabled", budget_tokens: N }
-  if (!thinkingBudget && openaiBody.thinking?.budget_tokens) {
-    thinkingBudget = openaiBody.thinking.budget_tokens;
-  }
-
-  // Support providerOptions from OpenCode variants: { providerOptions: { thinkingBudget: N } }
-  if (!thinkingBudget && openaiBody.providerOptions?.thinkingBudget) {
-    thinkingBudget = openaiBody.providerOptions.thinkingBudget;
-  }
+  let thinkingBudget = request.thinkingBudget;
 
   if (!thinkingBudget && isThinkingModel) {
       if (extractedTier === "low") thinkingBudget = 8192;
@@ -506,7 +500,7 @@ You are pair programming with a USER to solve their coding task. The task may re
       };
   }
 
-  const requestedMaxTokens = Number(openaiBody.max_tokens);
+  const requestedMaxTokens = Number(request.maxOutputTokens);
   const defaultMaxOutputTokens = isThinkingModel ? 64000 : 4096;
   const normalizedMaxOutputTokens = Number.isFinite(requestedMaxTokens) && requestedMaxTokens > 0
     ? Math.trunc(requestedMaxTokens)
@@ -520,15 +514,13 @@ You are pair programming with a USER to solve their coding task. The task may re
 
   const generationConfig: any = {
     maxOutputTokens,
-    stopSequences: Array.isArray(openaiBody.stop)
-      ? openaiBody.stop
-      : (openaiBody.stop ? [openaiBody.stop] : undefined)
+    stopSequences: request.stopSequences
   };
 
   // Gemini 3.5+ rejects or ignores legacy sampling parameters and candidateCount.
   if (!isGemini3ProtocolModel) {
-    generationConfig.temperature = openaiBody.temperature ?? 0.7;
-    generationConfig.topP = openaiBody.top_p ?? 0.95;
+    generationConfig.temperature = request.temperature ?? 0.7;
+    generationConfig.topP = request.topP ?? 0.95;
     generationConfig.candidateCount = 1;
   }
 
@@ -545,7 +537,7 @@ You are pair programming with a USER to solve their coding task. The task may re
     sessionId: sessionId || crypto.randomUUID()
   };
 
-  const responseFormat = openaiBody.response_format;
+  const responseFormat = request.responseFormat;
   const supportsStructuredResponse = !googleModel.includes("gpt");
   let hasStructuredResponse = false;
   if (supportsStructuredResponse && responseFormat?.type === "json_object") {
@@ -558,12 +550,12 @@ You are pair programming with a USER to solve their coding task. The task may re
       googleRequest.systemInstruction = { parts: [{ text: jsonInstruction }] };
     }
   } else if (supportsStructuredResponse && responseFormat?.type === "json_schema") {
-    const responseSchema = responseFormat.json_schema?.schema;
+    const responseSchema = responseFormat.schema;
     if (responseSchema && typeof responseSchema === "object" && !Array.isArray(responseSchema)) {
       googleRequest.generationConfig.responseMimeType = "application/json";
       googleRequest.generationConfig.responseSchema = cleanJSONSchemaForAntigravity(responseSchema, aggressive);
       googleRequest.generationConfig.responseSchema.title =
-        responseFormat.json_schema?.name?.trim() || "json_schema";
+        responseFormat.name?.trim() || "json_schema";
       hasStructuredResponse = true;
     }
   }
@@ -581,18 +573,18 @@ You are pair programming with a USER to solve their coding task. The task may re
         };
   }
 
-  if (openaiBody.tools) {
+  if (request.tools) {
     const sanitize = proxyConfig.features.sanitizeToolNames;
     googleRequest.tools = [{
-      functionDeclarations: openaiBody.tools.map((t: any) => {
-        const cleanParams = cleanJSONSchemaForAntigravity(t.function.parameters || { type: "object", properties: {} }, aggressive);
+      functionDeclarations: request.tools.map(t => {
+        const cleanParams = cleanJSONSchemaForAntigravity(t.parameters || { type: "object", properties: {} }, aggressive);
         
-        let funcName = t.function.name;
+        let funcName = t.name;
         if (sanitize) {
           funcName = sanitizeFunctionName(funcName);
         }
 
-        let description = t.function.description || "";
+        let description = t.description || "";
         const paramNames = Object.keys(cleanParams.properties || {});
         if (paramNames.length > 0) {
           description += ` [Parameters: ${paramNames.join(", ")}]`;
@@ -637,14 +629,25 @@ You are pair programming with a USER to solve their coding task. The task may re
   };
 }
 
-export interface UpstreamTokenUsage {
-  inputTokens: number;
-  cachedInputTokens: number | null;
-  outputTokens: number;
-  reasoningTokens: number;
-  reasoningTokensReported: boolean;
-  totalTokens: number;
+export function transformToGoogleBody(
+  openaiBody: any,
+  projectId: string,
+  isCli: boolean,
+  location: string,
+  sessionId?: string,
+  aggressive: boolean = false,
+): any {
+  return transformCompletionToGoogleBody(
+    adaptChatCompletionRequest(openaiBody),
+    projectId,
+    isCli,
+    location,
+    sessionId,
+    aggressive,
+  );
 }
+
+export type UpstreamTokenUsage = CompletionUsage;
 
 function usageCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
@@ -682,64 +685,68 @@ export function toOpenAIUsage(usage: UpstreamTokenUsage): any {
   };
 }
 
-export function transformGoogleEventToOpenAI(googleData: any, model: string, requestId?: string, hasPriorToolCalls: boolean = false): any {
+export function transformGoogleEventToCompletionChunk(
+  googleData: any,
+  model: string,
+  requestId?: string,
+  hasPriorToolCalls: boolean = false,
+): CompletionChunk | null {
   const data = googleData.response || googleData;
   const requestIdActual = requestId || "chatcmpl-" + Math.random().toString(36).substring(7);
   const tokenUsage = normalizeUpstreamTokenUsage(data.usageMetadata);
-  const usage = tokenUsage ? toOpenAIUsage(tokenUsage) : undefined;
+  const created = Math.floor(Date.now() / 1000);
 
   if (!data.candidates || data.candidates.length === 0) {
-    if (usage) {
+    if (tokenUsage) {
       return {
         id: requestIdActual,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: [],
-        usage: usage,
-        _tokenUsage: tokenUsage,
-      };
+        created,
+        model,
+        usage: tokenUsage,
+        hasCandidate: false,
+      } as CompletionChunk;
     }
     return null;
   }
-  
+
   const candidate = data.candidates[0];
   const parts = candidate.content?.parts || [];
   const finishReason = candidate.finishReason;
-  
-  if (parts.length === 0 && !finishReason && !usage) return null;
-  
-  const delta: any = {};
-  const toolCalls: any[] = [];
+
+  if (parts.length === 0 && !finishReason && !tokenUsage) return null;
+
+  let textDelta = "";
+  let reasoningDelta = "";
+  const toolCalls: NonNullable<CompletionChunk["toolCalls"]> = [];
   let extractedSignature: string | undefined;
   let extractedThought: string | undefined;
 
   for (const part of parts) {
     const isThought = part.thought || part.thoughtText || part.type === "thinking";
-    
+
     if (part.text) {
       let cleanText = part.text;
       if (cleanText.includes("thoughtSignature:")) {
-          cleanText = cleanText.replace(/thoughtSignature:[a-zA-Z0-9\-_]+/g, "").trim();
+        cleanText = cleanText.replace(/thoughtSignature:[a-zA-Z0-9\-_]+/g, "").trim();
       }
-      
+
       if (cleanText) {
-          if (isThought) {
-              delta.reasoning_content = (delta.reasoning_content || "") + cleanText;
-              extractedThought = (extractedThought || "") + cleanText;
-          } else {
-              delta.content = (delta.content || "") + cleanText;
-          }
+        if (isThought) {
+          reasoningDelta += cleanText;
+          extractedThought = (extractedThought || "") + cleanText;
+        } else {
+          textDelta += cleanText;
+        }
       }
     }
-    
-    if (isThought && typeof isThought === 'string') {
-       delta.reasoning_content = (delta.reasoning_content || "") + isThought;
-       extractedThought = (extractedThought || "") + isThought;
+
+    if (isThought && typeof isThought === "string") {
+      reasoningDelta += isThought;
+      extractedThought = (extractedThought || "") + isThought;
     }
 
     if (part.thoughtSignature || part.thought_signature || part.signature) {
-        extractedSignature = part.thoughtSignature || part.thought_signature || part.signature;
+      extractedSignature = part.thoughtSignature || part.thought_signature || part.signature;
     }
 
     if (part.functionCall || part.function_call) {
@@ -749,79 +756,82 @@ export function transformGoogleEventToOpenAI(googleData: any, model: string, req
       const sig = part.thoughtSignature || part.thought_signature || part.signature || "";
       const rawId = call.id || call.callId || call.call_id || "call_" + Math.random().toString(36).substring(7);
       const callId = (sig && !rawId.startsWith("sig:")) ? `sig:${sig}:${rawId}` : rawId;
-      
       const funcName = getOriginalToolName(call.name) || call.name;
-      
+
       toolCalls.push({
         index: toolCalls.length,
         id: callId,
-        type: "function",
-        function: {
-          name: funcName,
-          arguments: typeof call.args === 'string' ? call.args : JSON.stringify(call.args || {})
-        },
-        ...(sig ? {
-          extra_content: {
-            google: { thought_signature: sig }
-          }
-        } : {})
+        name: funcName,
+        arguments: typeof call.args === "string" ? call.args : JSON.stringify(call.args || {}),
+        ...(sig ? { thoughtSignature: sig } : {}),
       });
       if (sig) extractedSignature = sig;
     }
   }
 
-  if (toolCalls.length > 0) {
-    delta.tool_calls = toolCalls;
-  }
-  
-  let openaiFinishReason: string | null = null;
+  let completionFinishReason: CompletionFinishReason | null = null;
   if (finishReason) {
     if (toolCalls.length > 0 || hasPriorToolCalls) {
-      openaiFinishReason = "tool_calls";
+      completionFinishReason = "tool_calls";
     } else if (finishReason === "STOP") {
-      openaiFinishReason = "stop";
+      completionFinishReason = "stop";
     } else if (finishReason === "MAX_TOKENS") {
-      openaiFinishReason = "length";
+      completionFinishReason = "length";
     } else if (finishReason === "SAFETY") {
-      openaiFinishReason = "content_filter";
+      completionFinishReason = "content_filter";
     } else if (finishReason === "MALFORMED_FUNCTION_CALL") {
-      openaiFinishReason = "tool_calls";
+      completionFinishReason = "tool_calls";
     } else {
-      openaiFinishReason = "stop";
+      completionFinishReason = "stop";
     }
   }
-  
+
   return {
     id: requestIdActual,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model: model,
-    choices: [{
-      index: 0,
-      delta: delta,
-      finish_reason: openaiFinishReason
-    }],
-    usage: usage,
-    _signature: extractedSignature,
-    _thought: extractedThought,
-    _tokenUsage: tokenUsage,
+    created,
+    model,
+    ...(textDelta ? { textDelta } : {}),
+    ...(reasoningDelta ? { reasoningDelta } : {}),
+    ...(toolCalls.length ? { toolCalls } : {}),
+    finishReason: completionFinishReason,
+    ...(tokenUsage ? { usage: tokenUsage } : {}),
+    ...(extractedSignature ? { thoughtSignature: extractedSignature } : {}),
+    ...(extractedThought ? { thoughtText: extractedThought } : {}),
   };
 }
 
-export function createOpenAIStreamTransformer(
+export function transformGoogleEventToOpenAI(
+  googleData: any,
+  model: string,
+  requestId?: string,
+  hasPriorToolCalls: boolean = false,
+): any {
+  const chunk = transformGoogleEventToCompletionChunk(googleData, model, requestId, hasPriorToolCalls);
+  if (!chunk) return null;
+
+  const event = encodeChatCompletionChunk(chunk);
+  return {
+    ...event,
+    _signature: chunk.thoughtSignature,
+    _thought: chunk.thoughtText,
+    _tokenUsage: chunk.usage,
+  };
+}
+
+export function createCompletionStreamTransformer(
   model: string,
   requestId: string,
   hasPriorToolCalls: boolean,
   sessionId?: string,
   onUsage?: (usage: UpstreamTokenUsage) => void,
-) {
+): TransformStream<Uint8Array, CompletionStreamEvent> {
   const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
   let buffer = "";
   let currentHasPriorToolCalls = hasPriorToolCalls;
   let accumulatedThought = "";
   let nextToolCallIndex = 0;
   const toolCallIndexes = new Map<string, number>();
+
   const emitUsage = (usage: UpstreamTokenUsage | undefined) => {
     if (!usage || !onUsage) return;
     try {
@@ -830,33 +840,65 @@ export function createOpenAIStreamTransformer(
       console.warn("[Usage] Failed to process upstream token metadata:", error);
     }
   };
-  const rememberThoughtSignature = (openaiEvent: any) => {
-    if (typeof openaiEvent?._thought === "string" && openaiEvent._thought) {
-      accumulatedThought += openaiEvent._thought;
-    }
+
+  const rememberThoughtSignature = (chunk: CompletionChunk) => {
+    if (chunk.thoughtText) accumulatedThought += chunk.thoughtText;
 
     // Tool-call signatures belong to the functionCall part and are carried in
     // the synthetic call ID/metadata. Only cache signatures for thought text.
-    const hasToolCalls = Boolean(openaiEvent?.choices?.[0]?.delta?.tool_calls?.length);
-    if (sessionId && openaiEvent?._signature && accumulatedThought && !hasToolCalls) {
-      cacheSignature(sessionId, accumulatedThought, openaiEvent._signature);
+    const hasToolCalls = Boolean(chunk.toolCalls?.length);
+    if (sessionId && chunk.thoughtSignature && accumulatedThought && !hasToolCalls) {
+      cacheSignature(sessionId, accumulatedThought, chunk.thoughtSignature);
       console.log(`[Cache] Signature cached for conversation ${sessionId}`);
     }
   };
-  const normalizeToolCallIndexes = (openaiEvent: any) => {
-    const toolCalls = openaiEvent?.choices?.[0]?.delta?.tool_calls;
-    if (!Array.isArray(toolCalls)) return;
 
-    for (const toolCall of toolCalls) {
-      const key = typeof toolCall.id === "string" && toolCall.id
-        ? toolCall.id
-        : `anonymous:${nextToolCallIndex}`;
+  const normalizeToolCallIndexes = (chunk: CompletionChunk) => {
+    if (!chunk.toolCalls) return;
+    for (const toolCall of chunk.toolCalls) {
+      const key = toolCall.id || `anonymous:${nextToolCallIndex}`;
       let index = toolCallIndexes.get(key);
       if (index === undefined) {
         index = nextToolCallIndex++;
         toolCallIndexes.set(key, index);
       }
       toolCall.index = index;
+    }
+  };
+
+  const processData = (dataStr: string, controller: TransformStreamDefaultController<CompletionStreamEvent>) => {
+    if (dataStr === "[DONE]") {
+      controller.enqueue({ type: "done" });
+      return;
+    }
+
+    try {
+      const googleEvent = JSON.parse(dataStr);
+      const chunk = transformGoogleEventToCompletionChunk(
+        googleEvent,
+        model,
+        requestId,
+        currentHasPriorToolCalls,
+      );
+      if (!chunk) return;
+
+      normalizeToolCallIndexes(chunk);
+      emitUsage(chunk.usage);
+      rememberThoughtSignature(chunk);
+
+      const hasMeaningfulContent = Boolean(
+        chunk.textDelta
+        || chunk.reasoningDelta
+        || chunk.toolCalls?.length
+        || chunk.finishReason
+        || chunk.usage,
+      );
+      if (!hasMeaningfulContent) return;
+
+      if (chunk.toolCalls?.length) currentHasPriorToolCalls = true;
+      controller.enqueue({ type: "chunk", chunk });
+    } catch (e) {
+      console.warn("[Stream] Failed to parse SSE line:", e);
     }
   };
 
@@ -868,62 +910,35 @@ export function createOpenAIStreamTransformer(
 
       for (const line of lines) {
         const trimmedLine = line.trim();
-        if (!trimmedLine) continue;
-        if (trimmedLine.startsWith("data: ")) {
-          const dataStr = trimmedLine.slice(6);
-          if (dataStr === "[DONE]") {
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            continue;
-          }
-          try {
-            const googleEvent = JSON.parse(dataStr);
-            const openaiEvent = transformGoogleEventToOpenAI(googleEvent, model, requestId, currentHasPriorToolCalls);
-            
-            if (openaiEvent) {
-              normalizeToolCallIndexes(openaiEvent);
-              emitUsage(openaiEvent._tokenUsage);
-              rememberThoughtSignature(openaiEvent);
-
-              const choice = openaiEvent.choices?.[0];
-              const delta = choice?.delta;
-              const hasMeaningfulContent = (delta && (delta.content || delta.reasoning_content || delta.tool_calls)) || 
-                                          (choice && choice.finish_reason) || 
-                                          openaiEvent.usage;
-              
-              if (hasMeaningfulContent) {
-                if (delta?.tool_calls) {
-                  currentHasPriorToolCalls = true;
-                }
-                
-                const { _signature, _thought, _tokenUsage, ...cleanEvent } = openaiEvent;
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify(cleanEvent)}\n\n`));
-              }
-            }
-          } catch (e) {
-            console.warn("[Stream] Failed to parse SSE line:", e);
-          }
-        }
+        if (!trimmedLine || !trimmedLine.startsWith("data: ")) continue;
+        processData(trimmedLine.slice(6), controller);
       }
     },
     flush(controller) {
-      if (buffer.trim().startsWith("data: ")) {
-        const dataStr = buffer.trim().slice(6);
-        if (dataStr !== "[DONE]") {
-          try {
-            const googleEvent = JSON.parse(dataStr);
-            const openaiEvent = transformGoogleEventToOpenAI(googleEvent, model, requestId, currentHasPriorToolCalls);
-            if (openaiEvent) {
-              normalizeToolCallIndexes(openaiEvent);
-              emitUsage(openaiEvent._tokenUsage);
-              rememberThoughtSignature(openaiEvent);
-              const { _signature, _thought, _tokenUsage, ...cleanEvent } = openaiEvent;
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(cleanEvent)}\n\n`));
-            }
-          } catch (e) {
-            console.warn("[Stream] Failed to parse final line in flush:", e);
-          }
-        }
+      const trimmed = buffer.trim();
+      if (trimmed.startsWith("data: ")) {
+        processData(trimmed.slice(6), controller);
       }
-    }
+    },
   });
+}
+
+export function createOpenAIStreamTransformer(
+  model: string,
+  requestId: string,
+  hasPriorToolCalls: boolean,
+  sessionId?: string,
+  onUsage?: (usage: UpstreamTokenUsage) => void,
+): ReadableWritablePair<Uint8Array, Uint8Array> {
+  const canonical = createCompletionStreamTransformer(
+    model,
+    requestId,
+    hasPriorToolCalls,
+    sessionId,
+    onUsage,
+  );
+  return {
+    writable: canonical.writable,
+    readable: canonical.readable.pipeThrough(createChatCompletionStreamEncoder()),
+  };
 }

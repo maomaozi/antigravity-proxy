@@ -6,16 +6,17 @@ await loadProxyConfig();
 const pkg = await Bun.file("package.json").json();
 const APP_VERSION = pkg.version || "0.0.0";
 
-import { initManager, getBestAccount, updateAccountUsage, addAccount, getAccounts, removeAccount, saveAccounts, emitAccountFlash, eventBus, getEarliestReset, markCooldown, ensureFingerprint, regenerateFingerprint, getCooldowns, resetAccount, flagAccountChallenge, flagModelUnsupported, updateAccountProject, getFamilyName, resetAllCooldowns } from "./auth/manager";
+import { initManager, addAccount, getAccounts, removeAccount, saveAccounts, eventBus, markCooldown, getCooldowns, resetAccount, updateAccountProject, resetAllCooldowns } from "./auth/manager";
 import { type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
-import { transformToGoogleBody, transformGoogleEventToOpenAI, createOpenAIStreamTransformer, getOriginalToolName, toOpenAIUsage, validateOpenAIRequestForGoogle, type UpstreamTokenUsage } from "./utils/transform";
-import { OAUTH_CONFIG, getImpersonationHeaders, getGeminiCliHeaders, generateFingerprint } from "./utils/headers";
+import { validateCompletionRequestForGoogle } from "./utils/transform";
+import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionResult } from "./api/openai/chat";
+import { executeCompletion } from "./api/completion-executor";
+import { OAUTH_CONFIG } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
-import { parseGoogleError } from "./utils/errors";
 import { SUPPORTED_MODELS } from "./models";
 import { resolveSessionIdentity } from "./session/identity";
-import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, getSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings, recordRequestTokenUsage, recordSessionBinding } from "./session/store";
+import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings } from "./session/store";
 
 initSessionBindingStore();
 
@@ -105,7 +106,8 @@ Bun.serve({
 
     if (cleanPath === "/v1/chat/completions" && req.method === "POST") {
       const openaiBody = await req.json() as any;
-      const validationError = validateOpenAIRequestForGoogle(openaiBody);
+      const completionRequest = adaptChatCompletionRequest(openaiBody);
+      const validationError = validateCompletionRequestForGoogle(completionRequest);
       if (validationError) {
         return new Response(JSON.stringify({
           error: {
@@ -122,477 +124,40 @@ Bun.serve({
           }
         });
       }
+
       const requestId = "chatcmpl-" + Math.random().toString(36).substring(7);
       const requestStartedAt = Date.now();
-      
-      const modelLower = openaiBody.model.toLowerCase();
-      const isClaudeModel = modelLower.includes("claude");
-      const isGptModel = modelLower.includes("gpt");
-
-      let useCliPool: boolean;
-      if (isClaudeModel) {
-          useCliPool = false;
-      } else if (isGptModel) {
-          useCliPool = false;
-      } else {
-          const isAntigravityThinking = modelLower.includes("antigravity") && 
-                                       (modelLower.includes("thinking-high") || 
-                                        modelLower.includes("thinking-medium") || 
-                                        modelLower.includes("thinking-low"));
-
-          const isExplicitAntigravity = modelLower.includes("antigravity-");
-          const isExplicitSandboxModel = isAntigravityThinking || isExplicitAntigravity || modelLower.includes("image");
-
-          useCliPool = !isExplicitSandboxModel && (
-              modelLower.includes("-preview") || 
-              modelLower.includes("gemini-2.0") || 
-              modelLower.includes("gemini-2.5") ||
-              (modelLower.includes("gemini-3") && !modelLower.includes("flash"))
-          );
-      }
-      
-       let attempts = 0;
-       let aggressive = false;
-       const config = getProxyConfig();
-       const availableAccountsCount = getAccounts().length;
-       const MAX_ATTEMPTS = Math.max(config.retry.maxAttempts, availableAccountsCount);
-       
-       const triedEmails: string[] = [];
-       const attemptLogs: Array<{ email: string, status: number, reason: string }> = [];
-       let systemicErrorCount = 0;
-      
-      // GPT and Claude models are Sandbox-preferred. Explicit antigravity- models are also Sandbox-only.
-      const isExplicitAntigravity = modelLower.includes("antigravity-");
-      const isSandboxOnlyModel = modelLower.includes("gpt") || isExplicitAntigravity;
-      const isCliOnlyModel = false;
-      const CLAUDE_REGIONS = ["us-central1", "us-east5", "europe-west1"];
-      
       const sessionIdentity = resolveSessionIdentity(req.headers, openaiBody);
-      const sessionId = sessionIdentity.key;
-      const existingBinding = getSessionBinding(sessionIdentity.key, openaiBody.model);
-      if (existingBinding && !isSandboxOnlyModel && !isCliOnlyModel) {
-          useCliPool = existingBinding.pool === "cli";
-      }
-      console.log(`[Session] ${sessionIdentity.source} ${sessionIdentity.id.slice(0, 24)}${sessionIdentity.id.length > 24 ? "..." : ""}${existingBinding ? ` bound to ${existingBinding.accountEmail}/${existingBinding.pool}` : " (new)"}`);
+      const execution = await executeCompletion({
+        request: completionRequest,
+        sessionIdentity,
+        requestId,
+        requestStartedAt,
+      });
 
-        let lastStatus = 0;
-        let lastGoogleUrl = "";
-
-        while (attempts < MAX_ATTEMPTS) {
-            attempts++;
-
-            if (attempts > 1) {
-                const delayMs = Math.min(500 * attempts, 3000);
-                await new Promise(r => setTimeout(r, delayMs));
-                
-                if (!isSandboxOnlyModel && !isCliOnlyModel && lastStatus !== 503) {
-                    useCliPool = !useCliPool;
-                    console.log(`[Switch] Switching to ${useCliPool ? 'CLI' : 'Sandbox'} pool for attempt ${attempts}`);
-                } else {
-                    console.log(`[Switch] Skipping pool switch for ${isCliOnlyModel ? 'CLI-only' : 'sandbox-only'} model (attempt ${attempts})`);
-                }
-            }
-
-            let account = await getBestAccount(useCliPool ? "cli" : "sandbox", openaiBody.model, sessionIdentity.key, triedEmails, true);
-            
-            if (!account && !isSandboxOnlyModel && !isCliOnlyModel) {
-                console.log(`[Manager] No READY accounts in ${useCliPool ? 'CLI' : 'Sandbox'} pool, trying the other pool first...`);
-                const otherPool = useCliPool ? "sandbox" : "cli";
-                account = await getBestAccount(otherPool, openaiBody.model, sessionIdentity.key, triedEmails, true);
-                if (account) {
-                    useCliPool = !useCliPool;
-                    console.log(`[Switch] Found ready account in ${useCliPool ? 'CLI' : 'Sandbox'} pool.`);
-                }
-            }
-
-            if (!account) {
-                account = await getBestAccount(useCliPool ? "cli" : "sandbox", openaiBody.model, sessionIdentity.key, triedEmails, false);
-            }
-            
-            if (!account || !account.accessToken) {
-                if (attempts < MAX_ATTEMPTS) {
-                    console.log(`[Switch] Exhausted all accounts in both pools, retrying...`);
-                    triedEmails.length = 0;
-                    continue; 
-                }
-                break;
-            }
-
-            const SANDBOX_ENDPOINTS = Array.isArray(config.endpoints.sandbox) ? config.endpoints.sandbox : [config.endpoints.sandbox];
-            const CLI_ENDPOINTS = Array.isArray(config.endpoints.cli) ? config.endpoints.cli : [config.endpoints.cli];
-            
-            let GOOGLE_URL: string;
-            const boundEndpointIsUsable = attempts === 1 &&
-              existingBinding?.pool === (useCliPool ? "cli" : "sandbox") &&
-              !!existingBinding.endpoint &&
-              (useCliPool ? CLI_ENDPOINTS : SANDBOX_ENDPOINTS).includes(existingBinding.endpoint);
-            if (boundEndpointIsUsable) {
-                GOOGLE_URL = existingBinding.endpoint!;
-            } else if (useCliPool) {
-                const cliEndpointIndex = isClaudeModel ? CLI_ENDPOINTS.length - 1 : Math.min(attempts - 1, CLI_ENDPOINTS.length - 1);
-                GOOGLE_URL = CLI_ENDPOINTS[cliEndpointIndex];
-            } else {
-                const sandboxEndpointIndex = Math.min(attempts - 1, SANDBOX_ENDPOINTS.length - 1);
-                GOOGLE_URL = SANDBOX_ENDPOINTS[sandboxEndpointIndex];
-            }
-
-            if (lastStatus === 503) {
-                console.log(`[Capacity] Retrying account ${account.email} on next endpoint ${GOOGLE_URL.split('/')[2]}...`);
-            } else {
-                triedEmails.push(account.email);
-            }
-
-
-          if (isClaudeModel && !GOOGLE_URL.includes("v1internal")) {
-              console.warn(`[Warning] Claude model ${openaiBody.model} is being routed to a non-v1internal endpoint: ${GOOGLE_URL}`);
-          }
-
-          let effectiveProjectId = account.projectId!;
-          ensureFingerprint(account);
-          
-          const googleBody = transformToGoogleBody(openaiBody, effectiveProjectId, useCliPool, "", sessionId, aggressive); 
-
-          const isClaudeModelTarget = googleBody.model.toLowerCase().includes("claude");
-          const headers = (useCliPool && !isClaudeModelTarget)
-            ? getGeminiCliHeaders(account.accessToken!, account.fingerprint!)
-            : getImpersonationHeaders(account.accessToken!, account.fingerprint!, googleBody.model);
-
-          console.log(`[Request] Model: ${openaiBody.model} | Account: ${account.email} | Project: ${effectiveProjectId} | Attempt: ${attempts}/${MAX_ATTEMPTS} | Pool: ${useCliPool ? 'CLI' : 'Sandbox'} | Endpoint: ${GOOGLE_URL.split('/')[2]} | Target Model: ${googleBody.model}`);
-
-          const timeoutKey = Object.keys(config.models.timeouts || {}).find(k => openaiBody.model.toLowerCase().includes(k)) || 'default';
-          const timeoutMs = (config.models.timeouts && config.models.timeouts[timeoutKey]) || 30000;
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-          try {
-            if (config.features.jitterEnabled) {
-              const jitterMs = config.features.jitterMinMs + Math.random() * (config.features.jitterMaxMs - config.features.jitterMinMs);
-              await new Promise(r => setTimeout(r, jitterMs));
-            }
-
-            const googleRes = await fetch(GOOGLE_URL, {
-              method: "POST",
-              headers: headers,
-              body: JSON.stringify(googleBody),
-              signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-
-            if (!googleRes.ok) {
-               const errText = await googleRes.text();
-               const parsedError = parseGoogleError(errText);
-                const status = googleRes.status;
-                lastStatus = status;
-                lastGoogleUrl = GOOGLE_URL;
-                
-                console.error(`[Error] Google API (${account.email}) returned ${status} (${parsedError.reason}):`, errText);
-
-               emitAccountFlash(account.email, 'error');
-               attemptLogs.push({ email: account.email, status, reason: parsedError.reason });
-
-                if (status === 403 || status === 404) {
-                    if (parsedError.isChallengeRequired) {
-                        console.log(`[Auth] ${parsedError.reason} for ${account.email}, flagging pool ${useCliPool ? 'cli' : 'sandbox'} for family ${getFamilyName(openaiBody.model)}.`);
-                        flagAccountChallenge(account.email, useCliPool ? 'cli' : 'sandbox', getFamilyName(openaiBody.model), { 
-                            type: 'CAPTCHA', 
-                            url: parsedError.validationUrl || 'https://cloud.google.com/gemini/docs/codeassist/request-license',
-                            reason: parsedError.reason,
-                            message: parsedError.message
-                        });
-                        continue;
-                    } else if (parsedError.isModelUnsupported) {
-                       console.log(`[Model] Unsupported model ${openaiBody.model} for ${account.email}, marking capability.`);
-                       flagModelUnsupported(account.email, openaiBody.model);
-                   }
-                   await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", status);
-                   return new Response(JSON.stringify({ 
-                       error: { message: "Access denied: " + parsedError.reason, type: "access_denied", code: status.toString() } 
-                   }), { 
-                       status, 
-                       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "X-Antigravity-Attempts": attempts.toString() } 
-                   });
-               }
-
-               if (status === 500 || status === 503) {
-                   systemicErrorCount++;
-                   if (systemicErrorCount > 2) {
-                       console.log(`[Systemic] Detected systemic outage (${systemicErrorCount} errors), breaking retry loop.`);
-                       break;
-                   }
-               }
-
-               let resetSeconds = 0;
-               try {
-                   const errJson = JSON.parse(errText);
-                   const details = errJson.error?.details || [];
-                   for (const d of details) {
-                       if (d.metadata?.quotaResetDelay) resetSeconds = parseFloat(d.metadata.quotaResetDelay);
-                       if (d.retryDelay) resetSeconds = parseFloat(d.retryDelay);
-                   }
-                   if (resetSeconds === 0 && errJson.error?.message?.includes("reset after")) {
-                       const match = errJson.error.message.match(/reset after\s+([0-9\.]+)s/);
-                       if (match) resetSeconds = parseFloat(match[1]);
-                   }
-               } catch (e) {}
-
-                if (status === 429 && resetSeconds > 0 && resetSeconds <= config.retry.transientRetryThresholdSeconds) {
-                    console.log(`[Skip] Account ${account.email} transiently limited (${resetSeconds}s), rotating...`);
-                    account.consecutiveFailures = (account.consecutiveFailures || 0) + 1;
-                    if (account.consecutiveFailures >= 2) {
-                        await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", 429);
-                    }
-                    triedEmails.push(account.email);
-                    continue;
-                }
-
-
-               if (status === 400 && (errText.toLowerCase().includes("tool schema") || errText.includes("Invalid JSON payload") || errText.toLowerCase().includes("function_declarations")) && !aggressive) {
-                  console.log(`[Schema] Detected tool schema error for ${account.email}, retrying with aggressive cleaning...`);
-                  aggressive = true;
-                  attempts--;
-                  continue;
-               }
-
-               if (status === 400) {
-                  return new Response(JSON.stringify({
-                    error: {
-                      message: parsedError.message || "Upstream rejected the request as invalid.",
-                      type: "invalid_request_error",
-                      code: parsedError.reason,
-                      attempts: attemptLogs
-                    }
-                  }), {
-                    status: 400,
-                    headers: {
-                      "Content-Type": "application/json",
-                      "Access-Control-Allow-Origin": "*",
-                      "X-Antigravity-Attempts": attempts.toString()
-                    }
-                  });
-               }
-               aggressive = false;
-
-               await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", status);
-               
-                if (status === 429) {
-                    markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(openaiBody.model));
-                }
-               continue;
-            }
-
-            const decoder = new TextDecoder();
-            const isStreaming = openaiBody.stream === true;
-            
-             if (isStreaming) {
-                 if (!googleRes.body) {
-                     return new Response(JSON.stringify({ error: { message: "No response body from upstream" } }), { 
-                         status: 502,
-                         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "X-Antigravity-Attempts": attempts.toString() }
-                     });
-                 }
-
-                 const persistStreamUsage = (usage: UpstreamTokenUsage) => {
-                   recordRequestTokenUsage({
-                     requestId,
-                     identity: sessionIdentity,
-                     accountEmail: account.email,
-                     model: openaiBody.model,
-                     modelFamily: getFamilyName(openaiBody.model),
-                     upstreamModel: googleBody.model,
-                     pool: useCliPool ? "cli" : "sandbox",
-                     endpoint: GOOGLE_URL,
-                     streamed: true,
-                     inputTokens: usage.inputTokens,
-                     cachedInputTokens: usage.cachedInputTokens,
-                     outputTokens: usage.outputTokens,
-                     reasoningTokens: usage.reasoningTokens,
-                     reasoningTokensReported: usage.reasoningTokensReported,
-                     totalTokens: usage.totalTokens,
-                     createdAt: requestStartedAt,
-                   });
-                 };
-                 const stream = googleRes.body.pipeThrough(createOpenAIStreamTransformer(
-                   openaiBody.model,
-                   requestId,
-                   false,
-                   sessionId,
-                   persistStreamUsage,
-                 ));
-
-                 recordSessionBinding({
-                   identity: sessionIdentity,
-                   accountEmail: account.email,
-                   model: openaiBody.model,
-                   modelFamily: getFamilyName(openaiBody.model),
-                   pool: useCliPool ? "cli" : "sandbox",
-                   projectId: effectiveProjectId,
-                   endpoint: GOOGLE_URL,
-                 });
-                 await updateAccountUsage(account.email, true, openaiBody.model, useCliPool ? "cli" : "sandbox");
-                 return new Response(stream, {
-                  headers: {
-                    "Content-Type": "text/event-stream",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Access-Control-Allow-Origin": "*",
-                    "X-Antigravity-Attempts": attempts.toString()
-                  }
-                });
-              } else {
-                if (!googleRes.body) throw new Error("No response body");
-                
-                let finalTokenUsage: UpstreamTokenUsage | undefined;
-                const stream = googleRes.body.pipeThrough(createOpenAIStreamTransformer(
-                  openaiBody.model,
-                  requestId,
-                  false,
-                  sessionId,
-                  usage => { finalTokenUsage = usage; },
-                ));
-                const reader = stream.getReader();
-               
-                let fullContent = "";
-                let reasoningContent = "";
-                let aggregatedToolCalls: any[] = [];
-                let finalFinishReason = "stop";
-
-                let buffer = "";
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  
-                  buffer += decoder.decode(value, { stream: true });
-                  const lines = buffer.split("\n");
-                  buffer = lines.pop() || "";
-                  
-        for (const line of lines) {
-          if (line.startsWith("data: ") && line !== "data: [DONE]") {
-            try {
-              const event = JSON.parse(line.slice(6));
-              if (event.choices?.[0]) {
-                const choice = event.choices[0];
-                if (choice.delta?.content) fullContent += choice.delta.content;
-                if (choice.delta?.reasoning_content) reasoningContent += choice.delta.reasoning_content;
-                if (choice.delta?.tool_calls) aggregatedToolCalls.push(...choice.delta.tool_calls);
-                if (choice.finish_reason) finalFinishReason = choice.finish_reason;
-              }
-            } catch (e) {
-              console.warn("[Stream] Failed to parse non-streaming chunk:", e);
-            }
-          }
-        }
+      if (execution.kind === "error") {
+        return execution.response;
       }
 
-      if (buffer.startsWith("data: ") && buffer !== "data: [DONE]") {
-          try {
-              const event = JSON.parse(buffer.slice(6));
-              if (event.choices?.[0]) {
-                  const choice = event.choices[0];
-                  if (choice.delta?.content) fullContent += choice.delta.content;
-                  if (choice.delta?.reasoning_content) reasoningContent += choice.delta.reasoning_content;
-                  if (choice.delta?.tool_calls) aggregatedToolCalls.push(...choice.delta.tool_calls);
-                  if (choice.finish_reason) finalFinishReason = choice.finish_reason;
-              }
-          } catch (e) {
-              console.warn("[Stream] Failed to parse final non-streaming chunk:", e);
-          }
-      }
-
-                 const finalResponse = {
-                    id: requestId,
-                    object: "chat.completion",
-                    created: Math.floor(Date.now() / 1000),
-                    model: openaiBody.model,
-                    choices: [{
-                        index: 0,
-                        message: {
-                            role: "assistant",
-                            content: fullContent,
-                            reasoning_content: reasoningContent || undefined,
-                            tool_calls: aggregatedToolCalls.length > 0 ? aggregatedToolCalls : undefined
-                        },
-                        finish_reason: finalFinishReason
-                    }],
-                    usage: finalTokenUsage ? toOpenAIUsage(finalTokenUsage) : undefined,
-                };
-
-                if (!fullContent && aggregatedToolCalls.length === 0 && finalFinishReason !== "length") {
-                    console.warn(`[Empty] Account ${account.email} returned empty response for ${openaiBody.model}, retrying with another account...`);
-                    markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(openaiBody.model), "30s");
-                    continue;
-                }
-
-                recordSessionBinding({
-                  identity: sessionIdentity,
-                  accountEmail: account.email,
-                  model: openaiBody.model,
-                  modelFamily: getFamilyName(openaiBody.model),
-                  pool: useCliPool ? "cli" : "sandbox",
-                  projectId: effectiveProjectId,
-                  endpoint: GOOGLE_URL,
-                });
-                if (finalTokenUsage) {
-                  recordRequestTokenUsage({
-                    requestId,
-                    identity: sessionIdentity,
-                    accountEmail: account.email,
-                    model: openaiBody.model,
-                    modelFamily: getFamilyName(openaiBody.model),
-                    upstreamModel: googleBody.model,
-                    pool: useCliPool ? "cli" : "sandbox",
-                    endpoint: GOOGLE_URL,
-                    streamed: false,
-                    inputTokens: finalTokenUsage.inputTokens,
-                    cachedInputTokens: finalTokenUsage.cachedInputTokens,
-                    outputTokens: finalTokenUsage.outputTokens,
-                    reasoningTokens: finalTokenUsage.reasoningTokens,
-                    reasoningTokensReported: finalTokenUsage.reasoningTokensReported,
-                    totalTokens: finalTokenUsage.totalTokens,
-                    createdAt: requestStartedAt,
-                  });
-                }
-                await updateAccountUsage(account.email, true, openaiBody.model, useCliPool ? "cli" : "sandbox");
-               return new Response(JSON.stringify(finalResponse), { 
-                   headers: { 
-                       "Content-Type": "application/json", 
-                       "Access-Control-Allow-Origin": "*",
-                       "X-Antigravity-Attempts": attempts.toString()
-                   } 
-               });
-             }
-            } catch (e: any) {
-             if (e.name === 'AbortError') {
-                 console.error(`[Timeout] Request timed out for ${account.email} after ${timeoutMs}ms`);
-                 account.healthScore = Math.max(config.scoring.healthRange.min, account.healthScore - 5);
-             } else {
-                 console.error(`Proxy error for ${account.email}:`, e);
-             }
-             await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox");
-             attemptLogs.push({ email: account.email || 'unknown', status: 500, reason: e.message });
-             if (attempts < MAX_ATTEMPTS) continue;
-             return new Response(JSON.stringify({ error: { message: `Proxy exception: ${e.message}` } }), { 
-                 status: 500, 
-                 headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "X-Antigravity-Attempts": attempts.toString() } 
-             });
-           }
-      }
-
-      const resetTime = getEarliestReset(useCliPool ? "cli" : "sandbox");
-      const resetMsg = resetTime ? ` Next reset in ${resetTime}.` : "";
-      return new Response(JSON.stringify({ 
-        error: { 
-            message: `Quota Exhausted: All accounts failed or are exhausted for this model.${resetMsg} Try a different model or wait for quota reset.`,
-            type: "insufficient_quota",
-            code: "insufficient_quota",
-            attempts: attemptLogs
-        } 
-      }), { 
-        status: 429, 
-        headers: { 
-            "Content-Type": "application/json",
+      if (execution.kind === "stream") {
+        return new Response(execution.stream.pipeThrough(createChatCompletionStreamEncoder()), {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "X-Antigravity-Attempts": attempts.toString()
-        } 
+            "X-Antigravity-Attempts": execution.attempts.toString()
+          }
+        });
+      }
+
+      const finalResponse = encodeChatCompletionResult(requestId, completionRequest.model, execution.result);
+      return new Response(JSON.stringify(finalResponse), {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "X-Antigravity-Attempts": execution.attempts.toString()
+        }
       });
     }
 
