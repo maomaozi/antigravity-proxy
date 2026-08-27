@@ -79,15 +79,23 @@ Set `"stream": true` for Responses SSE events such as
 `response.function_call_arguments.delta`, and the terminal
 `response.completed` / `response.incomplete` event. The endpoint supports the
 Responses equivalents of the existing Chat features: full-history text and
-data-URL image input, system `instructions`, reasoning effort, custom function
-tools and `function_call_output`, parallel tool calls, `text.format` JSON modes,
-`max_output_tokens`, `temperature`, `top_p`, `prompt_cache_key`, and metadata.
+data-URL image input, system `instructions`, reasoning effort, function tools,
+Codex-style `namespace` tool groups, freeform `custom` tools, tool outputs,
+parallel tool calls, `text.format` JSON modes, `max_output_tokens`,
+`temperature`, `top_p`, `prompt_cache_key`, and metadata.
+
+`web_search` is accepted and maps to Gemini native Google Search when it is the
+only tool capability. Antigravity's current v1internal endpoint rejects native
+Google Search mixed with client function calling, so mixed Codex requests keep
+the function/namespace/custom tools and omit native search instead of failing
+the whole request. Legacy `local_shell` declarations are accepted for client
+compatibility but are not exposed as a synthetic Gemini function.
 
 Conversation history is currently stateless: resend the complete ordered
 `response.output` items with the next request. Server-managed Responses features
-that do not have an equivalent in the existing Chat implementation are rejected
+that do not have an equivalent in the current implementation are rejected
 explicitly, including `previous_response_id`, `conversation`, `store: true`,
-background responses, built-in tools, file-ID input, and remote image URLs.
+background responses, file-ID input, and remote image URLs.
 
 ### Session Affinity
 

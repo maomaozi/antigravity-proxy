@@ -130,6 +130,69 @@ describe("Responses API request adapter", () => {
     expect(adapted.tools?.map(tool => tool.name)).toEqual(["exec_command"]);
   });
 
+  test("accepts Codex namespace, custom, web_search, and local_shell tool declarations", () => {
+    const body = {
+      model: "antigravity-gemini-3.7-flash",
+      input: "Use the available tools when useful.",
+      tools: [
+        {
+          type: "namespace",
+          name: "multi_agent_v1",
+          description: "Sub-agent tools",
+          tools: [
+            {
+              type: "function",
+              name: "spawn_agent",
+              description: "Spawn an agent",
+              strict: false,
+              parameters: {
+                type: "object",
+                properties: { message: { type: "string" } },
+                required: ["message"],
+              },
+            },
+            {
+              type: "custom",
+              name: "delegate_text",
+              description: "Delegate freeform text",
+              format: { type: "text", syntax: "plain", definition: "freeform text" },
+            },
+          ],
+        },
+        {
+          type: "custom",
+          name: "apply_patch",
+          description: "Apply a patch",
+          format: { type: "grammar", syntax: "lark", definition: "start: /.+/" },
+        },
+        { type: "web_search", external_web_access: true },
+        { type: "local_shell" },
+      ],
+    };
+
+    expect(validateResponsesRequest(body)).toBeUndefined();
+    const request = adaptResponsesRequest(body);
+    expect(request.webSearch).toBe(true);
+    expect(request.tools).toHaveLength(3);
+
+    const google = transformCompletionToGoogleBody(request, "project", false, "", "session");
+    const declarations = google.request.tools.find((tool: any) => tool.functionDeclarations)?.functionDeclarations ?? [];
+    expect(declarations).toHaveLength(3);
+    expect(google.request.tools.some((tool: any) => tool.googleSearch)).toBe(false);
+  });
+
+  test("maps standalone Responses web_search to Gemini native Google Search", () => {
+    const request = adaptResponsesRequest({
+      model: "antigravity-gemini-3.7-flash",
+      input: "Search for current information",
+      tools: [{ type: "web_search", external_web_access: true }],
+    });
+    expect(request.tools).toBeUndefined();
+    expect(request.webSearch).toBe(true);
+    const google = transformCompletionToGoogleBody(request, "project", false, "", "session");
+    expect(google.request.tools).toEqual([{ googleSearch: {} }]);
+  });
+
   test("groups reasoning, parallel function calls, and their outputs into canonical turns", () => {
     const body = {
       model: "antigravity-gemini-3.7-flash",
@@ -205,7 +268,7 @@ describe("Responses API request adapter", () => {
     expect(validateResponsesRequest({ model: "m", input: "hi", background: true })).toContain("background");
     expect(validateResponsesRequest({ model: "m", input: "hi", include: ["reasoning.encrypted_content"] })).toBeUndefined();
     expect(validateResponsesRequest({ model: "m", input: "hi", include: ["file_search_call.results"] })).toContain("include");
-    expect(validateResponsesRequest({ model: "m", input: "hi", tools: [{ type: "web_search" }] })).toContain("function tools");
+    expect(validateResponsesRequest({ model: "m", input: "hi", tools: [{ type: "code_interpreter" }] })).toContain("Unsupported Responses tool type");
     expect(validateResponsesRequest({ model: "m", input: "hi", tool_choice: "required" })).toContain("tool_choice");
     expect(validateResponsesRequest({ model: "m", input: "hi", parallel_tool_calls: false })).toContain("parallel_tool_calls=false");
     expect(validateResponsesRequest({
@@ -276,6 +339,62 @@ describe("Responses API final response encoder", () => {
     });
   });
 
+  test("restores namespace and custom tool calls in Responses output", () => {
+    const requestBody = {
+      model: "antigravity-gemini-3.7-flash",
+      input: "Use tools",
+      tools: [
+        {
+          type: "namespace",
+          name: "multi_agent_v1",
+          description: "Agent tools",
+          tools: [{
+            type: "function",
+            name: "spawn_agent",
+            description: "Spawn",
+            parameters: { type: "object", properties: { message: { type: "string" } } },
+          }],
+        },
+        {
+          type: "custom",
+          name: "apply_patch",
+          description: "Patch",
+          format: { type: "text", syntax: "plain", definition: "patch text" },
+        },
+      ],
+    };
+    const adapted = adaptResponsesRequest(requestBody);
+    const [namespaceTool, customTool] = adapted.tools!;
+    const response = encodeResponsesResult({
+      responseId: "resp_tools",
+      createdAt: 1700000000,
+      requestBody,
+      result: {
+        text: "",
+        reasoning: "",
+        toolCalls: [
+          { index: 0, id: "call_ns", name: namespaceTool.name, arguments: '{"message":"inspect"}' },
+          { index: 1, id: "call_custom", name: customTool.name, arguments: JSON.stringify({ input: "*** Begin Patch" }) },
+        ],
+        finishReason: "tool_calls",
+      },
+    });
+
+    expect(response.output[0]).toMatchObject({
+      type: "function_call",
+      call_id: "call_ns",
+      namespace: "multi_agent_v1",
+      name: "spawn_agent",
+      arguments: '{"message":"inspect"}',
+    });
+    expect(response.output[1]).toMatchObject({
+      type: "custom_tool_call",
+      call_id: "call_custom",
+      name: "apply_patch",
+      input: "*** Begin Patch",
+    });
+  });
+
   test("maps Chat finish reasons into Responses incomplete status", () => {
     const response = encodeResponsesResult({
       responseId: "resp_length",
@@ -329,6 +448,32 @@ describe("Responses API streaming encoder", () => {
     expect(events[4].delta).toBe("lo");
     expect(events.at(-1).response.output_text).toBe("hello");
     expect(events.at(-1).response.usage.input_tokens_details.cached_tokens).toBe(0);
+  });
+
+  test("streams a custom tool call using Responses custom_tool_call wire shape", async () => {
+    const adapted = adaptResponsesRequest({
+      model: "antigravity-gemini-3.7-flash",
+      input: "Patch",
+      tools: [{
+        type: "custom",
+        name: "apply_patch",
+        description: "Patch",
+        format: { type: "text", syntax: "plain", definition: "patch text" },
+      }],
+    });
+    const customName = adapted.tools![0].name;
+    const events = await eventsFrom([
+      { type: "chunk", chunk: { id: "resp_stream", created: 1700000000, model: "m", toolCalls: [
+        { index: 0, id: "call_patch", name: customName, arguments: JSON.stringify({ input: "PATCH-CONTENT" }) },
+      ], finishReason: "tool_calls" } },
+      { type: "done" },
+    ]);
+
+    const added = events.find(event => event.type === "response.output_item.added");
+    expect(added.item).toMatchObject({ type: "custom_tool_call", call_id: "call_patch", name: "apply_patch" });
+    const done = events.find(event => event.type === "response.output_item.done");
+    expect(done.item).toMatchObject({ type: "custom_tool_call", call_id: "call_patch", name: "apply_patch", input: "PATCH-CONTENT" });
+    expect(events.some(event => event.type === "response.function_call_arguments.delta")).toBe(false);
   });
 
   test("streams reasoning and parallel function calls as independent ordered output items", async () => {

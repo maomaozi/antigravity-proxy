@@ -609,7 +609,14 @@ You are pair programming with a USER to solve their coding task. The task may re
   }
 
   const isGeminiModel = googleModel.includes("gemini");
-  if (isGeminiModel && proxyConfig.features.googleSearchGrounding) {
+  // Antigravity's current v1internal path rejects request-scoped Google Search
+  // when it is mixed with client-visible function declarations, even though
+  // public GenerateContent supports that combination. Codex sends web_search
+  // alongside its function/namespace tools by default, so accept the hosted
+  // declaration but only map it to native googleSearch when no function tools
+  // are present. Global googleSearchGrounding keeps its existing behavior.
+  const requestScopedGoogleSearch = request.webSearch && !request.tools?.length;
+  if (isGeminiModel && (proxyConfig.features.googleSearchGrounding || requestScopedGoogleSearch)) {
     // Gemini 2.0+ uses googleSearch. googleSearchRetrieval is the legacy
     // pre-2.0 field and is rejected by current Gemini 3 models.
     const groundingTool: any = { googleSearch: {} };

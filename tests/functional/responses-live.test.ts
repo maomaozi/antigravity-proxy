@@ -126,6 +126,72 @@ liveDescribe("Live Responses API compatibility", () => {
     expect(second.data.output_text.length).toBeGreaterThan(0);
   }, 180_000);
 
+  test("namespace function calls round-trip with namespace restored", async () => {
+    const affinity = `responses-namespace-${crypto.randomUUID()}`;
+    const input = "You must call test_ns.echo_value exactly once with value NS-ROUNDTRIP-731. Do not answer before calling it.";
+    const tools = [{
+      type: "namespace",
+      name: "test_ns",
+      description: "Test namespace",
+      tools: [{
+        type: "function",
+        name: "echo_value",
+        description: "Echo a value",
+        strict: true,
+        parameters: {
+          type: "object",
+          properties: { value: { type: "string" } },
+          required: ["value"],
+        },
+      }],
+    }];
+
+    const first = await post({ model: MODEL, input, tools, max_output_tokens: 512 }, affinity);
+    expect(first.response.status).toBe(200);
+    const calls = first.data.output.filter((item: any) => item.type === "function_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].namespace).toBe("test_ns");
+    expect(calls[0].name).toBe("echo_value");
+
+    const history = [
+      { role: "user", content: input },
+      ...first.data.output,
+      { type: "function_call_output", call_id: calls[0].call_id, output: JSON.stringify({ value: "NS-ROUNDTRIP-731" }) },
+    ];
+    const second = await post({ model: MODEL, input: history, tools, max_output_tokens: 512 }, affinity);
+    expect(second.response.status).toBe(200);
+    expect(second.data.status).toBe("completed");
+    expect(second.data.output_text).toContain("NS-ROUNDTRIP-731");
+  }, 180_000);
+
+  test("custom tool calls round-trip through custom_tool_call wire items", async () => {
+    const affinity = `responses-custom-${crypto.randomUUID()}`;
+    const input = "You must call echo_freeform exactly once with the raw input CUSTOM-ROUNDTRIP-842. Do not answer before calling it.";
+    const tools = [{
+      type: "custom",
+      name: "echo_freeform",
+      description: "Echo raw freeform text",
+      format: { type: "text", syntax: "plain", definition: "Any plain text" },
+    }];
+
+    const first = await post({ model: MODEL, input, tools, max_output_tokens: 512 }, affinity);
+    expect(first.response.status).toBe(200);
+    const calls = first.data.output.filter((item: any) => item.type === "custom_tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe("echo_freeform");
+    expect(calls[0].input).toContain("CUSTOM-ROUNDTRIP-842");
+
+    const history = [
+      { role: "user", content: input },
+      ...first.data.output,
+      { type: "custom_tool_call_output", call_id: calls[0].call_id, output: "CUSTOM-ROUNDTRIP-842" },
+    ];
+    const second = await post({ model: MODEL, input: history, tools, max_output_tokens: 512 }, affinity);
+    expect(second.response.status).toBe(200);
+    expect(second.data.status).toBe("completed");
+    expect(second.data.output_text).toContain("CUSTOM-ROUNDTRIP-842");
+  }, 180_000);
+
   test("json_schema structured output maps through text.format", async () => {
     const { response, data } = await post({
       model: MODEL,

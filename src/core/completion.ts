@@ -45,6 +45,8 @@ export interface CompletionRequest {
   model: string;
   messages: CompletionMessage[];
   tools?: CompletionTool[];
+  /** Request-scoped hosted web search capability, mapped to the upstream provider. */
+  webSearch?: boolean;
   responseFormat?: CompletionResponseFormat;
   reasoningEffort?: string;
   thinkingBudget?: number;
