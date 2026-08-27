@@ -10,9 +10,12 @@ import { initManager, getBestAccount, updateAccountUsage, addAccount, getAccount
 import { type SelectionStrategy, type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
 import { transformToGoogleBody, transformGoogleEventToOpenAI, createOpenAIStreamTransformer, getOriginalToolName } from "./utils/transform";
-import { getImpersonationHeaders, getGeminiCliHeaders, generateFingerprint } from "./utils/headers";
-import { refreshAllQuotas, fetchQuota, supportedModelsCache } from "./api/quota";
+import { OAUTH_CONFIG, getImpersonationHeaders, getGeminiCliHeaders, generateFingerprint } from "./utils/headers";
+import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { parseGoogleError } from "./utils/errors";
+import { SUPPORTED_MODELS } from "./models";
+
+const SUPPORTED_MODEL_IDS = SUPPORTED_MODELS.map(model => model.id);
 
 const logBuffer: string[] = [];
 const MAX_LOGS = 200;
@@ -49,8 +52,10 @@ setInterval(refreshAllQuotas, proxyConfig.quota.refreshIntervalMs);
 // Initial quota refresh on startup
 refreshAllQuotas();
 
+const PORT = Number(process.env.PORT || 3000);
+
 Bun.serve({
-  port: 3000,
+  port: PORT,
   hostname: "0.0.0.0",
   idleTimeout: 0,
   async fetch(req) {
@@ -73,11 +78,14 @@ Bun.serve({
     }
 
     if (cleanPath === "/v1/models") {
-        const models = Array.from(supportedModelsCache).sort().map(id => ({
-            id,
+        const models = SUPPORTED_MODELS.map(model => ({
+            id: model.id,
             object: "model",
             created: Math.floor(Date.now() / 1000),
-            owned_by: "antigravity"
+            owned_by: "antigravity",
+            name: model.name,
+            thinking_levels: model.thinkingLevels,
+            default_thinking_level: model.defaultThinkingLevel
         }));
 
         return new Response(JSON.stringify({
@@ -489,12 +497,12 @@ Bun.serve({
                     version: APP_VERSION,
                     accounts: getAccounts(),
                     strategy: getStrategy(),
-                    supportedModels: Array.from(supportedModelsCache).sort(),
+                    supportedModels: SUPPORTED_MODEL_IDS,
                     cooldowns: getCooldowns(),
                     logs: logBuffer
                 });
 
-                onUpdate = (data: any) => send("update", { ...data, supportedModels: Array.from(supportedModelsCache).sort() });
+                onUpdate = (data: any) => send("update", { ...data, supportedModels: SUPPORTED_MODEL_IDS });
                 onFlash = (data: { email: string, status: 'success' | 'error' }) => send("flash", data);
                 onLog = (msg: string) => send("log", { message: msg });
                 onCooldown = (data: any) => send("cooldown", data);
@@ -527,7 +535,7 @@ Bun.serve({
             version: APP_VERSION,
             accounts: getAccounts(),
             strategy: getStrategy(),
-            supportedModels: Array.from(supportedModelsCache).sort()
+            supportedModels: SUPPORTED_MODEL_IDS
         }), { headers: { "Content-Type": "application/json" } });
     }
 
@@ -675,7 +683,7 @@ Bun.serve({
 
           await addAccount(newAccount);
           
-          return Response.redirect(`http://localhost:3000/frontend/index.html`);
+          return Response.redirect(`${new URL(OAUTH_CONFIG.redirectUri).origin}/frontend/index.html`);
       } catch (e) {
           return new Response(`Auth error: ${e}`, { status: 500 });
       }
@@ -699,4 +707,4 @@ Bun.serve({
   }
 });
 
-console.log("Antigravity Proxy running on http://127.0.0.1:3000");
+console.log(`Antigravity Proxy running on http://127.0.0.1:${PORT}`);

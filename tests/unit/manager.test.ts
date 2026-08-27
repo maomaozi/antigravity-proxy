@@ -3,11 +3,13 @@ import { getFamilyName } from "../../src/auth/manager";
 
 describe("Manager Utils", () => {
   test("getFamilyName should correctly classify models", () => {
-    expect(getFamilyName("gemini-1.5-flash")).toBe("Gemini 3 Flash");
-    expect(getFamilyName("gemini-1.5-pro")).toBe("Gemini 3 Pro");
-    expect(getFamilyName("claude-3-5-sonnet")).toBe("Claude/GPT");
-    expect(getFamilyName("gpt-4o")).toBe("Claude/GPT");
-    expect(getFamilyName("gemini-2.5-flash")).toBe("Gemini 2.5");
+    expect(getFamilyName("gemini-3.7-flash-tiered")).toBe("Gemini Models");
+    expect(getFamilyName("gemini-3.6-flash-medium")).toBe("Gemini Models");
+    expect(getFamilyName("gemini-3.5-flash-low")).toBe("Gemini Models");
+    expect(getFamilyName("gemini-3.1-pro-high")).toBe("Gemini Models");
+    expect(getFamilyName("claude-sonnet-4-6-thinking")).toBe("Claude Sonnet 4.6");
+    expect(getFamilyName("claude-opus-4-6-thinking")).toBe("Claude Opus 4.6");
+    expect(getFamilyName("gpt-oss-120b-medium")).toBe("GPT-OSS 120B");
     expect(getFamilyName("unknown-model")).toBe("Other");
   });
 });

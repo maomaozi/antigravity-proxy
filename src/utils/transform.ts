@@ -85,7 +85,45 @@ export function transformToGoogleBody(
   
   const tierMatch = rawModel.match(/-(low|medium|high)$/i);
   const thinkingTierMatch = rawModel.match(/-thinking-(low|medium|high)$/i);
-  const extractedTier = thinkingTierMatch ? thinkingTierMatch[1] : (tierMatch ? tierMatch[1] : undefined);
+  let extractedTier = thinkingTierMatch ? thinkingTierMatch[1] : (tierMatch ? tierMatch[1] : undefined);
+
+  // Stable proxy IDs hide Antigravity's changing runtime IDs. Some display
+  // tiers intentionally map to unexpectedly named backend models.
+  let hasCurrentModelRoute = false;
+  const routeCurrentModel = (model: string, tier?: string) => {
+    googleModel = model;
+    extractedTier ||= tier;
+    hasCurrentModelRoute = true;
+  };
+
+  const gemini37Match = resolvedModel.match(/^gemini-3\.7-flash(?:-(low|medium|high))?$/);
+  const gemini36Match = resolvedModel.match(/^gemini-3\.6-flash(?:-(low|medium|high))?$/);
+  const gemini35Match = resolvedModel.match(/^gemini-3\.5-flash(?:-(low|medium|high))?$/);
+  const gemini31ProMatch = resolvedModel.match(/^gemini-3\.1-pro(?:-(low|high))?$/);
+
+  if (gemini37Match) {
+    routeCurrentModel("gemini-3.7-flash-tiered", gemini37Match[1] || "medium");
+  } else if (gemini36Match) {
+    const tier = gemini36Match[1] || "medium";
+    routeCurrentModel(`gemini-3.6-flash-${tier}`, tier);
+  } else if (gemini35Match) {
+    const tier = gemini35Match[1] || "medium";
+    const runtimeByTier: Record<string, string> = {
+      low: "gemini-3.5-flash-extra-low",
+      medium: "gemini-3.5-flash-low",
+      high: "gemini-3-flash-agent"
+    };
+    routeCurrentModel(runtimeByTier[tier], tier);
+  } else if (gemini31ProMatch) {
+    const tier = gemini31ProMatch[1] || "high";
+    routeCurrentModel(tier === "low" ? "gemini-3.1-pro-low" : "gemini-pro-agent", tier);
+  } else if (resolvedModel === "claude-sonnet-4-6-thinking") {
+    routeCurrentModel("claude-sonnet-4-6");
+  } else if (resolvedModel === "claude-opus-4-6-thinking") {
+    routeCurrentModel("claude-opus-4-6-thinking");
+  } else if (resolvedModel === "gpt-oss-120b") {
+    routeCurrentModel("gpt-oss-120b-medium", "medium");
+  }
   
   let baseModel = googleModel;
   if (thinkingTierMatch) {
@@ -100,10 +138,9 @@ export function transformToGoogleBody(
   }
 
   // Force Claude model IDs to strip tier for the backend
-        if (googleModel.includes("claude")) {
+        if (!hasCurrentModelRoute && googleModel.includes("claude")) {
             googleModel = baseModel;
             if (googleModel === "claude-opus-4-6") googleModel = "claude-opus-4-6-thinking";
-            if (googleModel === "claude-sonnet-4-6") googleModel = "claude-sonnet-4-6-thinking";
             if (googleModel === "claude-sonnet-4-5") googleModel = "claude-sonnet-4-5-thinking";
         }
 
@@ -113,6 +150,11 @@ export function transformToGoogleBody(
       "claude-sonnet-4-5", 
       "claude-sonnet-4-5-thinking", 
       "claude-opus-4-6-thinking",
+      "gpt-oss-120b-medium",
+      "gemini-3.7-flash-tiered",
+      "gemini-3.6-flash-medium",
+      "gemini-3.5-flash-low",
+      "gemini-pro-agent",
       "gemini-3.1-pro-high",
       "gemini-3.1-pro-low",
       "gemini-3.1-pro",
@@ -131,7 +173,7 @@ export function transformToGoogleBody(
   
   const isNative = (nativelySupported.includes(googleModel) || nativelySupported.includes(baseModel));
 
-  if (isCli) {
+  if (!hasCurrentModelRoute && isCli) {
       if (!googleModel.includes("claude")) {
           // Standardize Gemini 3 CLI models to use -preview suffix
           if (googleModel.includes("gemini-3")) {
@@ -150,10 +192,9 @@ export function transformToGoogleBody(
           }
        } else {
            googleModel = baseModel;
-           if (googleModel === "claude-sonnet-4-6") googleModel = "claude-sonnet-4-6-thinking";
            if (googleModel === "claude-sonnet-4-5") googleModel = "claude-sonnet-4-5-thinking";
        }
-   } else {
+   } else if (!hasCurrentModelRoute) {
        if (googleModel.endsWith("-preview")) {
            googleModel = googleModel.replace("-preview", "");
        }
@@ -173,9 +214,6 @@ export function transformToGoogleBody(
              if (googleModel === "claude-opus-4-6" || googleModel === "antigravity-claude-opus-4-6") {
                  googleModel = "claude-opus-4-6-thinking";
              }
-           if (googleModel === "claude-sonnet-4-6" || googleModel === "antigravity-claude-sonnet-4-6") {
-               googleModel = "claude-sonnet-4-6-thinking";
-           }
            if (googleModel === "claude-sonnet-4-5" || googleModel === "antigravity-claude-sonnet-4-5") {
                googleModel = "claude-sonnet-4-5-thinking";
            }
@@ -296,7 +334,11 @@ export function transformToGoogleBody(
     };
   });
 
-  const isThinkingModel = rawModel.includes("-thinking");
+  const isThinkingModel = rawModel.includes("-thinking") ||
+                          rawModel.includes("gemini-3.7-flash") ||
+                          rawModel.includes("gemini-3.6-flash") ||
+                          rawModel.includes("gemini-3.5-flash") ||
+                          rawModel.includes("gemini-3.1-pro");
   const hasExplicitBudget = openaiBody.thinking_budget !== undefined || 
                            openaiBody.thinking?.budget_tokens !== undefined ||
                            openaiBody.providerOptions?.thinkingBudget !== undefined;
@@ -368,7 +410,7 @@ You are pair programming with a USER to solve their coding task. The task may re
       thinkingBudget: thinkingBudget || 16000
     };
     
-    if (googleModel.includes("gemini-3")) {
+    if (rawModel.includes("gemini")) {
         googleRequest.generationConfig.thinkingConfig.thinkingLevel = extractedTier || "low";
     }
   }

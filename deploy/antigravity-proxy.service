@@ -1,0 +1,25 @@
+[Unit]
+Description=Antigravity OpenAI-compatible reverse proxy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=maozi
+Group=maozi
+WorkingDirectory=/home/maozi/antigravity-proxy
+Environment=HOME=/home/maozi
+Environment=PATH=/home/maozi/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment=PORT=3001
+ExecStart=/home/maozi/.bun/bin/bun run start
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+TimeoutStopSec=15s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

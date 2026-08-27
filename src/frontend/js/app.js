@@ -21,26 +21,8 @@ function getCategoryCooldown(email, category, quotas) {
      
      if (!isCliDown && !isSandboxDown) return null;
 
-     if (category === 'Gemini 3 Flash') return isSandboxDown ? sandboxExpiry : null;
-     
-     if (category === 'Gemini 2.5') return isCliDown ? cliExpiry : null;
-     
-     if (category === 'Gemini 3 Pro') {
-         const hasImage = quotas.some(q => q.groupName.toLowerCase().includes('image'));
-         const hasText = quotas.some(q => !q.groupName.toLowerCase().includes('image'));
-
-         if (hasImage && isSandboxDown) return sandboxExpiry;
-         if (hasText && isCliDown) return cliExpiry;
-         return null;
-     }
-     
-     if (category === 'Claude/GPT') {
-         const hasGpt = quotas.some(q => q.groupName.toLowerCase().includes('gpt'));
-         const hasClaude = quotas.some(q => q.groupName.toLowerCase().includes('claude'));
-         
-         if (hasGpt && isSandboxDown) return sandboxExpiry;
-         if (hasClaude && isCliDown) return cliExpiry;
-         return null;
+     if (Object.hasOwn(MODEL_FAMILIES, category)) {
+         return isSandboxDown ? sandboxExpiry : null;
      }
      
      if (isCliDown) return cliExpiry;
@@ -276,10 +258,10 @@ function toggleLogs() {
 }
 
 const MODEL_FAMILIES = {
-    'Gemini 3 Flash': (n) => n.includes('gemini') && (n.includes('flash') || n.includes('1.5 flash')) && !n.includes('2.5'),
-    'Gemini 3 Pro': (n) => (n.includes('gemini') && (n.includes('pro') || n.includes('1.5 pro')) || n.includes('image')) && !n.includes('2.5'),
-    'Gemini 2.5': (n) => n.includes('2.5'),
-    'Claude/GPT': (n) => n.includes('claude') || n.includes('gpt'),
+    'Gemini Models': (n) => n.includes('gemini'),
+    'Claude Sonnet 4.6': (n) => n.includes('claude') && n.includes('sonnet') && (n.includes('4-6') || n.includes('4.6')),
+    'Claude Opus 4.6': (n) => n.includes('claude') && n.includes('opus') && (n.includes('4-6') || n.includes('4.6')),
+    'GPT-OSS 120B': (n) => n.includes('gpt-oss') && n.includes('120b'),
 };
 
 function getFamilyName(modelName) {
@@ -586,7 +568,7 @@ function renderAccountsTable(accounts) {
             </div>`;
         }
 
-        const knownFamilies = acc.quota ? [...new Set(acc.quota.map(q => getFamilyName(q.groupName)))] : ['Claude/GPT', 'Gemini 3 Flash'];
+        const knownFamilies = acc.quota ? [...new Set(acc.quota.map(q => getFamilyName(q.groupName)))] : Object.keys(MODEL_FAMILIES);
         const totalPossibleBlocks = knownFamilies.length * 2;
         const activeCooldowns = emailCooldowns.filter(k => globalCooldowns[k] > now).length;
         const isAllDownFinal = activeCooldowns >= totalPossibleBlocks && totalPossibleBlocks > 0;

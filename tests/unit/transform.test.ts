@@ -1,6 +1,11 @@
 
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { transformToGoogleBody, transformGoogleEventToOpenAI } from "../../src/utils/transform";
+import { loadProxyConfig } from "../../src/config/manager";
+
+beforeAll(async () => {
+  await loadProxyConfig();
+});
 
 describe("Unit Tests: transformToGoogleBody", () => {
   test("Basic message transformation", () => {
@@ -109,6 +114,55 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
     const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
     expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBe(8192);
+  });
+
+  test.each([
+    ["antigravity-gemini-3.7-flash", "gemini-3.7-flash-tiered", "medium"],
+    ["antigravity-gemini-3.7-flash-low", "gemini-3.7-flash-tiered", "low"],
+    ["antigravity-gemini-3.7-flash-medium", "gemini-3.7-flash-tiered", "medium"],
+    ["antigravity-gemini-3.7-flash-high", "gemini-3.7-flash-tiered", "high"],
+    ["antigravity-gemini-3.6-flash", "gemini-3.6-flash-medium", "medium"],
+    ["antigravity-gemini-3.6-flash-low", "gemini-3.6-flash-low", "low"],
+    ["antigravity-gemini-3.6-flash-medium", "gemini-3.6-flash-medium", "medium"],
+    ["antigravity-gemini-3.6-flash-high", "gemini-3.6-flash-high", "high"],
+    ["antigravity-gemini-3.5-flash", "gemini-3.5-flash-low", "medium"],
+    ["antigravity-gemini-3.5-flash-low", "gemini-3.5-flash-extra-low", "low"],
+    ["antigravity-gemini-3.5-flash-medium", "gemini-3.5-flash-low", "medium"],
+    ["antigravity-gemini-3.5-flash-high", "gemini-3-flash-agent", "high"],
+    ["antigravity-gemini-3.1-pro", "gemini-pro-agent", "high"],
+    ["antigravity-gemini-3.1-pro-low", "gemini-3.1-pro-low", "low"],
+    ["antigravity-gemini-3.1-pro-high", "gemini-pro-agent", "high"]
+  ])("maps current Gemini model %s", (model, runtimeModel, thinkingLevel) => {
+    const result = transformToGoogleBody({
+      model,
+      messages: [{ role: "user", content: "Hi" }]
+    }, "p", false, "us-central1");
+
+    expect(result.model).toBe(runtimeModel);
+    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe(thinkingLevel);
+  });
+
+  test.each([
+    ["antigravity-claude-sonnet-4-6-thinking", "claude-sonnet-4-6"],
+    ["antigravity-claude-opus-4-6-thinking", "claude-opus-4-6-thinking"]
+  ])("maps current non-Gemini model %s", (model, runtimeModel) => {
+    const result = transformToGoogleBody({
+      model,
+      messages: [{ role: "user", content: "Hi" }]
+    }, "p", false, "us-central1");
+
+    expect(result.model).toBe(runtimeModel);
+    expect(result.request.generationConfig.thinkingConfig.includeThoughts).toBe(true);
+  });
+
+  test("maps GPT-OSS without provider-specific thinking config", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gpt-oss-120b",
+      messages: [{ role: "user", content: "Hi" }]
+    }, "p", false, "us-central1");
+
+    expect(result.model).toBe("gpt-oss-120b-medium");
+    expect(result.request.generationConfig.thinkingConfig).toBeUndefined();
   });
 
   test("Claude tool call transformation with ID", () => {

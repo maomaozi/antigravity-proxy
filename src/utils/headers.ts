@@ -12,10 +12,11 @@ export const OAUTH_CONFIG = {
     "https://www.googleapis.com/auth/cclog",
     "https://www.googleapis.com/auth/experimentsandconfigs"
   ],
-  redirectUri: "http://localhost:3000/oauth-callback"
+  redirectUri: process.env.OAUTH_REDIRECT_URI || `http://localhost:${process.env.PORT || "3000"}/oauth-callback`
 };
 
-const ANTIGRAVITY_VERSION = "2.0.1";
+// Gemini 3.7 Flash is gated by the current Antigravity client generation.
+const ANTIGRAVITY_VERSION = "2.9.1";
 
 const PLATFORMS = ["darwin/x64", "darwin/arm64"] as const;
 
@@ -162,4 +163,3 @@ export function getGeminiCliHeaders(accessToken: string, fingerprint?: DeviceFin
 
   return headers;
 }
-

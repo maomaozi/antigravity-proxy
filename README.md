@@ -2,7 +2,7 @@
 
 ![Antigravity Proxy Dashboard](screenshots/screenshot.png)
 
-Antigravity Proxy is a high-performance gateway that exposes Google's internal Gemini and Claude APIs through an **OpenAI-compatible interface**. It enables seamless integration between advanced models (like Claude 4.6 Opus, Gemini 3, and GPT-equivalent models) and CLI agents (such as **OpenCode** or **Claude Code**), as well as any application supporting the OpenAI API standard.
+Antigravity Proxy is a high-performance gateway that exposes Google's internal Gemini, Claude, and GPT-OSS APIs through an **OpenAI-compatible interface**. It enables seamless integration between advanced models and CLI agents (such as **OpenCode** or **Claude Code**), as well as any application supporting the OpenAI API standard.
 
 This project is strongly inspired by [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth).
 
@@ -13,8 +13,8 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
 - **Dual-Pool Routing**:
-  - **CLI Pool**: Routes to production endpoints (Gemini 2.5/3 Flash & Pro).
-  - **Sandbox Pool**: Accesses internal/experimental models (Claude 3.5 Sonnet, Thinking models, GPT-equivalent).
+  - **CLI Pool**: Routes to production Gemini endpoints.
+  - **Sandbox Pool**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
 
@@ -49,7 +49,7 @@ To use **Claude Code** with Antigravity Proxy, point the API base URL to your lo
 export CLAUDE_CODE_API_BASE="http://localhost:3000/v1"
 
 # Run Claude specifying an Antigravity model
-claude --model antigravity-claude-sonnet-4-5
+claude --model antigravity-claude-sonnet-4-6-thinking
 ```
 
 ### OpenCode Configuration
@@ -64,82 +64,56 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
             "baseURL": "http://localhost:3000/v1"
         },
         "models": {
-            "antigravity-gemini-3.1-pro-low": {
-                "name": "Gemini 3.1 Pro Low (Antigravity)",
-                "limit": { "context": 1048576, "output": 65535 }
-            },
-            "antigravity-gemini-3.1-pro-high": {
-                "name": "Gemini 3.1 Pro High (Antigravity)",
-                "limit": { "context": 1048576, "output": 65535 }
-            },
-            "antigravity-gemini-3-pro-low": {
-                "name": "Gemini 3 Pro Low (Antigravity)",
-                "limit": { "context": 1048576, "output": 65535 }
-            },
-            "antigravity-gemini-3-pro-high": {
-                "name": "Gemini 3 Pro High (Antigravity)",
-                "limit": { "context": 1048576, "output": 65535 }
-            },
-            "antigravity-gemini-3-flash": {
-                "name": "Gemini 3 Flash (Antigravity)",
+            "antigravity-gemini-3.7-flash": {
+                "name": "Gemini 3.7 Flash (Antigravity)",
                 "limit": { "context": 1048576, "output": 65536 }
             },
-            "antigravity-claude-sonnet-4-6": {
-                "name": "Claude Sonnet 4.6 (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-sonnet-4-6-thinking-low": {
-                "name": "Claude Sonnet 4.6 Think Low (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-sonnet-4-6-thinking-medium": {
-                "name": "Claude Sonnet 4.6 Think Medium (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-sonnet-4-6-thinking-high": {
-                "name": "Claude Sonnet 4.6 Think High (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-sonnet-4-5": {
-                "name": "Claude Sonnet 4.5 (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-sonnet-4-5-thinking-low": {
-                "name": "Claude Sonnet 4.5 Think Low (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-sonnet-4-5-thinking-medium": {
-                "name": "Claude Sonnet 4.5 Think Medium (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-sonnet-4-5-thinking-high": {
-                "name": "Claude Sonnet 4.5 Think High (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
-            },
-            "antigravity-claude-opus-4-6-thinking-low": {
-                "name": "Claude Opus 4.6 Think Low (Antigravity)",
-                "limit": { "context": 1000000, "output": 64000 }
-            },
-            "antigravity-claude-opus-4-6-thinking-medium": {
-                "name": "Claude Opus 4.6 Think Medium (Antigravity)",
-                "limit": { "context": 1000000, "output": 64000 }
-            },
-            "antigravity-claude-opus-4-6-thinking-high": {
-                "name": "Claude Opus 4.6 Think High (Antigravity)",
-                "limit": { "context": 1000000, "output": 64000 }
-            },
-            "gemini-2.5-flash": {
-                "name": "Gemini 2.5 Flash (CLI)",
+            "antigravity-gemini-3.6-flash": {
+                "name": "Gemini 3.6 Flash (Antigravity)",
                 "limit": { "context": 1048576, "output": 65536 }
             },
-            "gemini-2.5-pro": {
-                "name": "Gemini 2.5 Pro (CLI)",
+            "antigravity-gemini-3.5-flash": {
+                "name": "Gemini 3.5 Flash (Antigravity)",
                 "limit": { "context": 1048576, "output": 65536 }
+            },
+            "antigravity-gemini-3.1-pro": {
+                "name": "Gemini 3.1 Pro (Antigravity)",
+                "limit": { "context": 1048576, "output": 65535 }
+            },
+            "antigravity-claude-sonnet-4-6-thinking": {
+                "name": "Claude Sonnet 4.6 Thinking (Antigravity)",
+                "limit": { "context": 200000, "output": 64000 }
+            },
+            "antigravity-claude-opus-4-6-thinking": {
+                "name": "Claude Opus 4.6 Thinking (Antigravity)",
+                "limit": { "context": 1000000, "output": 64000 }
+            },
+            "antigravity-gpt-oss-120b": {
+                "name": "GPT-OSS 120B (Antigravity)",
+                "limit": { "context": 128000, "output": 32768 }
             }
         }
     }
 }
 ```
+
+### Thinking Levels
+
+Select a Gemini thinking level by appending it to the model ID:
+
+| Model | Levels | Default |
+| --- | --- | --- |
+| `antigravity-gemini-3.7-flash` | `low`, `medium`, `high` | `medium` |
+| `antigravity-gemini-3.6-flash` | `low`, `medium`, `high` | `medium` |
+| `antigravity-gemini-3.5-flash` | `low`, `medium`, `high` | `medium` |
+| `antigravity-gemini-3.1-pro` | `low`, `high` | `high` |
+| `antigravity-claude-sonnet-4-6-thinking` | Fixed thinking | Thinking |
+| `antigravity-claude-opus-4-6-thinking` | Fixed thinking | Thinking |
+| `antigravity-gpt-oss-120b` | Fixed | `medium` |
+
+For example, use `antigravity-gemini-3.7-flash-high` or
+`antigravity-gemini-3.1-pro-low`. The base model ID selects the default shown
+above.
 
 ## How It Works
 
@@ -153,4 +127,3 @@ Antigravity Proxy acts as a sophisticated bridge that translates OpenAI-formatte
 ## Security Notes
 - **Safety Filters**: Controlled via `SAFETY_THRESHOLD` (default: `BLOCK_NONE`).
 - **Credentials**: OAuth tokens are stored locally in `antigravity-accounts.json`. Do not share or commit this file.
-

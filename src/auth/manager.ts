@@ -14,10 +14,10 @@ const cooldownMap = new Map<string, number>();
 export const eventBus = new EventEmitter();
 
 const MODEL_FAMILIES = {
-  'Gemini 3 Flash': (n: string) => n.includes('gemini') && (n.includes('flash') || n.includes('1.5 flash')) && !n.includes('2.5'),
-  'Gemini 3 Pro': (n: string) => (n.includes('gemini') && (n.includes('pro') || n.includes('1.5 pro')) || n.includes('image')) && !n.includes('2.5'),
-  'Gemini 2.5': (n: string) => n.includes('2.5'),
-  'Claude/GPT': (n: string) => n.includes('claude') || n.includes('gpt'),
+  'Gemini Models': (n: string) => n.includes('gemini'),
+  'Claude Sonnet 4.6': (n: string) => n.includes('claude') && n.includes('sonnet') && (n.includes('4-6') || n.includes('4.6')),
+  'Claude Opus 4.6': (n: string) => n.includes('claude') && n.includes('opus') && (n.includes('4-6') || n.includes('4.6')),
+  'GPT-OSS 120B': (n: string) => n.includes('gpt-oss') && n.includes('120b'),
 };
 
 export function getFamilyName(modelName: string) {
