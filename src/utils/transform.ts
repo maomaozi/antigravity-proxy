@@ -404,7 +404,31 @@ You are pair programming with a USER to solve their coding task. The task may re
     sessionId: sessionId || crypto.randomUUID()
   };
 
-  if (isThinkingModel || googleModel.includes("gemini-3")) {
+  const responseFormat = openaiBody.response_format;
+  const supportsStructuredResponse = !googleModel.includes("gpt");
+  let hasStructuredResponse = false;
+  if (supportsStructuredResponse && responseFormat?.type === "json_object") {
+    googleRequest.generationConfig.responseMimeType = "application/json";
+    const jsonInstruction =
+      "Output exactly one valid JSON object. Do not output markdown, code fences, commentary, or any text outside the JSON object.";
+    if (googleRequest.systemInstruction?.parts) {
+      googleRequest.systemInstruction.parts.push({ text: jsonInstruction });
+    } else {
+      googleRequest.systemInstruction = { parts: [{ text: jsonInstruction }] };
+    }
+  } else if (supportsStructuredResponse && responseFormat?.type === "json_schema") {
+    const responseSchema = responseFormat.json_schema?.schema;
+    if (responseSchema && typeof responseSchema === "object" && !Array.isArray(responseSchema)) {
+      googleRequest.generationConfig.responseMimeType = "application/json";
+      googleRequest.generationConfig.responseSchema = cleanJSONSchemaForAntigravity(responseSchema, aggressive);
+      googleRequest.generationConfig.responseSchema.title =
+        responseFormat.json_schema?.name?.trim() || "json_schema";
+      hasStructuredResponse = true;
+    }
+  }
+
+  const structuredClaudeResponse = hasStructuredResponse && googleModel.includes("claude");
+  if ((isThinkingModel || googleModel.includes("gemini-3")) && !structuredClaudeResponse) {
     googleRequest.generationConfig.thinkingConfig = {
       includeThoughts: true,
       thinkingBudget: thinkingBudget || 16000

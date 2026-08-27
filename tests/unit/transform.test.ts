@@ -94,6 +94,101 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(result.request.tools[0].functionDeclarations[0].parameters.properties.location).toBeDefined();
   });
 
+  test("JSON object response format", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [{ role: "user", content: "Return JSON" }],
+      response_format: { type: "json_object" }
+    }, "p", false, "us-central1");
+
+    expect(result.request.generationConfig.responseMimeType).toBe("application/json");
+    expect(result.request.generationConfig.responseSchema).toBeUndefined();
+    expect(result.request.systemInstruction.parts.at(-1).text).toContain("valid JSON object");
+  });
+
+  test("JSON schema response format", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [{ role: "user", content: "Return JSON" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "forced_result",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              status: { type: "string", enum: ["ok"] },
+              count: { type: "integer" }
+            },
+            required: ["status", "count"]
+          }
+        }
+      }
+    }, "p", false, "us-central1");
+
+    expect(result.request.generationConfig.responseMimeType).toBe("application/json");
+    expect(result.request.generationConfig.responseSchema).toEqual({
+      type: "OBJECT",
+      properties: {
+        status: { type: "STRING", enum: ["ok"] },
+        count: { type: "INTEGER" }
+      },
+      required: ["status", "count"],
+      title: "forced_result"
+    });
+  });
+
+  test("Structured Claude response disables incompatible thinking", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-claude-sonnet-4-6-thinking",
+      messages: [{ role: "user", content: "Return JSON" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "forced_result",
+          schema: {
+            type: "object",
+            properties: { status: { type: "string" } },
+            required: ["status"]
+          }
+        }
+      }
+    }, "p", false, "us-central1");
+
+    expect(result.request.generationConfig.responseSchema.title).toBe("forced_result");
+    expect(result.request.generationConfig.thinkingConfig).toBeUndefined();
+  });
+
+  test("GPT does not receive unsupported structured response fields", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gpt-oss-120b",
+      messages: [{ role: "user", content: "Return JSON" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "forced_result",
+          schema: { type: "object" }
+        }
+      }
+    }, "p", false, "us-central1");
+
+    expect(result.request.generationConfig.responseMimeType).toBeUndefined();
+    expect(result.request.generationConfig.responseSchema).toBeUndefined();
+  });
+
+  test("Text response format leaves generation config unchanged", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-gemini-3.7-flash",
+      messages: [{ role: "user", content: "Return text" }],
+      response_format: { type: "text" }
+    }, "p", false, "us-central1");
+
+    expect(result.request.generationConfig.responseMimeType).toBeUndefined();
+    expect(result.request.generationConfig.responseSchema).toBeUndefined();
+  });
+
   test("Claude Opus 4.6 Thinking mapping and budget", () => {
     const openaiBody = {
       model: "antigravity-claude-opus-4-6-thinking-high",
