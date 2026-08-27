@@ -3,12 +3,12 @@ import { loadConfig, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
 import { generateFingerprint } from "../utils/headers";
 import { getProxyConfig as getConfigFromManager } from "../config/manager";
+import { deleteSessionBindingsForAccount, getSessionBinding } from "../session/store";
 import { EventEmitter } from "events";
 
 let accounts: AntigravityAccount[] = [];
 let currentStrategy: SelectionStrategy = 'hybrid';
 let lastAccountIndex = -1;
-const clientStickyMap = new Map<string, string>();
 const cooldownMap = new Map<string, number>();
 
 export const eventBus = new EventEmitter();
@@ -165,7 +165,7 @@ function getPidOffset(): number {
   return process.pid % Math.max(accounts.length, 1);
 }
 
-export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, clientId?: string, excludeEmails: string[] = [], skipRescue: boolean = false): Promise<AntigravityAccount | null> {
+export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, sessionKey?: string, excludeEmails: string[] = [], skipRescue: boolean = false): Promise<AntigravityAccount | null> {
   if (accounts.length === 0) return null;
   const now = Date.now();
   const usable = accounts.filter(a => a.refreshToken && !a.challenge && !excludeEmails.includes(a.email));
@@ -182,21 +182,32 @@ export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, c
     let schedulingConfig: ReturnType<typeof getConfigFromManager>['scheduling'] | undefined;
     try { schedulingConfig = getConfigFromManager().scheduling; } catch {}
 
-    if (candidates.length === 0 && schedulingConfig?.mode === 'cache_first' && clientId) {
-      const stickyEmail = clientStickyMap.get(clientId);
-      if (stickyEmail && !excludeEmails.includes(stickyEmail)) {
-        const stickyAccount = usable.find(a => a.email === stickyEmail);
-        if (stickyAccount) {
-          const expiry = cooldownMap.get(`${stickyEmail}|${pool}|${family}`);
-          if (expiry && expiry > now) {
-            const waitMs = expiry - now;
-            const maxWaitMs = (schedulingConfig.maxCacheFirstWaitSeconds || 60) * 1000;
-            if (waitMs <= maxWaitMs) {
-              console.log(`[CacheFirst] Waiting ${Math.ceil(waitMs / 1000)}s for ${stickyEmail} to preserve prompt cache...`);
-              await new Promise(r => setTimeout(r, waitMs));
-              return await ensureAccountReady(stickyAccount);
-            }
-            console.log(`[CacheFirst] ${stickyEmail} cooldown (${Math.ceil(waitMs / 1000)}s) exceeds max wait (${schedulingConfig.maxCacheFirstWaitSeconds}s), switching account.`);
+    const binding = sessionKey && model ? getSessionBinding(sessionKey, model) : null;
+    const stickyEmail = binding?.accountEmail;
+    if (stickyEmail && excludeEmails.length === 0) {
+      const stickyAccount = usable.find(a =>
+        a.email === stickyEmail &&
+        !(model && a.capabilities?.[model] === false) &&
+        !isAccountQuotaExhausted(a, model)
+      );
+      if (stickyAccount) {
+        const cooldownKey = `${stickyEmail}|${pool}|${family}`;
+        const expiry = cooldownMap.get(cooldownKey);
+        if (!expiry || expiry <= now) {
+          if (expiry) cooldownMap.delete(cooldownKey);
+          const ready = await ensureAccountReady(stickyAccount);
+          if (ready) return ready;
+        } else if (schedulingConfig?.mode === 'cache_first') {
+          const waitMs = expiry - now;
+          const maxWaitMs = (schedulingConfig.maxCacheFirstWaitSeconds || 60) * 1000;
+          if (waitMs <= maxWaitMs) {
+            console.log(`[CacheFirst] Waiting ${Math.ceil(waitMs / 1000)}s for session-bound account ${stickyEmail}...`);
+            await new Promise(r => setTimeout(r, waitMs));
+            cooldownMap.delete(cooldownKey);
+            const ready = await ensureAccountReady(stickyAccount);
+            if (ready) return ready;
+          } else {
+            console.log(`[CacheFirst] Session-bound account ${stickyEmail} cooldown (${Math.ceil(waitMs / 1000)}s) exceeds max wait; switching account.`);
           }
         }
       }
@@ -217,12 +228,6 @@ export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, c
     
     if (candidates.length === 0) return null;
     
-    if (clientId && excludeEmails.length === 0) {
-      const stickyEmail = clientStickyMap.get(clientId);
-      const sticky = candidates.find(a => a.email === stickyEmail && !cooldownMap.has(`${a.email}|${pool}|${family}`));
-      if (sticky) return await ensureAccountReady(sticky);
-    }
-
     const config = getProxyConfig();
     candidates.sort((a, b) => {
         const priorityB = calculatePriority(b, now, model, pool);
@@ -287,10 +292,9 @@ function calculatePriority(account: AntigravityAccount, now: number, model?: str
   return (health * config.scoring.weights.health) + (secondsSinceUsed * config.scoring.weights.lru);
 }
 
-export async function updateAccountUsage(email: string, success: boolean, model?: string, pool?: string, clientId?: string, status?: number) {
+export async function updateAccountUsage(email: string, success: boolean, model?: string, pool?: string, status?: number) {
   const account = accounts.find(a => a.email === email);
   if (!account) return;
-  if (success && clientId) clientStickyMap.set(clientId, email);
   if (success && pool && model) clearCooldown(email, pool, getFamilyName(model));
   account.lastUsed = Date.now();
   const delta = success ? 2 : (status === 403 ? -50 : -10);
@@ -373,6 +377,7 @@ export async function addAccount(account: AntigravityAccount) {
 
 export async function removeAccount(email: string) {
   accounts = accounts.filter(a => a.email !== email);
+  deleteSessionBindingsForAccount(email);
   await saveAccounts(accounts);
 }
 

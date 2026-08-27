@@ -14,6 +14,10 @@ import { OAUTH_CONFIG, getImpersonationHeaders, getGeminiCliHeaders, generateFin
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { parseGoogleError } from "./utils/errors";
 import { SUPPORTED_MODELS } from "./models";
+import { resolveSessionIdentity } from "./session/identity";
+import { clearSessionBindings, deleteSessionBinding, getSessionBinding, initSessionBindingStore, listSessionBindings, recordSessionBinding } from "./session/store";
+
+initSessionBindingStore();
 
 const SUPPORTED_MODEL_IDS = SUPPORTED_MODELS.map(model => model.id);
 
@@ -145,11 +149,13 @@ Bun.serve({
       const isCliOnlyModel = false;
       const CLAUDE_REGIONS = ["us-central1", "us-east5", "europe-west1"];
       
-      const clientId = req.headers.get("x-client-id") || url.searchParams.get("client_id") || "unknown";
-      const firstMsg = openaiBody.messages?.[0]?.content || "";
-      const userIdent = openaiBody.user || clientId;
-      const stableSeed = `${userIdent}:${typeof firstMsg === 'string' ? firstMsg : JSON.stringify(firstMsg)}`;
-      const sessionId = firstMsg ? new Bun.CryptoHasher("sha256").update(stableSeed).digest("hex") : crypto.randomUUID();
+      const sessionIdentity = resolveSessionIdentity(req.headers, openaiBody);
+      const sessionId = sessionIdentity.key;
+      const existingBinding = getSessionBinding(sessionIdentity.key, openaiBody.model);
+      if (existingBinding && !isSandboxOnlyModel && !isCliOnlyModel) {
+          useCliPool = existingBinding.pool === "cli";
+      }
+      console.log(`[Session] ${sessionIdentity.source} ${sessionIdentity.id.slice(0, 24)}${sessionIdentity.id.length > 24 ? "..." : ""}${existingBinding ? ` bound to ${existingBinding.accountEmail}/${existingBinding.pool}` : " (new)"}`);
 
         let lastStatus = 0;
         let lastGoogleUrl = "";
@@ -169,12 +175,12 @@ Bun.serve({
                 }
             }
 
-            let account = await getBestAccount(useCliPool ? "cli" : "sandbox", openaiBody.model, clientId, triedEmails, true);
+            let account = await getBestAccount(useCliPool ? "cli" : "sandbox", openaiBody.model, sessionIdentity.key, triedEmails, true);
             
             if (!account && !isSandboxOnlyModel && !isCliOnlyModel) {
                 console.log(`[Manager] No READY accounts in ${useCliPool ? 'CLI' : 'Sandbox'} pool, trying the other pool first...`);
                 const otherPool = useCliPool ? "sandbox" : "cli";
-                account = await getBestAccount(otherPool, openaiBody.model, clientId, triedEmails, true);
+                account = await getBestAccount(otherPool, openaiBody.model, sessionIdentity.key, triedEmails, true);
                 if (account) {
                     useCliPool = !useCliPool;
                     console.log(`[Switch] Found ready account in ${useCliPool ? 'CLI' : 'Sandbox'} pool.`);
@@ -182,7 +188,7 @@ Bun.serve({
             }
 
             if (!account) {
-                account = await getBestAccount(useCliPool ? "cli" : "sandbox", openaiBody.model, clientId, triedEmails, false);
+                account = await getBestAccount(useCliPool ? "cli" : "sandbox", openaiBody.model, sessionIdentity.key, triedEmails, false);
             }
             
             if (!account || !account.accessToken) {
@@ -198,7 +204,13 @@ Bun.serve({
             const CLI_ENDPOINTS = Array.isArray(config.endpoints.cli) ? config.endpoints.cli : [config.endpoints.cli];
             
             let GOOGLE_URL: string;
-            if (useCliPool) {
+            const boundEndpointIsUsable = attempts === 1 &&
+              existingBinding?.pool === (useCliPool ? "cli" : "sandbox") &&
+              !!existingBinding.endpoint &&
+              (useCliPool ? CLI_ENDPOINTS : SANDBOX_ENDPOINTS).includes(existingBinding.endpoint);
+            if (boundEndpointIsUsable) {
+                GOOGLE_URL = existingBinding.endpoint!;
+            } else if (useCliPool) {
                 const cliEndpointIndex = isClaudeModel ? CLI_ENDPOINTS.length - 1 : Math.min(attempts - 1, CLI_ENDPOINTS.length - 1);
                 GOOGLE_URL = CLI_ENDPOINTS[cliEndpointIndex];
             } else {
@@ -274,7 +286,7 @@ Bun.serve({
                        console.log(`[Model] Unsupported model ${openaiBody.model} for ${account.email}, marking capability.`);
                        flagModelUnsupported(account.email, openaiBody.model);
                    }
-                   await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", clientId, status);
+                   await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", status);
                    return new Response(JSON.stringify({ 
                        error: { message: "Access denied: " + parsedError.reason, type: "access_denied", code: status.toString() } 
                    }), { 
@@ -309,7 +321,7 @@ Bun.serve({
                     console.log(`[Skip] Account ${account.email} transiently limited (${resetSeconds}s), rotating...`);
                     account.consecutiveFailures = (account.consecutiveFailures || 0) + 1;
                     if (account.consecutiveFailures >= 2) {
-                        await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", clientId, 429);
+                        await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", 429);
                     }
                     triedEmails.push(account.email);
                     continue;
@@ -324,7 +336,7 @@ Bun.serve({
                }
                aggressive = false;
 
-               await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", clientId, status);
+               await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", status);
                
                 if (status === 429) {
                     markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(openaiBody.model));
@@ -345,7 +357,16 @@ Bun.serve({
 
                  const stream = googleRes.body.pipeThrough(createOpenAIStreamTransformer(openaiBody.model, requestId, false, sessionId));
 
-                 await updateAccountUsage(account.email, true, openaiBody.model, useCliPool ? "cli" : "sandbox", clientId);
+                 recordSessionBinding({
+                   identity: sessionIdentity,
+                   accountEmail: account.email,
+                   model: openaiBody.model,
+                   modelFamily: getFamilyName(openaiBody.model),
+                   pool: useCliPool ? "cli" : "sandbox",
+                   projectId: effectiveProjectId,
+                   endpoint: GOOGLE_URL,
+                 });
+                 await updateAccountUsage(account.email, true, openaiBody.model, useCliPool ? "cli" : "sandbox");
                  return new Response(stream, {
                   headers: {
                     "Content-Type": "text/event-stream",
@@ -431,7 +452,16 @@ Bun.serve({
                     continue;
                 }
 
-                await updateAccountUsage(account.email, true, openaiBody.model, useCliPool ? "cli" : "sandbox", clientId);
+                recordSessionBinding({
+                  identity: sessionIdentity,
+                  accountEmail: account.email,
+                  model: openaiBody.model,
+                  modelFamily: getFamilyName(openaiBody.model),
+                  pool: useCliPool ? "cli" : "sandbox",
+                  projectId: effectiveProjectId,
+                  endpoint: GOOGLE_URL,
+                });
+                await updateAccountUsage(account.email, true, openaiBody.model, useCliPool ? "cli" : "sandbox");
                return new Response(JSON.stringify(finalResponse), { 
                    headers: { 
                        "Content-Type": "application/json", 
@@ -447,7 +477,7 @@ Bun.serve({
              } else {
                  console.error(`Proxy error for ${account.email}:`, e);
              }
-             await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox", clientId);
+             await updateAccountUsage(account.email, false, openaiBody.model, useCliPool ? "cli" : "sandbox");
              attemptLogs.push({ email: account.email || 'unknown', status: 500, reason: e.message });
              if (attempts < MAX_ATTEMPTS) continue;
              return new Response(JSON.stringify({ error: { message: `Proxy exception: ${e.message}` } }), { 
@@ -527,6 +557,45 @@ Bun.serve({
                 "Connection": "keep-alive",
                 "Access-Control-Allow-Origin": "*"
             }
+        });
+    }
+
+    if (cleanPath === "/api/session-bindings" && req.method === "GET") {
+        const limit = Number(url.searchParams.get("limit") || 200);
+        const offset = Number(url.searchParams.get("offset") || 0);
+        const search = url.searchParams.get("search") || undefined;
+        const result = listSessionBindings({ limit, offset, search });
+        return new Response(JSON.stringify(result), {
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
+    }
+
+    if (cleanPath === "/api/session-bindings" && req.method === "DELETE") {
+        const removed = clearSessionBindings();
+        console.log(`[Sessions] Cleared ${removed} persisted bindings via API.`);
+        return new Response(JSON.stringify({ removed }), {
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
+    }
+
+    if (cleanPath.startsWith("/api/session-bindings/") && req.method === "DELETE") {
+        const id = Number(cleanPath.slice("/api/session-bindings/".length));
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            return new Response(JSON.stringify({ error: "Invalid binding ID" }), {
+                status: 400,
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+            });
+        }
+        const removed = deleteSessionBinding(id);
+        return new Response(JSON.stringify({ removed }), {
+            status: removed ? 200 : 404,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
         });
     }
 

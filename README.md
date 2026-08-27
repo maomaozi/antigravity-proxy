@@ -17,6 +17,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
   - **CLI Pool**: Routes to production Gemini endpoints.
   - **Sandbox Pool**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
+- **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account, pool, and endpoint in SQLite.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
 
 ## Local Deployment
@@ -56,6 +57,21 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 ```
 
 Set `"stream": true` to receive an OpenAI-compatible SSE stream.
+
+### Session Affinity
+
+The proxy automatically recognizes `x-session-affinity`, `x-opencode-session`,
+`x-session-id`, Codex `session-id`/`thread-id`, Codex turn metadata, and the
+OpenAI `prompt_cache_key` request field. Successful routes are persisted per
+session and model in `data/session-bindings.sqlite`. The dashboard's
+**Sessions** page shows the current session, account, model, pool, and endpoint
+bindings.
+
+Use `SESSION_DB_FILE` to place the SQLite database elsewhere and
+`SESSION_BINDING_RETENTION_DAYS` to change the default 30-day retention. Cookie
+session lookup is disabled by default; `SESSION_COOKIE_NAMES` may contain a
+comma-separated allowlist when a deployment has a conversation-specific
+cookie.
 
 ### JSON Object Output
 
