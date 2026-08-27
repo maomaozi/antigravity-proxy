@@ -9,13 +9,13 @@ const APP_VERSION = pkg.version || "0.0.0";
 import { initManager, getBestAccount, updateAccountUsage, addAccount, getAccounts, removeAccount, getStrategy, setStrategy, saveAccounts, emitAccountFlash, eventBus, getEarliestReset, markCooldown, ensureFingerprint, regenerateFingerprint, getCooldowns, resetAccount, flagAccountChallenge, flagModelUnsupported, updateAccountProject, getFamilyName, resetAllCooldowns } from "./auth/manager";
 import { type SelectionStrategy, type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
-import { transformToGoogleBody, transformGoogleEventToOpenAI, createOpenAIStreamTransformer, getOriginalToolName } from "./utils/transform";
+import { transformToGoogleBody, transformGoogleEventToOpenAI, createOpenAIStreamTransformer, getOriginalToolName, toOpenAIUsage, type UpstreamTokenUsage } from "./utils/transform";
 import { OAUTH_CONFIG, getImpersonationHeaders, getGeminiCliHeaders, generateFingerprint } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { parseGoogleError } from "./utils/errors";
 import { SUPPORTED_MODELS } from "./models";
 import { resolveSessionIdentity } from "./session/identity";
-import { clearSessionBindings, deleteSessionBinding, getSessionBinding, initSessionBindingStore, listSessionBindings, recordSessionBinding } from "./session/store";
+import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, getSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings, recordRequestTokenUsage, recordSessionBinding } from "./session/store";
 
 initSessionBindingStore();
 
@@ -106,6 +106,7 @@ Bun.serve({
     if (cleanPath === "/v1/chat/completions" && req.method === "POST") {
       const openaiBody = await req.json() as any;
       const requestId = "chatcmpl-" + Math.random().toString(36).substring(7);
+      const requestStartedAt = Date.now();
       
       const modelLower = openaiBody.model.toLowerCase();
       const isClaudeModel = modelLower.includes("claude");
@@ -355,7 +356,33 @@ Bun.serve({
                      });
                  }
 
-                 const stream = googleRes.body.pipeThrough(createOpenAIStreamTransformer(openaiBody.model, requestId, false, sessionId));
+                 const persistStreamUsage = (usage: UpstreamTokenUsage) => {
+                   recordRequestTokenUsage({
+                     requestId,
+                     identity: sessionIdentity,
+                     accountEmail: account.email,
+                     model: openaiBody.model,
+                     modelFamily: getFamilyName(openaiBody.model),
+                     upstreamModel: googleBody.model,
+                     pool: useCliPool ? "cli" : "sandbox",
+                     endpoint: GOOGLE_URL,
+                     streamed: true,
+                     inputTokens: usage.inputTokens,
+                     cachedInputTokens: usage.cachedInputTokens,
+                     outputTokens: usage.outputTokens,
+                     reasoningTokens: usage.reasoningTokens,
+                     reasoningTokensReported: usage.reasoningTokensReported,
+                     totalTokens: usage.totalTokens,
+                     createdAt: requestStartedAt,
+                   });
+                 };
+                 const stream = googleRes.body.pipeThrough(createOpenAIStreamTransformer(
+                   openaiBody.model,
+                   requestId,
+                   false,
+                   sessionId,
+                   persistStreamUsage,
+                 ));
 
                  recordSessionBinding({
                    identity: sessionIdentity,
@@ -379,7 +406,14 @@ Bun.serve({
               } else {
                 if (!googleRes.body) throw new Error("No response body");
                 
-                const stream = googleRes.body.pipeThrough(createOpenAIStreamTransformer(openaiBody.model, requestId, false, sessionId));
+                let finalTokenUsage: UpstreamTokenUsage | undefined;
+                const stream = googleRes.body.pipeThrough(createOpenAIStreamTransformer(
+                  openaiBody.model,
+                  requestId,
+                  false,
+                  sessionId,
+                  usage => { finalTokenUsage = usage; },
+                ));
                 const reader = stream.getReader();
                
                 let fullContent = "";
@@ -443,7 +477,8 @@ Bun.serve({
                             tool_calls: aggregatedToolCalls.length > 0 ? aggregatedToolCalls : undefined
                         },
                         finish_reason: finalFinishReason
-                    }]
+                    }],
+                    usage: finalTokenUsage ? toOpenAIUsage(finalTokenUsage) : undefined,
                 };
 
                 if (!fullContent && aggregatedToolCalls.length === 0 && finalFinishReason !== "length") {
@@ -461,6 +496,26 @@ Bun.serve({
                   projectId: effectiveProjectId,
                   endpoint: GOOGLE_URL,
                 });
+                if (finalTokenUsage) {
+                  recordRequestTokenUsage({
+                    requestId,
+                    identity: sessionIdentity,
+                    accountEmail: account.email,
+                    model: openaiBody.model,
+                    modelFamily: getFamilyName(openaiBody.model),
+                    upstreamModel: googleBody.model,
+                    pool: useCliPool ? "cli" : "sandbox",
+                    endpoint: GOOGLE_URL,
+                    streamed: false,
+                    inputTokens: finalTokenUsage.inputTokens,
+                    cachedInputTokens: finalTokenUsage.cachedInputTokens,
+                    outputTokens: finalTokenUsage.outputTokens,
+                    reasoningTokens: finalTokenUsage.reasoningTokens,
+                    reasoningTokensReported: finalTokenUsage.reasoningTokensReported,
+                    totalTokens: finalTokenUsage.totalTokens,
+                    createdAt: requestStartedAt,
+                  });
+                }
                 await updateAccountUsage(account.email, true, openaiBody.model, useCliPool ? "cli" : "sandbox");
                return new Response(JSON.stringify(finalResponse), { 
                    headers: { 
@@ -566,6 +621,41 @@ Bun.serve({
         const search = url.searchParams.get("search") || undefined;
         const result = listSessionBindings({ limit, offset, search });
         return new Response(JSON.stringify(result), {
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
+    }
+
+    if (cleanPath === "/api/request-usage" && req.method === "GET") {
+        const optionalTimestamp = (name: string): number | undefined => {
+            const raw = url.searchParams.get(name);
+            if (!raw) return undefined;
+            const value = Number(raw);
+            return Number.isFinite(value) ? value : undefined;
+        };
+        const result = listRequestTokenUsage({
+            limit: Number(url.searchParams.get("limit") || 200),
+            offset: Number(url.searchParams.get("offset") || 0),
+            search: url.searchParams.get("search") || undefined,
+            model: url.searchParams.get("model") || undefined,
+            sessionKey: url.searchParams.get("session_key") || undefined,
+            from: optionalTimestamp("from"),
+            to: optionalTimestamp("to"),
+        });
+        return new Response(JSON.stringify(result), {
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        });
+    }
+
+    if (cleanPath === "/api/request-usage" && req.method === "DELETE") {
+        const removed = clearRequestTokenUsage();
+        console.log(`[Usage] Cleared ${removed} persisted request usage records via API.`);
+        return new Response(JSON.stringify({ removed }), {
             headers: {
                 "Content-Type": "application/json",
                 "Access-Control-Allow-Origin": "*"

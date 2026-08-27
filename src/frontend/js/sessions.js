@@ -79,6 +79,7 @@ function renderTable() {
                 <td class="px-4 py-3 tabular-nums text-zinc-600 dark:text-zinc-400">${row.requestCount}</td>
                 <td class="px-4 py-3 text-zinc-500" title="${new Date(row.lastUsedAt).toLocaleString()}">${relativeTime(row.lastUsedAt)}</td>
                 <td class="px-4 py-3 text-right">
+                    <a href="/frontend/usage.html?session_key=${encodeURIComponent(row.sessionKey)}" class="px-2 py-1 text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 rounded transition-colors">Usage</a>
                     <button data-delete-binding="${row.id}" class="px-2 py-1 text-[9px] uppercase tracking-wider text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors">Remove</button>
                 </td>
             </tr>`;

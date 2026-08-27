@@ -99,4 +99,94 @@ describe("session binding store", () => {
     stores.push(reader);
     expect(reader.get(identity.key, "model-persistent")?.accountEmail).toBe("persistent@example.com");
   });
+
+  test("records one token usage row per request and keeps the richest streaming metadata", () => {
+    const store = createStore();
+    const base = {
+      requestId: "chatcmpl-usage-1",
+      identity,
+      accountEmail: "usage@example.com",
+      model: "Gemini-3.7-Flash",
+      modelFamily: "Gemini Models",
+      upstreamModel: "gemini-3.7-flash-tiered",
+      pool: "sandbox" as const,
+      endpoint: "https://example.test/rpc",
+      streamed: true,
+      inputTokens: 1000,
+      outputTokens: 12,
+      reasoningTokens: 20,
+      reasoningTokensReported: true,
+      totalTokens: 1032,
+      createdAt: 1_700_000_000_000,
+    };
+
+    store.recordRequestTokenUsage(base);
+    const updated = store.recordRequestTokenUsage({
+      ...base,
+      cachedInputTokens: 750,
+    });
+
+    expect(updated.model).toBe("gemini-3.7-flash");
+    expect(updated.cachedInputTokens).toBe(750);
+    expect(updated.uncachedInputTokens).toBe(250);
+    expect(updated.reasoningTokens).toBe(20);
+    expect(store.listRequestTokenUsage().total).toBe(1);
+  });
+
+  test("filters request usage by session, model, time, and search with aggregate totals", () => {
+    const store = createStore();
+    const otherIdentity: SessionIdentity = {
+      key: "session-key-2",
+      id: "ses_456",
+      source: "x-session-id",
+      inferred: false,
+    };
+    store.recordRequestTokenUsage({
+      requestId: "request-a",
+      identity,
+      accountEmail: "first@example.com",
+      model: "model-a",
+      modelFamily: "Family A",
+      pool: "sandbox",
+      streamed: false,
+      inputTokens: 100,
+      cachedInputTokens: 40,
+      outputTokens: 10,
+      reasoningTokens: 5,
+      reasoningTokensReported: true,
+      totalTokens: 115,
+      createdAt: 1000,
+    });
+    store.recordRequestTokenUsage({
+      requestId: "request-b",
+      identity: otherIdentity,
+      accountEmail: "second@example.com",
+      model: "model-b",
+      modelFamily: "Family B",
+      pool: "cli",
+      streamed: true,
+      inputTokens: 200,
+      outputTokens: 20,
+      totalTokens: 220,
+      createdAt: 2000,
+    });
+
+    const all = store.listRequestTokenUsage();
+    expect(all.total).toBe(2);
+    expect(all.summary).toEqual({
+      requests: 2,
+      sessions: 2,
+      inputTokens: 300,
+      cachedInputTokens: 40,
+      uncachedInputTokens: 260,
+      outputTokens: 30,
+      reasoningTokens: 5,
+      totalTokens: 335,
+    });
+    expect(store.listRequestTokenUsage({ sessionKey: identity.key }).total).toBe(1);
+    expect(store.listRequestTokenUsage({ model: "MODEL-B" }).records[0].requestId).toBe("request-b");
+    expect(store.listRequestTokenUsage({ from: 1500, to: 2500 }).total).toBe(1);
+    expect(store.listRequestTokenUsage({ search: "first@example.com" }).total).toBe(1);
+    expect(store.clearRequestTokenUsage()).toBe(2);
+  });
 });

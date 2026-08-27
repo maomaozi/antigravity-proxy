@@ -496,15 +496,52 @@ You are pair programming with a USER to solve their coding task. The task may re
   };
 }
 
+export interface UpstreamTokenUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  reasoningTokensReported: boolean;
+  totalTokens: number;
+}
+
+function usageCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+export function normalizeUpstreamTokenUsage(metadata: any): UpstreamTokenUsage | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  return {
+    inputTokens: usageCount(metadata.promptTokenCount),
+    cachedInputTokens: usageCount(metadata.cachedContentTokenCount),
+    outputTokens: usageCount(metadata.candidatesTokenCount),
+    reasoningTokens: usageCount(metadata.thoughtsTokenCount),
+    reasoningTokensReported: typeof metadata.thoughtsTokenCount === "number",
+    totalTokens: usageCount(metadata.totalTokenCount),
+  };
+}
+
+export function toOpenAIUsage(usage: UpstreamTokenUsage): any {
+  return {
+    prompt_tokens: usage.inputTokens,
+    completion_tokens: usage.outputTokens,
+    total_tokens: usage.totalTokens,
+    prompt_tokens_details: {
+      cached_tokens: usage.cachedInputTokens,
+    },
+    ...(usage.reasoningTokensReported ? {
+      completion_tokens_details: {
+        reasoning_tokens: usage.reasoningTokens,
+      }
+    } : {}),
+  };
+}
+
 export function transformGoogleEventToOpenAI(googleData: any, model: string, requestId?: string, hasPriorToolCalls: boolean = false): any {
   const data = googleData.response || googleData;
   const requestIdActual = requestId || "chatcmpl-" + Math.random().toString(36).substring(7);
-  
-  const usage = data.usageMetadata ? {
-    prompt_tokens: data.usageMetadata.promptTokenCount || 0,
-    completion_tokens: data.usageMetadata.candidatesTokenCount || 0,
-    total_tokens: data.usageMetadata.totalTokenCount || 0
-  } : undefined;
+  const tokenUsage = normalizeUpstreamTokenUsage(data.usageMetadata);
+  const usage = tokenUsage ? toOpenAIUsage(tokenUsage) : undefined;
 
   if (!data.candidates || data.candidates.length === 0) {
     if (usage) {
@@ -514,7 +551,8 @@ export function transformGoogleEventToOpenAI(googleData: any, model: string, req
         created: Math.floor(Date.now() / 1000),
         model: model,
         choices: [],
-        usage: usage
+        usage: usage,
+        _tokenUsage: tokenUsage,
       };
     }
     return null;
@@ -613,15 +651,30 @@ export function transformGoogleEventToOpenAI(googleData: any, model: string, req
     }],
     usage: usage,
     _signature: extractedSignature,
-    _thought: extractedThought
+    _thought: extractedThought,
+    _tokenUsage: tokenUsage,
   };
 }
 
-export function createOpenAIStreamTransformer(model: string, requestId: string, hasPriorToolCalls: boolean, sessionId?: string) {
+export function createOpenAIStreamTransformer(
+  model: string,
+  requestId: string,
+  hasPriorToolCalls: boolean,
+  sessionId?: string,
+  onUsage?: (usage: UpstreamTokenUsage) => void,
+) {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
   let currentHasPriorToolCalls = hasPriorToolCalls;
+  const emitUsage = (usage: UpstreamTokenUsage | undefined) => {
+    if (!usage || !onUsage) return;
+    try {
+      onUsage(usage);
+    } catch (error) {
+      console.warn("[Usage] Failed to process upstream token metadata:", error);
+    }
+  };
 
   return new TransformStream({
     transform(chunk, controller) {
@@ -643,6 +696,7 @@ export function createOpenAIStreamTransformer(model: string, requestId: string, 
             const openaiEvent = transformGoogleEventToOpenAI(googleEvent, model, requestId, currentHasPriorToolCalls);
             
             if (openaiEvent) {
+              emitUsage(openaiEvent._tokenUsage);
               if (sessionId && openaiEvent._signature && openaiEvent._thought) {
                   cacheSignature(sessionId, openaiEvent._thought, openaiEvent._signature);
                   console.log(`[Cache] Signature cached for conversation ${sessionId}`);
@@ -659,7 +713,7 @@ export function createOpenAIStreamTransformer(model: string, requestId: string, 
                   currentHasPriorToolCalls = true;
                 }
                 
-                const { _signature, _thought, ...cleanEvent } = openaiEvent;
+                const { _signature, _thought, _tokenUsage, ...cleanEvent } = openaiEvent;
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(cleanEvent)}\n\n`));
               }
             }
@@ -677,7 +731,9 @@ export function createOpenAIStreamTransformer(model: string, requestId: string, 
             const googleEvent = JSON.parse(dataStr);
             const openaiEvent = transformGoogleEventToOpenAI(googleEvent, model, requestId, currentHasPriorToolCalls);
             if (openaiEvent) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(openaiEvent)}\n\n`));
+              emitUsage(openaiEvent._tokenUsage);
+              const { _signature, _thought, _tokenUsage, ...cleanEvent } = openaiEvent;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(cleanEvent)}\n\n`));
             }
           } catch (e) {
             console.warn("[Stream] Failed to parse final line in flush:", e);

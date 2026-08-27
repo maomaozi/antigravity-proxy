@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full antialiased">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Usage · Antigravity Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="js/tailwind-config.js"></script>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-200 min-h-full font-mono transition-colors">
+    <header class="sticky top-0 z-40 h-14 bg-white/95 dark:bg-black/95 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
+        <div class="h-full px-4 sm:px-6 flex items-center justify-between max-w-[1800px] mx-auto">
+            <div class="flex items-center gap-4">
+                <a href="/frontend/index.html" class="flex items-center justify-center w-8 h-8 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 font-bold hover:border-emerald-500/50 transition-colors">A</a>
+                <div>
+                    <h1 class="text-sm font-bold text-zinc-900 dark:text-white">Token Usage</h1>
+                    <p class="hidden sm:block text-[9px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600">Per-request upstream accounting</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2 sm:gap-4">
+                <span id="refresh-status" class="hidden lg:inline text-[10px] text-zinc-400">Not loaded</span>
+                <button id="theme-button" class="p-2 text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition-colors" title="Toggle theme">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                </button>
+                <a href="/frontend/sessions.html" class="inline-flex items-center px-3 py-1.5 border border-zinc-200 dark:border-zinc-800 text-xs rounded text-zinc-600 dark:text-zinc-300 hover:text-emerald-500 transition-colors">Sessions</a>
+                <a href="/frontend/index.html" class="inline-flex items-center px-3 py-1.5 border border-zinc-200 dark:border-zinc-800 text-xs rounded text-zinc-600 dark:text-zinc-300 hover:text-emerald-500 transition-colors">Accounts</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-[1800px] mx-auto p-4 sm:p-6 space-y-6">
+        <section class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+            <div class="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0a0a0a] p-4"><div class="text-[9px] uppercase tracking-widest text-zinc-400">Requests</div><div id="stat-requests" class="mt-2 text-2xl font-bold">0</div><div id="stat-sessions" class="mt-1 text-[9px] text-zinc-400">0 sessions</div></div>
+            <div class="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0a0a0a] p-4"><div class="text-[9px] uppercase tracking-widest text-zinc-400">Input</div><div id="stat-input" class="mt-2 text-2xl font-bold">0</div><div id="stat-uncached" class="mt-1 text-[9px] text-zinc-400">0 uncached</div></div>
+            <div class="rounded border border-emerald-200 dark:border-emerald-900/60 bg-white dark:bg-[#0a0a0a] p-4"><div class="text-[9px] uppercase tracking-widest text-emerald-500">Cached Input</div><div id="stat-cached" class="mt-2 text-2xl font-bold text-emerald-500">0</div><div id="stat-cache-rate" class="mt-1 text-[9px] text-zinc-400">0% cache rate</div></div>
+            <div class="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0a0a0a] p-4"><div class="text-[9px] uppercase tracking-widest text-zinc-400">Visible Output</div><div id="stat-output" class="mt-2 text-2xl font-bold">0</div></div>
+            <div class="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0a0a0a] p-4"><div class="text-[9px] uppercase tracking-widest text-zinc-400">Reasoning</div><div id="stat-reasoning" class="mt-2 text-2xl font-bold">0</div><div class="mt-1 text-[9px] text-zinc-400">Reported separately</div></div>
+            <div class="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0a0a0a] p-4"><div class="text-[9px] uppercase tracking-widest text-zinc-400">Total</div><div id="stat-total" class="mt-2 text-2xl font-bold">0</div></div>
+        </section>
+
+        <section class="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0a0a0a] overflow-hidden">
+            <div class="p-4 border-b border-zinc-200 dark:border-zinc-800 space-y-3">
+                <div class="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
+                    <div>
+                        <h2 class="text-xs font-bold uppercase tracking-wider">Request ledger</h2>
+                        <p class="text-[10px] text-zinc-400 mt-1">Counts come from the final upstream usage metadata. Cached input is a subset of input.</p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <input id="search-input" type="search" placeholder="Request, session, account..." class="w-full sm:w-64 px-3 py-2 text-xs rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-black outline-none focus:border-emerald-500/60">
+                        <select id="model-filter" class="px-3 py-2 text-xs rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-black outline-none"><option value="">All models</option></select>
+                        <select id="range-filter" class="px-3 py-2 text-xs rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-black outline-none">
+                            <option value="3600000">Last hour</option>
+                            <option value="86400000" selected>Last 24 hours</option>
+                            <option value="604800000">Last 7 days</option>
+                            <option value="2592000000">Last 30 days</option>
+                            <option value="">All time</option>
+                        </select>
+                        <button id="refresh-button" class="px-3 py-2 text-[10px] font-bold uppercase tracking-wider rounded border border-zinc-200 dark:border-zinc-800 hover:border-emerald-500/50 hover:text-emerald-500 transition-colors">Refresh</button>
+                        <button id="clear-button" class="px-3 py-2 text-[10px] font-bold uppercase tracking-wider rounded border border-rose-200 dark:border-rose-900/50 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors">Clear</button>
+                    </div>
+                </div>
+                <div id="session-filter-banner" class="hidden items-center justify-between gap-3 rounded border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/50 dark:bg-emerald-950/10 px-3 py-2 text-[10px] text-emerald-700 dark:text-emerald-400">
+                    <span>Filtered to one session</span>
+                    <button id="clear-session-filter" class="font-bold uppercase tracking-wider hover:underline">Show all sessions</button>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full min-w-[1500px] text-left border-collapse">
+                    <thead class="bg-zinc-50 dark:bg-zinc-900/50 border-b border-zinc-200 dark:border-zinc-800">
+                        <tr>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500">Time / Request</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500">Session</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500">Model</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500">Account / Route</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500 text-right">Input</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-emerald-600 text-right">Cached</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500 text-right">Uncached</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500 text-right">Output</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500 text-right">Reasoning</th>
+                            <th class="px-3 py-3 text-[9px] uppercase tracking-wider text-zinc-500 text-right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usage-table" class="divide-y divide-zinc-100 dark:divide-zinc-800 text-xs"><tr><td colspan="10" class="p-12 text-center text-zinc-400">Loading usage...</td></tr></tbody>
+                </table>
+            </div>
+            <div class="px-4 py-3 border-t border-zinc-200 dark:border-zinc-800 text-[10px] text-zinc-400 flex items-center justify-between gap-4">
+                <span id="result-count">0 results</span>
+                <div class="flex items-center gap-2">
+                    <button id="previous-page" class="px-2 py-1 rounded border border-zinc-200 dark:border-zinc-800 disabled:opacity-30">Previous</button>
+                    <span id="page-label">Page 1</span>
+                    <button id="next-page" class="px-2 py-1 rounded border border-zinc-200 dark:border-zinc-800 disabled:opacity-30">Next</button>
+                </div>
+            </div>
+        </section>
+    </main>
+    <script src="js/usage.js"></script>
+</body>
+</html>

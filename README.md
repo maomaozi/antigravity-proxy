@@ -73,6 +73,13 @@ session lookup is disabled by default; `SESSION_COOKIE_NAMES` may contain a
 comma-separated allowlist when a deployment has a conversation-specific
 cookie.
 
+Each successful upstream request also stores its final token metadata in the
+same SQLite database. Open **Usage** in the dashboard to filter records by
+session, model, time range, request ID, or account. Input, cached input,
+uncached input, visible output, separately reported reasoning, and total tokens
+are retained. Set `REQUEST_USAGE_RETENTION_DAYS` to override the default usage
+retention period, which otherwise follows `SESSION_BINDING_RETENTION_DAYS`.
+
 ### JSON Object Output
 
 Use `json_object` when the response must be a valid JSON object but does not

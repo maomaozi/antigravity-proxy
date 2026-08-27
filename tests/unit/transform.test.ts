@@ -1,6 +1,6 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
-import { transformToGoogleBody, transformGoogleEventToOpenAI } from "../../src/utils/transform";
+import { normalizeUpstreamTokenUsage, transformToGoogleBody, transformGoogleEventToOpenAI } from "../../src/utils/transform";
 import { loadProxyConfig } from "../../src/config/manager";
 
 beforeAll(async () => {
@@ -345,5 +345,39 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
     const googleData = { candidates: [] };
     const result = transformGoogleEventToOpenAI(googleData, "model");
     expect(result).toBeNull();
+  });
+
+  test("preserves input, cached, visible output, and reasoning token metadata", () => {
+    const result = transformGoogleEventToOpenAI({
+      candidates: [],
+      usageMetadata: {
+        promptTokenCount: 1000,
+        cachedContentTokenCount: 750,
+        candidatesTokenCount: 12,
+        thoughtsTokenCount: 20,
+        totalTokenCount: 1032,
+      }
+    }, "gemini-3.7-flash", "req-usage");
+
+    expect(result.usage).toEqual({
+      prompt_tokens: 1000,
+      completion_tokens: 12,
+      total_tokens: 1032,
+      prompt_tokens_details: { cached_tokens: 750 },
+      completion_tokens_details: { reasoning_tokens: 20 },
+    });
+    expect(result._tokenUsage).toEqual({
+      inputTokens: 1000,
+      cachedInputTokens: 750,
+      outputTokens: 12,
+      reasoningTokens: 20,
+      reasoningTokensReported: true,
+      totalTokens: 1032,
+    });
+  });
+
+  test("distinguishes an unreported reasoning count from a reported zero", () => {
+    expect(normalizeUpstreamTokenUsage({ totalTokenCount: 3 })?.reasoningTokensReported).toBe(false);
+    expect(normalizeUpstreamTokenUsage({ thoughtsTokenCount: 0 })?.reasoningTokensReported).toBe(true);
   });
 });
