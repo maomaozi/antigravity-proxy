@@ -9,6 +9,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 ## Features
 
 - **OpenAI API Compatibility**: Full support for `v1/chat/completions` with streaming (SSE).
+- **Structured JSON Outputs**: Supports OpenAI-compatible `json_object` and `json_schema` response formats for Gemini and Claude models.
 - **Multi-Agent Support**: Specifically designed to work with **Claude Code**, **OpenCode**, and other agentic frameworks.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
@@ -18,26 +19,104 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
 
-## Deployment Options
+## Local Deployment
 
-### Bunx (Recommended)
-You can run the proxy instantly using `bunx`:
-```bash
-bunx antigravity-proxy@0.7.0
-```
+Requirements: Bun 1.0 or later.
 
-### Docker Hub
 ```bash
-docker run -d -p 3000:3000 -e BASE_URL=http://localhost:3000 --name antigravity-proxy frieserpaldi/antigravity-proxy:0.7.0
-```
-
-### Local Execution (Bun)
-Requirements: Bun (v1.0.0 or higher).
-```bash
+git clone https://github.com/maomaozi/antigravity-proxy.git
+cd antigravity-proxy
 bun install
 bun run start
 ```
-The server starts on port 3000.
+
+The server listens on port `3000` by default. Set the `PORT` environment
+variable to use another port:
+
+```bash
+PORT=3001 bun run start
+```
+
+## API Usage
+
+The API follows the OpenAI Chat Completions format. If the server is running on
+a different port, replace `3000` in the examples below.
+
+### Basic Chat Completion
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "antigravity-gemini-3.7-flash",
+    "messages": [
+      {"role": "user", "content": "Explain what a reverse proxy is."}
+    ]
+  }'
+```
+
+Set `"stream": true` to receive an OpenAI-compatible SSE stream.
+
+### JSON Object Output
+
+Use `json_object` when the response must be a valid JSON object but does not
+need to follow a predefined schema:
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "antigravity-gemini-3.7-flash",
+    "messages": [
+      {"role": "user", "content": "Return a user object with name Alice and age 30."}
+    ],
+    "response_format": {
+      "type": "json_object"
+    }
+  }'
+```
+
+The returned `choices[0].message.content` is a JSON string, for example:
+
+```json
+{"name":"Alice","age":30}
+```
+
+### Strict JSON Schema Output
+
+Use `json_schema` when the output must conform to a specific structure:
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "antigravity-gemini-3.7-flash",
+    "messages": [
+      {"role": "user", "content": "Return the current processing status."}
+    ],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "processing_status",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {"type": "string", "enum": ["ok"]},
+            "count": {"type": "integer"}
+          },
+          "required": ["status", "count"]
+        }
+      }
+    }
+  }'
+```
+
+Structured JSON output is supported for Gemini and Claude models. Claude
+thinking is disabled for `json_schema` requests because the upstream API cannot
+combine thinking with schema-forced tool use. GPT-OSS currently does not support
+these response-format constraints through the upstream API.
 
 ## Integration Guides
 
