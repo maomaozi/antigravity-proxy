@@ -1,11 +1,10 @@
 import { join } from "path";
-import { type AntigravityAccount, type SelectionStrategy } from "./types";
+import { type AntigravityAccount } from "./types";
 
 const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || join(process.cwd(), "antigravity-accounts.json");
 
 interface StorageFormat {
     accounts: AntigravityAccount[];
-    strategy?: SelectionStrategy;
 }
 
 export async function loadConfig(): Promise<StorageFormat> {
@@ -15,9 +14,9 @@ export async function loadConfig(): Promise<StorageFormat> {
       const data = await file.json();
       if (Array.isArray(data)) {
           // Migration from old format
-          return { accounts: data, strategy: 'hybrid' };
+          return { accounts: data };
       }
-      return data;
+      return { accounts: Array.isArray(data?.accounts) ? data.accounts : [] };
     }
   } catch (e) {
     console.error("Failed to load accounts:", e);

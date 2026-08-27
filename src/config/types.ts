@@ -12,7 +12,6 @@ export interface ProxyConfig {
 }
 
 export interface RotationConfig {
-  strategy: 'hybrid' | 'sticky' | 'round-robin' | 'random' | 'least-used';
   cooldown: {
     defaultDurationMs: number;
     maxDurationMs: number;
@@ -96,10 +95,6 @@ export interface FeaturesConfig {
 }
 
 export interface SchedulingConfig {
-  /** Scheduling mode: 'cache_first' waits for same account to preserve prompt cache, 'balance' switches immediately, 'performance_first' round-robins */
-  mode: 'cache_first' | 'balance' | 'performance_first';
-  /** Max seconds to wait for the same account in cache_first mode before switching */
+  /** Max seconds to wait for the session-bound account before failing over. */
   maxCacheFirstWaitSeconds: number;
-  /** Max seconds to wait when all accounts are rate-limited before erroring */
-  maxRateLimitWaitSeconds: number;
 }

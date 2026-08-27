@@ -6,8 +6,8 @@ await loadProxyConfig();
 const pkg = await Bun.file("package.json").json();
 const APP_VERSION = pkg.version || "0.0.0";
 
-import { initManager, getBestAccount, updateAccountUsage, addAccount, getAccounts, removeAccount, getStrategy, setStrategy, saveAccounts, emitAccountFlash, eventBus, getEarliestReset, markCooldown, ensureFingerprint, regenerateFingerprint, getCooldowns, resetAccount, flagAccountChallenge, flagModelUnsupported, updateAccountProject, getFamilyName, resetAllCooldowns } from "./auth/manager";
-import { type SelectionStrategy, type AntigravityAccount } from "./auth/types";
+import { initManager, getBestAccount, updateAccountUsage, addAccount, getAccounts, removeAccount, saveAccounts, emitAccountFlash, eventBus, getEarliestReset, markCooldown, ensureFingerprint, regenerateFingerprint, getCooldowns, resetAccount, flagAccountChallenge, flagModelUnsupported, updateAccountProject, getFamilyName, resetAllCooldowns } from "./auth/manager";
+import { type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
 import { transformToGoogleBody, transformGoogleEventToOpenAI, createOpenAIStreamTransformer, getOriginalToolName, toOpenAIUsage, validateOpenAIRequestForGoogle, type UpstreamTokenUsage } from "./utils/transform";
 import { OAUTH_CONFIG, getImpersonationHeaders, getGeminiCliHeaders, generateFingerprint } from "./utils/headers";
@@ -616,7 +616,6 @@ Bun.serve({
                 send("init", {
                     version: APP_VERSION,
                     accounts: getAccounts(),
-                    strategy: getStrategy(),
                     supportedModels: SUPPORTED_MODEL_IDS,
                     cooldowns: getCooldowns(),
                     logs: logBuffer
@@ -728,19 +727,8 @@ Bun.serve({
         return new Response(JSON.stringify({
             version: APP_VERSION,
             accounts: getAccounts(),
-            strategy: getStrategy(),
             supportedModels: SUPPORTED_MODEL_IDS
         }), { headers: { "Content-Type": "application/json" } });
-    }
-
-    if (url.pathname === "/api/strategy" && req.method === "POST") {
-        const body = await req.json() as any;
-        if (body.strategy) {
-             setStrategy(body.strategy as SelectionStrategy);
-             await updateProxyConfig({ rotation: { ...getProxyConfig().rotation, strategy: body.strategy } });
-             return new Response("OK", { status: 200 });
-        }
-        return new Response("Missing strategy", { status: 400 });
     }
 
     if (url.pathname === "/api/config" && req.method === "GET") {

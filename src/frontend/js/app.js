@@ -624,7 +624,6 @@ function updateUI(data) {
         if (data.accounts) globalAccounts = data.accounts;
         if (data.cooldowns) globalCooldowns = data.cooldowns;
         if (data.supportedModels) globalSupportedModels = data.supportedModels;
-        if (data.strategy && $('strategy-selector')) $('strategy-selector').value = data.strategy;
         if (data.version && $('app-version')) $('app-version').textContent = 'v' + data.version;
     }
     
@@ -706,20 +705,6 @@ async function redisoverProject(email) {
     } catch (e) {
         addLog(`[ERROR] Rediscovery failed: ${e.message}`);
     }
-}
-
-async function updateStrategy() {
-    const selector = $('strategy-selector');
-    if (!selector) return;
-    const strategy = selector.value;
-    try {
-        await fetch("/api/strategy", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ strategy })
-        });
-        addLog(`[CONFIG] Strategy changed to ${strategy}`);
-    } catch (e) { console.error(e); }
 }
 
 async function loadConfig() {

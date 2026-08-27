@@ -1,4 +1,4 @@
-import { type AntigravityAccount, type SelectionStrategy } from "./types";
+import { type AntigravityAccount } from "./types";
 import { loadConfig, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
 import { generateFingerprint } from "../utils/headers";
@@ -7,8 +7,6 @@ import { deleteSessionBindingsForAccount, getSessionBinding } from "../session/s
 import { EventEmitter } from "events";
 
 let accounts: AntigravityAccount[] = [];
-let currentStrategy: SelectionStrategy = 'hybrid';
-let lastAccountIndex = -1;
 const cooldownMap = new Map<string, number>();
 
 export const eventBus = new EventEmitter();
@@ -44,21 +42,14 @@ function getProxyConfig() {
 export async function initManager() {
   const config = await loadConfig();
   accounts = config.accounts || [];
-  currentStrategy = config.strategy || 'hybrid';
   console.log(`[Manager] Loaded ${accounts.length} accounts from storage.`);
 }
 
 export function getAccounts() { return accounts; }
-export function getStrategy() { return currentStrategy; }
-export function setStrategy(strategy: SelectionStrategy) {
-  currentStrategy = strategy;
-  saveAccounts(accounts);
-}
-
 export async function saveAccounts(newAccounts: AntigravityAccount[]) {
   accounts = newAccounts;
-  await saveConfig({ accounts, strategy: currentStrategy });
-  eventBus.emit('update', { accounts, strategy: currentStrategy });
+  await saveConfig({ accounts });
+  eventBus.emit('update', { accounts });
 }
 
 export function getCooldowns(): Record<string, number> {
@@ -197,9 +188,9 @@ export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, s
           if (expiry) cooldownMap.delete(cooldownKey);
           const ready = await ensureAccountReady(stickyAccount);
           if (ready) return ready;
-        } else if (schedulingConfig?.mode === 'cache_first') {
+        } else {
           const waitMs = expiry - now;
-          const maxWaitMs = (schedulingConfig.maxCacheFirstWaitSeconds || 60) * 1000;
+          const maxWaitMs = (schedulingConfig?.maxCacheFirstWaitSeconds || 60) * 1000;
           if (waitMs <= maxWaitMs) {
             console.log(`[CacheFirst] Waiting ${Math.ceil(waitMs / 1000)}s for session-bound account ${stickyEmail}...`);
             await new Promise(r => setTimeout(r, waitMs));

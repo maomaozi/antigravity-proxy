@@ -1,5 +1,3 @@
-export type SelectionStrategy = 'sticky' | 'round-robin' | 'hybrid' | 'random' | 'least-used';
-
 export interface DeviceFingerprint {
   userAgent: string;
   quotaUser: string;
@@ -30,7 +28,7 @@ export interface AntigravityAccount {
   projectId?: string;
   managedProjectId?: string;
   
-  // Rotation stats
+  // Routing health stats
   healthScore: number;
   modelScores?: Record<string, number>;
   lastUsed: number;

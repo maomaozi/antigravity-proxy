@@ -8,7 +8,6 @@ let config: ProxyConfig;
 
 const DEFAULT_CONFIG: ProxyConfig = {
   rotation: {
-    strategy: 'hybrid',
     cooldown: {
       defaultDurationMs: 60000,
       maxDurationMs: 3600000
@@ -89,9 +88,7 @@ const DEFAULT_CONFIG: ProxyConfig = {
     jitterMaxMs: 300
   },
   scheduling: {
-    mode: 'cache_first',
-    maxCacheFirstWaitSeconds: 60,
-    maxRateLimitWaitSeconds: 300
+    maxCacheFirstWaitSeconds: 60
   }
 };
 
@@ -110,7 +107,11 @@ export async function loadProxyConfig(): Promise<ProxyConfig> {
     const text = await file.text();
     const loadedConfig = JSON.parse(text);
     config = deepMerge(DEFAULT_CONFIG, loadedConfig) as ProxyConfig;
-    console.log(`[Config] Loaded configuration: strategy=${config.rotation.strategy}`);
+    // Ignore legacy strategy/mode fields. Session affinity with cache-first failover is fixed.
+    delete (config.rotation as ProxyConfig['rotation'] & { strategy?: unknown }).strategy;
+    delete (config.scheduling as ProxyConfig['scheduling'] & { mode?: unknown }).mode;
+    delete (config.scheduling as ProxyConfig['scheduling'] & { maxRateLimitWaitSeconds?: unknown }).maxRateLimitWaitSeconds;
+    console.log('[Config] Loaded configuration.');
     return config;
   } catch (e) {
     console.error('[Config] Failed to load config.json, using defaults:', e);

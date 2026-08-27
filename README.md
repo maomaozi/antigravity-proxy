@@ -77,8 +77,16 @@ Each successful upstream request also stores its final token metadata in the
 same SQLite database. Open **Usage** in the dashboard to filter records by
 session, model, time range, request ID, or account. Input, cached input,
 uncached input, visible output, separately reported reasoning, and total tokens
-are retained. Set `REQUEST_USAGE_RETENTION_DAYS` to override the default usage
+are retained. If the upstream response does not report cached input metadata,
+cached and uncached input are treated as unknown (`null`) rather than zero; the
+dashboard shows `—` / **Not reported** and does not calculate a cache rate for
+that scope. Set `REQUEST_USAGE_RETENTION_DAYS` to override the default usage
 retention period, which otherwise follows `SESSION_BINDING_RETENTION_DAYS`.
+
+Session affinity is always preferred. For the same session and model, the proxy
+reuses the previously successful account whenever it is available. When a bound account is cooling down, the proxy can wait briefly for it before
+failing over, which helps preserve upstream prompt-cache affinity. Configure the
+maximum wait with `scheduling.maxCacheFirstWaitSeconds` in `config.json`.
 
 ### JSON Object Output
 
@@ -250,10 +258,12 @@ above.
 
 Antigravity Proxy acts as a sophisticated bridge that translates OpenAI-formatted requests into Google's internal RPC protocols. It manages the complexities of authentication, session handling, and response streaming, allowing you to use high-tier models with your favorite tools.
 
-### Account Selection Strategy
-- **Hybrid (Default)**: Ranks accounts based on `(Health Score × 2) + (Idle Time × 0.1)`.
-- **Sticky**: Keeps a client session tied to the same account for consistency.
-- **Round-Robin**: Cycles through all available accounts evenly.
+### Account Selection
+
+Account routing uses persistent session affinity rather than a user-selectable
+rotation strategy. A previously successful `session + model` binding is reused
+first. When there is no binding or the bound account must fail over, eligible
+accounts are ranked by health and idle time before a new binding is persisted.
 
 ## Security Notes
 - **Safety Filters**: Controlled via `SAFETY_THRESHOLD` (default: `BLOCK_NONE`).
