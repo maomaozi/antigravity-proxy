@@ -203,7 +203,7 @@ describe("session binding store", () => {
     expect(store.clearRequestTokenUsage()).toBe(2);
   });
 
-  test("calculates per-request and session-model weighted output speed", () => {
+  test("calculates per-request and session-model weighted generated-token speed", () => {
     const store = createStore();
     store.record({
       identity,
@@ -223,13 +223,15 @@ describe("session binding store", () => {
       streamed: true,
       inputTokens: 10,
       outputTokens: 100,
-      totalTokens: 110,
+      reasoningTokens: 50,
+      reasoningTokensReported: true,
+      totalTokens: 160,
       createdAt: Date.now() - 1000,
     });
 
     expect(usage.durationMs).toBeGreaterThanOrEqual(1000);
-    expect(usage.tokensPerSecond).toBeGreaterThan(90);
-    expect(usage.tokensPerSecond).toBeLessThanOrEqual(100);
+    expect(usage.tokensPerSecond).toBeGreaterThan(135);
+    expect(usage.tokensPerSecond).toBeLessThanOrEqual(150);
 
     const binding = store.list().bindings[0];
     expect(binding.speedRequestCount).toBe(1);

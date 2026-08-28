@@ -94,7 +94,7 @@ function renderUsageTable() {
                 : formatTokens(row.uncachedInputTokens);
             const reasoning = row.reasoningTokensReported ? formatTokens(row.reasoningTokens) : '<span title="Upstream did not report reasoning separately">—</span>';
             const speed = row.tokensPerSecond === null || row.tokensPerSecond === undefined
-                ? '<span title="No valid duration or visible output tokens">—</span>'
+                ? '<span title="No valid duration or generated tokens">—</span>'
                 : `<div class="text-cyan-600 dark:text-cyan-400">${formatSpeed(row.tokensPerSecond)}</div><div class="mt-1 text-[9px] text-zinc-400">${formatDuration(row.durationMs)}</div>`;
             return `<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
                 <td class="px-3 py-3 max-w-[220px]">
@@ -117,7 +117,7 @@ function renderUsageTable() {
                 <td class="px-3 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">${cached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${uncached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.outputTokens)}</td>
-                <td class="px-3 py-3 text-right tabular-nums" title="Visible output / total end-to-end request time">${speed}</td>
+                <td class="px-3 py-3 text-right tabular-nums" title="Visible output + reported reasoning / total end-to-end request time">${speed}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${reasoning}</td>
                 <td class="px-3 py-3 text-right tabular-nums font-bold">${formatTokens(row.totalTokens)}</td>
             </tr>`;

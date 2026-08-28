@@ -84,7 +84,7 @@ function renderTable() {
                     <div class="mt-1 text-[9px] text-zinc-400" title="${escapeHtml(row.endpoint || '')}">${endpoint}</div>
                 </td>
                 <td class="px-4 py-3 tabular-nums text-zinc-600 dark:text-zinc-400">${row.requestCount}</td>
-                <td class="px-4 py-3 text-right tabular-nums" title="Weighted visible-output speed for this session and model; includes routing, retries, and first-token wait">
+                <td class="px-4 py-3 text-right tabular-nums" title="Weighted visible output + reported reasoning speed for this session and model; includes routing, retries, and first-token wait">
                     <div class="text-cyan-600 dark:text-cyan-400">${formatSpeed(row.averageTokensPerSecond)}</div>
                     <div class="mt-1 text-[9px] text-zinc-400">${row.speedRequestCount || 0} timed</div>
                 </td>

@@ -123,7 +123,7 @@ interface BindingRow {
   updated_at: number;
   last_used_at: number;
   request_count: number;
-  speed_output_tokens?: number;
+  speed_generated_tokens?: number;
   speed_duration_ms?: number;
   speed_request_count?: number;
 }
@@ -172,7 +172,7 @@ function mapRow(row: BindingRow): SessionBinding {
     lastUsedAt: row.last_used_at,
     requestCount: row.request_count,
     averageTokensPerSecond: speedDurationMs > 0
-      ? (row.speed_output_tokens ?? 0) * 1000 / speedDurationMs
+      ? (row.speed_generated_tokens ?? 0) * 1000 / speedDurationMs
       : null,
     speedRequestCount: row.speed_request_count ?? 0,
   };
@@ -206,8 +206,8 @@ function mapUsageRow(row: RequestTokenUsageRow): RequestTokenUsage {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     durationMs,
-    tokensPerSecond: durationMs !== null && row.output_tokens > 0
-      ? row.output_tokens * 1000 / durationMs
+    tokensPerSecond: durationMs !== null && row.output_tokens + row.reasoning_tokens > 0
+      ? (row.output_tokens + row.reasoning_tokens) * 1000 / durationMs
       : null,
   };
 }
@@ -349,7 +349,7 @@ export class SessionBindingStore {
     const rows = this.db.query<BindingRow, any[]>(`
       SELECT
         session_bindings.*,
-        COALESCE(speed.output_tokens, 0) AS speed_output_tokens,
+        COALESCE(speed.generated_tokens, 0) AS speed_generated_tokens,
         COALESCE(speed.duration_ms, 0) AS speed_duration_ms,
         COALESCE(speed.request_count, 0) AS speed_request_count
       FROM session_bindings
@@ -357,11 +357,11 @@ export class SessionBindingStore {
         SELECT
           session_key,
           model,
-          SUM(output_tokens) AS output_tokens,
+          SUM(output_tokens + reasoning_tokens) AS generated_tokens,
           SUM(updated_at - created_at) AS duration_ms,
           COUNT(*) AS request_count
         FROM request_token_usage
-        WHERE output_tokens > 0 AND updated_at > created_at
+        WHERE output_tokens + reasoning_tokens > 0 AND updated_at > created_at
         GROUP BY session_key, model
       ) AS speed
         ON speed.session_key = session_bindings.session_key
@@ -491,7 +491,7 @@ export class SessionBindingStore {
       reasoning_tokens: number;
       total_tokens: number;
       timed_requests: number;
-      speed_output_tokens: number;
+      speed_generated_tokens: number;
       output_duration_ms: number;
     }, any[]>(`
       SELECT
@@ -505,9 +505,9 @@ export class SessionBindingStore {
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
         COALESCE(SUM(total_tokens), 0) AS total_tokens,
-        COALESCE(SUM(CASE WHEN output_tokens > 0 AND updated_at > created_at THEN 1 ELSE 0 END), 0) AS timed_requests,
-        COALESCE(SUM(CASE WHEN output_tokens > 0 AND updated_at > created_at THEN output_tokens ELSE 0 END), 0) AS speed_output_tokens,
-        COALESCE(SUM(CASE WHEN output_tokens > 0 AND updated_at > created_at THEN updated_at - created_at ELSE 0 END), 0) AS output_duration_ms
+        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND updated_at > created_at THEN 1 ELSE 0 END), 0) AS timed_requests,
+        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND updated_at > created_at THEN output_tokens + reasoning_tokens ELSE 0 END), 0) AS speed_generated_tokens,
+        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND updated_at > created_at THEN updated_at - created_at ELSE 0 END), 0) AS output_duration_ms
       FROM request_token_usage ${where}
     `).get(...args);
     const requests = aggregate?.requests ?? 0;
@@ -533,7 +533,7 @@ export class SessionBindingStore {
         timedRequests: aggregate?.timed_requests ?? 0,
         outputDurationMs,
         averageTokensPerSecond: outputDurationMs > 0
-          ? (aggregate?.speed_output_tokens ?? 0) * 1000 / outputDurationMs
+          ? (aggregate?.speed_generated_tokens ?? 0) * 1000 / outputDurationMs
           : null,
       },
     };
