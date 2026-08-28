@@ -56,6 +56,9 @@ export class CodexSSEUsageCollector {
   private readonly decoder = new TextDecoder();
   private buffer = "";
   private usage: CodexNormalizedUsage | null = null;
+  private notified = false;
+
+  constructor(private readonly onUsage?: (usage: CodexNormalizedUsage) => void) {}
 
   push(value: Uint8Array): void {
     this.buffer += this.decoder.decode(value, { stream: true });
@@ -92,7 +95,15 @@ export class CodexSSEUsageCollector {
       const type = payload?.type || parsed.event;
       if (type !== "response.completed" && type !== "response.incomplete") return;
       const usage = payload?.response?.usage;
-      if (usage && typeof usage === "object") this.usage = normalizeCodexUsage(usage);
+      if (usage && typeof usage === "object") {
+        this.usage = normalizeCodexUsage(usage);
+        if (!this.notified) {
+          this.notified = true;
+          try { this.onUsage?.(this.usage); } catch {
+            // Usage observation must never interfere with transparent passthrough.
+          }
+        }
+      }
     } catch {
       // Passthrough observation is deliberately non-fatal.
     }

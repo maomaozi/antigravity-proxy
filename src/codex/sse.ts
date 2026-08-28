@@ -124,15 +124,17 @@ export function passthroughCodexSSE(
   source: ReadableStream<Uint8Array>,
   onUsage: (usage: CodexNormalizedUsage) => void,
 ): ReadableStream<Uint8Array> {
-  const collector = new CodexSSEUsageCollector();
+  const collector = new CodexSSEUsageCollector(onUsage);
   return source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       collector.push(chunk);
       controller.enqueue(chunk);
     },
     flush() {
-      const usage = collector.finish();
-      if (usage) onUsage(usage);
+      // Flush only completes decoder/framing state. Terminal usage is emitted
+      // immediately when response.completed/incomplete is parsed, so clients
+      // may cancel after the terminal event without losing statistics.
+      collector.finish();
     },
   }));
 }

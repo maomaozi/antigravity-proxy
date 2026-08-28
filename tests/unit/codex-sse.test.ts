@@ -26,4 +26,30 @@ describe("Codex Responses SSE", () => {
     expect(await new Response(transformed).text()).toBe(raw);
     expect(observed).toMatchObject({ outputTokens: 4, reasoningTokens: 2, totalTokens: 10 });
   });
+
+  test("observes terminal usage before EOF when the downstream cancels after response.completed", async () => {
+    const raw = 'event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":8,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":13}}}\n\n';
+    const encoder = new TextEncoder();
+    let observed: any = null;
+    let observedCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(raw));
+        // Deliberately keep the upstream open. Real Codex CLI can stop reading as
+        // soon as it receives response.completed instead of waiting for EOF.
+      },
+    });
+    const reader = passthroughCodexSSE(source, usage => {
+      observed = usage;
+      observedCount++;
+    }).getReader();
+
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe(raw);
+    expect(observed).toMatchObject({ inputTokens: 8, outputTokens: 4, reasoningTokens: 1, totalTokens: 13 });
+    expect(observedCount).toBe(1);
+
+    await reader.cancel();
+    expect(observedCount).toBe(1);
+  });
 });
