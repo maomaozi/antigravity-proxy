@@ -21,6 +21,8 @@ export interface SessionBinding {
   updatedAt: number;
   lastUsedAt: number;
   requestCount: number;
+  averageTokensPerSecond: number | null;
+  speedRequestCount: number;
 }
 
 export interface RecordBindingInput {
@@ -56,6 +58,8 @@ export interface RequestTokenUsage {
   totalTokens: number;
   createdAt: number;
   updatedAt: number;
+  durationMs: number | null;
+  tokensPerSecond: number | null;
 }
 
 export interface RecordRequestTokenUsageInput {
@@ -98,6 +102,9 @@ export interface RequestTokenUsageSummary {
   outputTokens: number;
   reasoningTokens: number;
   totalTokens: number;
+  timedRequests: number;
+  outputDurationMs: number;
+  averageTokensPerSecond: number | null;
 }
 
 interface BindingRow {
@@ -116,6 +123,9 @@ interface BindingRow {
   updated_at: number;
   last_used_at: number;
   request_count: number;
+  speed_output_tokens?: number;
+  speed_duration_ms?: number;
+  speed_request_count?: number;
 }
 
 interface RequestTokenUsageRow {
@@ -144,6 +154,7 @@ interface RequestTokenUsageRow {
 }
 
 function mapRow(row: BindingRow): SessionBinding {
+  const speedDurationMs = row.speed_duration_ms ?? 0;
   return {
     id: row.id,
     sessionKey: row.session_key,
@@ -160,10 +171,15 @@ function mapRow(row: BindingRow): SessionBinding {
     updatedAt: row.updated_at,
     lastUsedAt: row.last_used_at,
     requestCount: row.request_count,
+    averageTokensPerSecond: speedDurationMs > 0
+      ? (row.speed_output_tokens ?? 0) * 1000 / speedDurationMs
+      : null,
+    speedRequestCount: row.speed_request_count ?? 0,
   };
 }
 
 function mapUsageRow(row: RequestTokenUsageRow): RequestTokenUsage {
+  const durationMs = row.updated_at > row.created_at ? row.updated_at - row.created_at : null;
   return {
     id: row.id,
     requestId: row.request_id,
@@ -189,6 +205,10 @@ function mapUsageRow(row: RequestTokenUsageRow): RequestTokenUsage {
     totalTokens: row.total_tokens,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    durationMs,
+    tokensPerSecond: durationMs !== null && row.output_tokens > 0
+      ? row.output_tokens * 1000 / durationMs
+      : null,
   };
 }
 
@@ -323,12 +343,31 @@ export class SessionBindingStore {
     const offset = Math.max(0, requestedOffset);
     const search = options.search?.trim();
     const where = search
-      ? "WHERE session_id LIKE ? OR account_email LIKE ? OR model LIKE ? OR model_family LIKE ? OR source LIKE ?"
+      ? "WHERE session_bindings.session_id LIKE ? OR session_bindings.account_email LIKE ? OR session_bindings.model LIKE ? OR session_bindings.model_family LIKE ? OR session_bindings.source LIKE ?"
       : "";
     const args = search ? Array(5).fill(`%${search}%`) : [];
     const rows = this.db.query<BindingRow, any[]>(`
-      SELECT * FROM session_bindings ${where}
-      ORDER BY last_used_at DESC
+      SELECT
+        session_bindings.*,
+        COALESCE(speed.output_tokens, 0) AS speed_output_tokens,
+        COALESCE(speed.duration_ms, 0) AS speed_duration_ms,
+        COALESCE(speed.request_count, 0) AS speed_request_count
+      FROM session_bindings
+      LEFT JOIN (
+        SELECT
+          session_key,
+          model,
+          SUM(output_tokens) AS output_tokens,
+          SUM(updated_at - created_at) AS duration_ms,
+          COUNT(*) AS request_count
+        FROM request_token_usage
+        WHERE output_tokens > 0 AND updated_at > created_at
+        GROUP BY session_key, model
+      ) AS speed
+        ON speed.session_key = session_bindings.session_key
+        AND speed.model = session_bindings.model
+      ${where}
+      ORDER BY session_bindings.last_used_at DESC
       LIMIT ? OFFSET ?
     `).all(...args, limit, offset);
     const countRow = this.db.query<{ count: number }, any[]>(`
@@ -451,6 +490,9 @@ export class SessionBindingStore {
       output_tokens: number;
       reasoning_tokens: number;
       total_tokens: number;
+      timed_requests: number;
+      speed_output_tokens: number;
+      output_duration_ms: number;
     }, any[]>(`
       SELECT
         COUNT(*) AS requests,
@@ -462,13 +504,17 @@ export class SessionBindingStore {
         COALESCE(SUM(CASE WHEN cached_input_tokens_reported = 1 THEN MAX(0, input_tokens - cached_input_tokens) ELSE 0 END), 0) AS uncached_input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-        COALESCE(SUM(total_tokens), 0) AS total_tokens
+        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        COALESCE(SUM(CASE WHEN output_tokens > 0 AND updated_at > created_at THEN 1 ELSE 0 END), 0) AS timed_requests,
+        COALESCE(SUM(CASE WHEN output_tokens > 0 AND updated_at > created_at THEN output_tokens ELSE 0 END), 0) AS speed_output_tokens,
+        COALESCE(SUM(CASE WHEN output_tokens > 0 AND updated_at > created_at THEN updated_at - created_at ELSE 0 END), 0) AS output_duration_ms
       FROM request_token_usage ${where}
     `).get(...args);
     const requests = aggregate?.requests ?? 0;
     const cacheReportedRequests = aggregate?.cached_input_tokens_reported ?? 0;
     const hasCacheMetadata = requests === 0 || cacheReportedRequests > 0;
     const cachedInputTokens = hasCacheMetadata ? (aggregate?.cached_input_tokens ?? 0) : null;
+    const outputDurationMs = aggregate?.output_duration_ms ?? 0;
 
     return {
       records: rows.map(mapUsageRow),
@@ -484,6 +530,11 @@ export class SessionBindingStore {
         outputTokens: aggregate?.output_tokens ?? 0,
         reasoningTokens: aggregate?.reasoning_tokens ?? 0,
         totalTokens: aggregate?.total_tokens ?? 0,
+        timedRequests: aggregate?.timed_requests ?? 0,
+        outputDurationMs,
+        averageTokensPerSecond: outputDurationMs > 0
+          ? (aggregate?.speed_output_tokens ?? 0) * 1000 / outputDurationMs
+          : null,
       },
     };
   }

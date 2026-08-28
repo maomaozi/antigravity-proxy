@@ -187,6 +187,9 @@ describe("session binding store", () => {
       outputTokens: 30,
       reasoningTokens: 5,
       totalTokens: 335,
+      timedRequests: 2,
+      outputDurationMs: expect.any(Number),
+      averageTokensPerSecond: expect.any(Number),
     });
     const reportedOnly = store.listRequestTokenUsage({ sessionKey: identity.key });
     expect(reportedOnly.total).toBe(1);
@@ -198,5 +201,38 @@ describe("session binding store", () => {
     expect(store.listRequestTokenUsage({ from: 1500, to: 2500 }).total).toBe(1);
     expect(store.listRequestTokenUsage({ search: "first@example.com" }).total).toBe(1);
     expect(store.clearRequestTokenUsage()).toBe(2);
+  });
+
+  test("calculates per-request and session-model weighted output speed", () => {
+    const store = createStore();
+    store.record({
+      identity,
+      accountEmail: "speed@example.com",
+      model: "model-speed",
+      modelFamily: "Speed Family",
+      pool: "sandbox",
+    });
+
+    const usage = store.recordRequestTokenUsage({
+      requestId: "request-speed",
+      identity,
+      accountEmail: "speed@example.com",
+      model: "model-speed",
+      modelFamily: "Speed Family",
+      pool: "sandbox",
+      streamed: true,
+      inputTokens: 10,
+      outputTokens: 100,
+      totalTokens: 110,
+      createdAt: Date.now() - 1000,
+    });
+
+    expect(usage.durationMs).toBeGreaterThanOrEqual(1000);
+    expect(usage.tokensPerSecond).toBeGreaterThan(90);
+    expect(usage.tokensPerSecond).toBeLessThanOrEqual(100);
+
+    const binding = store.list().bindings[0];
+    expect(binding.speedRequestCount).toBe(1);
+    expect(binding.averageTokensPerSecond).toBeCloseTo(usage.tokensPerSecond!, 5);
   });
 });

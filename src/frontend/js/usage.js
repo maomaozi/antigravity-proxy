@@ -23,6 +23,21 @@ function formatTokens(value) {
     return tokenFormatter.format(Number(value) || 0);
 }
 
+function formatSpeed(value) {
+    if (value === null || value === undefined) return '—';
+    const speed = Number(value);
+    if (!Number.isFinite(speed)) return '—';
+    return `${speed.toFixed(speed >= 10 ? 1 : 2)} tok/s`;
+}
+
+function formatDuration(value) {
+    if (value === null || value === undefined) return '—';
+    const duration = Number(value);
+    if (!Number.isFinite(duration) || duration < 0) return '—';
+    if (duration < 1000) return `${Math.round(duration)} ms`;
+    return `${(duration / 1000).toFixed(duration < 10_000 ? 2 : 1)} s`;
+}
+
 function usageRelativeTime(timestamp) {
     const diff = Math.max(0, Date.now() - timestamp);
     if (diff < 10_000) return 'just now';
@@ -57,6 +72,8 @@ function renderUsageStats() {
         ? `${reportedInput ? (cached / reportedInput * 100).toFixed(1) : '0.0'}% cache rate${cacheCoverage}`
         : 'Not reported';
     usageById('stat-output').textContent = formatTokens(summary.outputTokens);
+    usageById('stat-speed').textContent = formatSpeed(summary.averageTokensPerSecond);
+    usageById('stat-speed-coverage').textContent = `${formatTokens(summary.timedRequests)} timed request${Number(summary.timedRequests) === 1 ? '' : 's'}`;
     usageById('stat-reasoning').textContent = formatTokens(summary.reasoningTokens);
     usageById('stat-total').textContent = formatTokens(summary.totalTokens);
 }
@@ -64,7 +81,7 @@ function renderUsageStats() {
 function renderUsageTable() {
     const table = usageById('usage-table');
     if (!usageState.records.length) {
-        table.innerHTML = '<tr><td colspan="10" class="p-12 text-center text-zinc-400">// No token usage records found</td></tr>';
+        table.innerHTML = '<tr><td colspan="11" class="p-12 text-center text-zinc-400">// No token usage records found</td></tr>';
     } else {
         table.innerHTML = usageState.records.map(row => {
             const cacheReported = row.cachedInputTokens !== null && row.cachedInputTokens !== undefined;
@@ -76,6 +93,9 @@ function renderUsageTable() {
                 ? '<span title="Cannot derive uncached input without cache metadata">—</span>'
                 : formatTokens(row.uncachedInputTokens);
             const reasoning = row.reasoningTokensReported ? formatTokens(row.reasoningTokens) : '<span title="Upstream did not report reasoning separately">—</span>';
+            const speed = row.tokensPerSecond === null || row.tokensPerSecond === undefined
+                ? '<span title="No valid duration or visible output tokens">—</span>'
+                : `<div class="text-cyan-600 dark:text-cyan-400">${formatSpeed(row.tokensPerSecond)}</div><div class="mt-1 text-[9px] text-zinc-400">${formatDuration(row.durationMs)}</div>`;
             return `<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
                 <td class="px-3 py-3 max-w-[220px]">
                     <div class="text-zinc-700 dark:text-zinc-300" title="${usageEscape(new Date(row.createdAt).toLocaleString())}">${usageRelativeTime(row.createdAt)}</div>
@@ -97,6 +117,7 @@ function renderUsageTable() {
                 <td class="px-3 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">${cached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${uncached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.outputTokens)}</td>
+                <td class="px-3 py-3 text-right tabular-nums" title="Visible output / total end-to-end request time">${speed}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${reasoning}</td>
                 <td class="px-3 py-3 text-right tabular-nums font-bold">${formatTokens(row.totalTokens)}</td>
             </tr>`;
@@ -138,7 +159,7 @@ async function loadUsage() {
         status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     } catch (error) {
         status.textContent = `Refresh failed: ${error.message}`;
-        usageById('usage-table').innerHTML = `<tr><td colspan="10" class="p-12 text-center text-rose-500">${usageEscape(error.message)}</td></tr>`;
+        usageById('usage-table').innerHTML = `<tr><td colspan="11" class="p-12 text-center text-rose-500">${usageEscape(error.message)}</td></tr>`;
     }
 }
 

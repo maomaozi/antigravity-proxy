@@ -31,6 +31,13 @@ function shortEndpoint(endpoint) {
     }
 }
 
+function formatSpeed(value) {
+    if (value === null || value === undefined) return '—';
+    const speed = Number(value);
+    if (!Number.isFinite(speed)) return '—';
+    return `${speed.toFixed(speed >= 10 ? 1 : 2)} tok/s`;
+}
+
 function renderStats() {
     byId('stat-sessions').textContent = new Set(bindings.map(row => row.sessionKey)).size;
     byId('stat-bindings').textContent = totalBindings;
@@ -42,7 +49,7 @@ function renderStats() {
 function renderTable() {
     const table = byId('bindings-table');
     if (bindings.length === 0) {
-        table.innerHTML = '<tr><td colspan="7" class="p-12 text-center text-zinc-400">// No session bindings found</td></tr>';
+        table.innerHTML = '<tr><td colspan="8" class="p-12 text-center text-zinc-400">// No session bindings found</td></tr>';
         renderStats();
         return;
     }
@@ -77,6 +84,10 @@ function renderTable() {
                     <div class="mt-1 text-[9px] text-zinc-400" title="${escapeHtml(row.endpoint || '')}">${endpoint}</div>
                 </td>
                 <td class="px-4 py-3 tabular-nums text-zinc-600 dark:text-zinc-400">${row.requestCount}</td>
+                <td class="px-4 py-3 text-right tabular-nums" title="Weighted visible-output speed for this session and model; includes routing, retries, and first-token wait">
+                    <div class="text-cyan-600 dark:text-cyan-400">${formatSpeed(row.averageTokensPerSecond)}</div>
+                    <div class="mt-1 text-[9px] text-zinc-400">${row.speedRequestCount || 0} timed</div>
+                </td>
                 <td class="px-4 py-3 text-zinc-500" title="${new Date(row.lastUsedAt).toLocaleString()}">${relativeTime(row.lastUsedAt)}</td>
                 <td class="px-4 py-3 text-right">
                     <a href="/frontend/usage.html?session_key=${encodeURIComponent(row.sessionKey)}" class="px-2 py-1 text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 rounded transition-colors">Usage</a>
@@ -108,7 +119,7 @@ async function loadBindings() {
         status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     } catch (error) {
         status.textContent = `Refresh failed: ${error.message}`;
-        byId('bindings-table').innerHTML = `<tr><td colspan="7" class="p-12 text-center text-rose-500">${escapeHtml(error.message)}</td></tr>`;
+        byId('bindings-table').innerHTML = `<tr><td colspan="8" class="p-12 text-center text-rose-500">${escapeHtml(error.message)}</td></tr>`;
     }
 }
 
