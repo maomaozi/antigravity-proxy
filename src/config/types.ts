@@ -9,6 +9,7 @@ export interface ProxyConfig {
   logging: LoggingConfig;
   features: FeaturesConfig;
   scheduling: SchedulingConfig;
+  codex: CodexConfig;
 }
 
 export interface RotationConfig {
@@ -97,4 +98,13 @@ export interface FeaturesConfig {
 export interface SchedulingConfig {
   /** Max seconds to wait for the session-bound account before failing over. */
   maxCacheFirstWaitSeconds: number;
+}
+
+export interface CodexConfig {
+  enabled: boolean;
+  models: string[];
+  baseUrl: string;
+  responsesTimeoutMs: number;
+  compactTimeoutMs: number;
+  maxAttempts: number;
 }

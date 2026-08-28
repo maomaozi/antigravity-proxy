@@ -18,10 +18,17 @@ import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { SUPPORTED_MODELS } from "./models";
 import { resolveSessionIdentity } from "./session/identity";
 import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings } from "./session/store";
+import { CodexAccountManager } from "./codex/account-manager";
+import { CodexDeviceAuthService } from "./codex/device-auth";
+import { CodexProxyService } from "./codex/proxy";
+import { resolveCodexModel } from "./codex/routing";
 
-initSessionBindingStore();
+const sessionStore = initSessionBindingStore();
 
-const SUPPORTED_MODEL_IDS = SUPPORTED_MODELS.map(model => model.id);
+function getSupportedModelIds() {
+  const codexModels = getProxyConfig().codex?.models || [];
+  return [...SUPPORTED_MODELS.map(model => model.id), ...codexModels];
+}
 
 const logBuffer: string[] = [];
 const MAX_LOGS = 200;
@@ -53,6 +60,25 @@ console.warn = (...args) => { originalWarn(...args); captureLog('warn', args); }
 await initManager();
 
 const proxyConfig = getProxyConfig();
+
+const codexAccountManager = new CodexAccountManager({
+  storagePath: process.env.CODEX_ACCOUNTS_FILE || "data/codex-accounts.json",
+});
+await codexAccountManager.init();
+const codexDeviceAuthService = new CodexDeviceAuthService({
+  onCredentials: async credentials => { await codexAccountManager.upsertCredentials(credentials); },
+});
+function createCodexProxyService() {
+  const config = getProxyConfig().codex;
+  return new CodexProxyService({
+    manager: codexAccountManager,
+    store: sessionStore,
+    maxAttempts: config.maxAttempts,
+    responsesTimeoutMs: config.responsesTimeoutMs,
+    compactTimeoutMs: config.compactTimeoutMs,
+    baseUrl: config.baseUrl,
+  });
+}
 
 setInterval(refreshAllQuotas, proxyConfig.quota.refreshIntervalMs);
 // Initial quota refresh on startup
@@ -93,10 +119,17 @@ Bun.serve({
             thinking_levels: model.thinkingLevels,
             default_thinking_level: model.defaultThinkingLevel
         }));
+        const codexModels = (getProxyConfig().codex?.models || []).map(model => ({
+            id: model,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "codex",
+            name: model,
+        }));
 
         return new Response(JSON.stringify({
             object: "list",
-            data: models
+            data: [...models, ...codexModels]
         }), { headers: { 
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
@@ -164,6 +197,25 @@ Bun.serve({
 
     if (cleanPath === "/v1/responses" && req.method === "POST") {
       const responsesBody = await req.json() as any;
+      const modelRoute = resolveCodexModel(responsesBody?.model, getProxyConfig().codex?.models || []);
+      if (modelRoute.provider === "codex") {
+        if (!getProxyConfig().codex.enabled) {
+          return new Response(JSON.stringify({ error: { message: "Codex routing is disabled", type: "service_unavailable" } }), {
+            status: 503,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+          });
+        }
+        const requestId = "resp_" + Math.random().toString(36).substring(2, 14);
+        const requestStartedAt = Date.now();
+        const sessionIdentity = resolveSessionIdentity(req.headers, responsesBody);
+        return createCodexProxyService().responses({
+          body: responsesBody,
+          model: modelRoute.upstreamModel,
+          identity: sessionIdentity,
+          requestId,
+          requestStartedAt,
+        });
+      }
       const responsesValidationError = validateResponsesRequest(responsesBody);
       if (responsesValidationError) {
         return new Response(JSON.stringify({
@@ -247,6 +299,45 @@ Bun.serve({
       });
     }
 
+    if (cleanPath === "/v1/responses/compact" && req.method === "POST") {
+      const compactBody = await req.json() as any;
+      if (typeof compactBody?.model !== "string" || compactBody.model.trim().length === 0) {
+        return new Response(JSON.stringify({ error: { message: "model is required", type: "invalid_request_error" } }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      }
+      if (compactBody?.stream === true) {
+        return new Response(JSON.stringify({ error: { message: "Streaming not supported for compact responses", type: "invalid_request_error" } }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      }
+      const modelRoute = resolveCodexModel(compactBody?.model, getProxyConfig().codex?.models || []);
+      if (modelRoute.provider !== "codex") {
+        return new Response(JSON.stringify({ error: { message: "Compact responses are currently supported only for Codex models", type: "invalid_request_error" } }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      }
+      if (!getProxyConfig().codex.enabled) {
+        return new Response(JSON.stringify({ error: { message: "Codex routing is disabled", type: "service_unavailable" } }), {
+          status: 503,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      }
+      const requestId = "compact_" + Math.random().toString(36).substring(2, 14);
+      const requestStartedAt = Date.now();
+      const sessionIdentity = resolveSessionIdentity(req.headers, compactBody);
+      return createCodexProxyService().compact({
+        body: compactBody,
+        model: modelRoute.upstreamModel,
+        identity: sessionIdentity,
+        requestId,
+        requestStartedAt,
+      });
+    }
+
     if (url.pathname === "/api/sse") {
         let onUpdate: (data: any) => void;
         let onFlash: (data: { email: string, status: 'success' | 'error' }) => void;
@@ -267,12 +358,12 @@ Bun.serve({
                 send("init", {
                     version: APP_VERSION,
                     accounts: getAccounts(),
-                    supportedModels: SUPPORTED_MODEL_IDS,
+                    supportedModels: getSupportedModelIds(),
                     cooldowns: getCooldowns(),
                     logs: logBuffer
                 });
 
-                onUpdate = (data: any) => send("update", { ...data, supportedModels: SUPPORTED_MODEL_IDS });
+                onUpdate = (data: any) => send("update", { ...data, supportedModels: getSupportedModelIds() });
                 onFlash = (data: { email: string, status: 'success' | 'error' }) => send("flash", data);
                 onLog = (msg: string) => send("log", { message: msg });
                 onCooldown = (data: any) => send("cooldown", data);
@@ -374,11 +465,59 @@ Bun.serve({
         });
     }
 
+    if (cleanPath === "/api/codex/accounts" && req.method === "GET") {
+        return new Response(JSON.stringify({ accounts: codexAccountManager.listPublic() }), {
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+    }
+
+    if (cleanPath.startsWith("/api/codex/accounts/") && req.method === "DELETE") {
+        const email = decodeURIComponent(cleanPath.slice("/api/codex/accounts/".length));
+        const removed = email ? await codexAccountManager.remove(email) : false;
+        return new Response(JSON.stringify({ removed }), {
+            status: removed ? 200 : 404,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+    }
+
+    if (cleanPath === "/api/codex/auth/device/start" && req.method === "POST") {
+        try {
+            const state = await codexDeviceAuthService.start();
+            return new Response(JSON.stringify(state), {
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+            });
+        } catch (error: any) {
+            return new Response(JSON.stringify({ error: error?.message || "Failed to start Codex device login" }), {
+                status: 502,
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+            });
+        }
+    }
+
+    if (cleanPath.startsWith("/api/codex/auth/device/") && req.method === "GET") {
+        const loginId = cleanPath.slice("/api/codex/auth/device/".length);
+        const state = codexDeviceAuthService.get(loginId);
+        return new Response(JSON.stringify(state || { error: "Device login not found" }), {
+            status: state ? 200 : 404,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+    }
+
+    if (cleanPath.startsWith("/api/codex/auth/device/") && req.method === "DELETE") {
+        const loginId = cleanPath.slice("/api/codex/auth/device/".length);
+        const cancelled = codexDeviceAuthService.cancel(loginId);
+        return new Response(JSON.stringify({ cancelled }), {
+            status: cancelled ? 200 : 404,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+    }
+
     if (url.pathname === "/api/status") {
         return new Response(JSON.stringify({
             version: APP_VERSION,
             accounts: getAccounts(),
-            supportedModels: SUPPORTED_MODEL_IDS
+            codexAccounts: codexAccountManager.listPublic(),
+            supportedModels: getSupportedModelIds()
         }), { headers: { "Content-Type": "application/json" } });
     }
 

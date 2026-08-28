@@ -8,8 +8,15 @@ let isLogsCollapsed = false;
 let isResizing = false;
 let userHasScrolledLogs = false;
 let currentConfig = null;
+let globalCodexAccounts = [];
+let activeCodexLoginId = null;
+let codexLoginPollTimer = null;
 
 const $ = (id) => document.getElementById(id);
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>\"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' }[ch]));
+}
 
 function getCategoryCooldown(email, category, quotas) {
      const now = Date.now();
@@ -707,6 +714,151 @@ async function redisoverProject(email) {
     }
 }
 
+function renderCodexAccounts() {
+    const tbody = $('codex-accounts-table-body');
+    if (!tbody) return;
+    if (!globalCodexAccounts.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center text-xs text-zinc-400">// No Codex accounts. Add one with device-code login.</td></tr>';
+        return;
+    }
+    const now = Date.now();
+    tbody.innerHTML = globalCodexAccounts.map(account => {
+        const cooling = Number(account.cooldownUntil || 0) > now;
+        const expiresAt = Number(account.expiresAt || 0);
+        const expiry = expiresAt > now ? `${Math.max(1, Math.ceil((expiresAt - now) / 60000))}m` : 'refresh on use';
+        return `<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
+            <td class="px-4 py-3">
+                <div class="text-xs text-zinc-800 dark:text-zinc-200">${escapeHtml(account.email)}</div>
+                <div class="mt-1 text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Codex OAuth</div>
+            </td>
+            <td class="px-4 py-3 text-[10px] text-zinc-500 font-mono">${escapeHtml(account.accountId || '-')}</td>
+            <td class="px-4 py-3 text-[10px] text-zinc-500">${escapeHtml(expiry)}</td>
+            <td class="px-4 py-3">
+                <span class="inline-flex px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase ${cooling ? 'border-amber-200 dark:border-amber-900 text-amber-600 dark:text-amber-400' : 'border-emerald-200 dark:border-emerald-900 text-emerald-600 dark:text-emerald-400'}">${cooling ? 'Cooldown' : 'Ready'}</span>
+            </td>
+            <td class="px-4 py-3 text-right">
+                <button data-codex-delete="${encodeURIComponent(account.email)}" class="px-2 py-1 text-[9px] uppercase tracking-wider text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors">Remove</button>
+            </td>
+        </tr>`;
+    }).join('');
+    tbody.querySelectorAll('[data-codex-delete]').forEach(button => {
+        button.addEventListener('click', () => deleteCodexAccount(decodeURIComponent(button.dataset.codexDelete)));
+    });
+}
+
+async function loadCodexAccounts() {
+    try {
+        const response = await fetch('/api/codex/accounts');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        globalCodexAccounts = data.accounts || [];
+        renderCodexAccounts();
+    } catch (error) {
+        const tbody = $('codex-accounts-table-body');
+        if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-xs text-rose-500">${escapeHtml(error.message)}</td></tr>`;
+    }
+}
+
+async function deleteCodexAccount(email) {
+    if (!confirm(`Delete Codex account ${email}?`)) return;
+    const response = await fetch(`/api/codex/accounts/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    if (!response.ok) {
+        addLog(`[CODEX] Failed to remove ${email}: HTTP ${response.status}`);
+        return;
+    }
+    addLog(`[CODEX] Removed ${email}`);
+    await loadCodexAccounts();
+}
+
+function setCodexDeviceStatus(message, isError = false) {
+    const status = $('codex-device-status');
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle('text-rose-500', isError);
+    status.classList.toggle('text-zinc-500', !isError);
+}
+
+async function startCodexDeviceLogin() {
+    const modal = $('codex-device-modal');
+    const content = $('codex-device-content');
+    if (!modal || !content) return;
+    if (codexLoginPollTimer) clearTimeout(codexLoginPollTimer);
+    activeCodexLoginId = null;
+    modal.classList.remove('hidden');
+    content.classList.add('hidden');
+    setCodexDeviceStatus('Requesting a one-time device code...');
+    try {
+        const response = await fetch('/api/codex/auth/device/start', { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        activeCodexLoginId = data.loginId;
+        $('codex-device-link').textContent = data.verificationUrl;
+        $('codex-device-link').href = data.verificationUrl;
+        $('codex-device-open').href = data.verificationUrl;
+        $('codex-device-code').textContent = data.userCode;
+        content.classList.remove('hidden');
+        setCodexDeviceStatus('Waiting for authorization in your browser...');
+        scheduleCodexLoginPoll();
+    } catch (error) {
+        setCodexDeviceStatus(error.message || String(error), true);
+    }
+}
+
+function scheduleCodexLoginPoll() {
+    if (!activeCodexLoginId) return;
+    codexLoginPollTimer = setTimeout(pollCodexDeviceLogin, 1000);
+}
+
+async function pollCodexDeviceLogin() {
+    const loginId = activeCodexLoginId;
+    if (!loginId) return;
+    try {
+        const response = await fetch(`/api/codex/auth/device/${encodeURIComponent(loginId)}`);
+        const state = await response.json();
+        if (!response.ok) throw new Error(state.error || `HTTP ${response.status}`);
+        if (state.status === 'waiting') {
+            setCodexDeviceStatus('Waiting for authorization in your browser...');
+            scheduleCodexLoginPoll();
+            return;
+        }
+        if (state.status === 'completed') {
+            setCodexDeviceStatus(`Signed in as ${state.email || 'Codex account'}.`);
+            activeCodexLoginId = null;
+            await loadCodexAccounts();
+            addLog(`[CODEX] Added ${state.email || 'account'} via device code`);
+            setTimeout(() => $('codex-device-modal')?.classList.add('hidden'), 900);
+            return;
+        }
+        setCodexDeviceStatus(state.error || `Device login ${state.status}.`, state.status === 'failed');
+        activeCodexLoginId = null;
+    } catch (error) {
+        setCodexDeviceStatus(error.message || String(error), true);
+        activeCodexLoginId = null;
+    }
+}
+
+async function cancelCodexDeviceLogin() {
+    if (codexLoginPollTimer) clearTimeout(codexLoginPollTimer);
+    codexLoginPollTimer = null;
+    const loginId = activeCodexLoginId;
+    activeCodexLoginId = null;
+    if (loginId) {
+        try { await fetch(`/api/codex/auth/device/${encodeURIComponent(loginId)}`, { method: 'DELETE' }); } catch {}
+    }
+    $('codex-device-modal')?.classList.add('hidden');
+}
+
+async function copyCodexDeviceCode() {
+    const code = $('codex-device-code')?.textContent || '';
+    if (!code) return;
+    try {
+        await navigator.clipboard.writeText(code);
+        setCodexDeviceStatus('Code copied. Waiting for authorization...');
+    } catch {
+        setCodexDeviceStatus('Copy failed; select the code manually.', true);
+    }
+}
+
 async function loadConfig() {
     try {
         const res = await fetch('/api/config');
@@ -735,6 +887,10 @@ function openConfigModal() {
     $('cfg-blacklist').value = currentConfig.models.blacklist.join('\n');
     $('cfg-retry-max').value = currentConfig.retry.maxAttempts;
     $('cfg-retry-threshold').value = currentConfig.retry.transientRetryThresholdSeconds;
+    $('cfg-codex-enabled').checked = currentConfig.codex?.enabled !== false;
+    $('cfg-codex-models').value = (currentConfig.codex?.models || []).join('\n');
+    $('cfg-codex-responses-timeout').value = currentConfig.codex?.responsesTimeoutMs || 120000;
+    $('cfg-codex-compact-timeout').value = currentConfig.codex?.compactTimeoutMs || 60000;
     $('config-modal').classList.remove('hidden');
 }
 
@@ -774,6 +930,12 @@ async function saveConfig() {
         retry: {
             maxAttempts: parseInt($('cfg-retry-max').value),
             transientRetryThresholdSeconds: parseInt($('cfg-retry-threshold').value)
+        },
+        codex: {
+            enabled: $('cfg-codex-enabled').checked,
+            models: $('cfg-codex-models').value.split('\n').map(line => line.trim()).filter(Boolean),
+            responsesTimeoutMs: parseInt($('cfg-codex-responses-timeout').value),
+            compactTimeoutMs: parseInt($('cfg-codex-compact-timeout').value)
         }
     };
 
@@ -832,6 +994,7 @@ function setupSSE() {
 function initializeApp() {
     initTheme();
     loadConfig();
+    loadCodexAccounts();
     setupSSE();
     setupLogsInteraction();
     setInterval(() => {

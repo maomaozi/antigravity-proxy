@@ -238,3 +238,108 @@ describe("session binding store", () => {
     expect(binding.averageTokensPerSecond).toBeCloseTo(usage.tokensPerSecond!, 5);
   });
 });
+
+describe("Codex session statistics compatibility", () => {
+  test("stores Codex compact as a first-class endpoint under the same session", () => {
+    const store = createStore();
+    const binding = store.record({
+      identity,
+      accountEmail: "codex@example.com",
+      model: "gpt-5-codex",
+      modelFamily: "Codex",
+      pool: "codex",
+      endpoint: "/v1/responses/compact",
+      upstreamSessionId: "upstream-session-1",
+    });
+    const usage = store.recordRequestTokenUsage({
+      requestId: "compact-1",
+      identity,
+      accountEmail: "codex@example.com",
+      model: "gpt-5-codex",
+      modelFamily: "Codex",
+      upstreamModel: "gpt-5-codex",
+      pool: "codex",
+      endpoint: "/v1/responses/compact",
+      streamed: false,
+      inputTokens: 100,
+      cachedInputTokens: 40,
+      outputTokens: 10,
+      reasoningTokens: 5,
+      reasoningTokensReported: true,
+      totalTokens: 115,
+    });
+    expect(binding.pool).toBe("codex");
+    expect(binding.upstreamSessionId).toBe("upstream-session-1");
+    expect(usage.endpoint).toBe("/v1/responses/compact");
+    expect(store.listRequestTokenUsage({ sessionKey: identity.key }).records[0].requestId).toBe("compact-1");
+  });
+
+  test("migrates legacy cli/sandbox CHECK constraints without losing historical rows", async () => {
+    const { Database } = await import("bun:sqlite");
+    const directory = mkdtempSync(join(tmpdir(), "antigravity-codex-migration-test-"));
+    tempDirectories.push(directory);
+    const path = join(directory, "legacy.sqlite");
+    const db = new Database(path, { create: true });
+    db.exec(`
+      CREATE TABLE session_bindings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        inferred INTEGER NOT NULL DEFAULT 0,
+        account_email TEXT NOT NULL,
+        model TEXT NOT NULL,
+        model_family TEXT NOT NULL,
+        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox')),
+        project_id TEXT,
+        endpoint TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_used_at INTEGER NOT NULL,
+        request_count INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(session_key, model)
+      );
+      CREATE TABLE request_token_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL UNIQUE,
+        session_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        session_source TEXT NOT NULL,
+        session_inferred INTEGER NOT NULL DEFAULT 0,
+        account_email TEXT NOT NULL,
+        model TEXT NOT NULL,
+        model_family TEXT NOT NULL,
+        upstream_model TEXT,
+        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox')),
+        endpoint TEXT,
+        streamed INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens_reported INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens_reported INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO session_bindings (session_key, session_id, source, inferred, account_email, model, model_family, pool, created_at, updated_at, last_used_at, request_count)
+      VALUES ('legacy-key', 'legacy-id', 'legacy', 0, 'legacy@example.com', 'legacy-model', 'Legacy', 'sandbox', 1, 2, 2, 3);
+      INSERT INTO request_token_usage (request_id, session_key, session_id, session_source, session_inferred, account_email, model, model_family, pool, streamed, input_tokens, output_tokens, total_tokens, created_at, updated_at)
+      VALUES ('legacy-request', 'legacy-key', 'legacy-id', 'legacy', 0, 'legacy@example.com', 'legacy-model', 'Legacy', 'sandbox', 0, 10, 5, 15, 1, 2);
+    `);
+    db.close();
+
+    const store = new SessionBindingStore(path);
+    stores.push(store);
+    expect(store.get("legacy-key", "legacy-model")?.requestCount).toBe(3);
+    expect(store.listRequestTokenUsage({ sessionKey: "legacy-key" }).records[0].requestId).toBe("legacy-request");
+    expect(store.record({
+      identity,
+      accountEmail: "codex@example.com",
+      model: "gpt-5-codex",
+      modelFamily: "Codex",
+      pool: "codex",
+    }).pool).toBe("codex");
+  });
+});

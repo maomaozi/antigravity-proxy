@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SessionIdentity } from "./identity";
 
-export type SessionPool = "cli" | "sandbox";
+export type SessionPool = "cli" | "sandbox" | "codex";
 
 export interface SessionBinding {
   id: number;
@@ -17,6 +17,7 @@ export interface SessionBinding {
   pool: SessionPool;
   projectId: string | null;
   endpoint: string | null;
+  upstreamSessionId: string | null;
   createdAt: number;
   updatedAt: number;
   lastUsedAt: number;
@@ -33,6 +34,7 @@ export interface RecordBindingInput {
   pool: SessionPool;
   projectId?: string;
   endpoint?: string;
+  upstreamSessionId?: string;
 }
 
 export interface RequestTokenUsage {
@@ -119,6 +121,7 @@ interface BindingRow {
   pool: SessionPool;
   project_id: string | null;
   endpoint: string | null;
+  upstream_session_id: string | null;
   created_at: number;
   updated_at: number;
   last_used_at: number;
@@ -167,6 +170,7 @@ function mapRow(row: BindingRow): SessionBinding {
     pool: row.pool,
     projectId: row.project_id,
     endpoint: row.endpoint,
+    upstreamSessionId: row.upstream_session_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastUsedAt: row.last_used_at,
@@ -234,9 +238,10 @@ export class SessionBindingStore {
         account_email TEXT NOT NULL,
         model TEXT NOT NULL,
         model_family TEXT NOT NULL,
-        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox')),
+        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
         project_id TEXT,
         endpoint TEXT,
+        upstream_session_id TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         last_used_at INTEGER NOT NULL,
@@ -259,7 +264,7 @@ export class SessionBindingStore {
         model TEXT NOT NULL,
         model_family TEXT NOT NULL,
         upstream_model TEXT,
-        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox')),
+        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
         endpoint TEXT,
         streamed INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -282,9 +287,126 @@ export class SessionBindingStore {
         ON request_token_usage(account_email, created_at DESC);
     `);
 
-    const usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
+    let usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
     if (!usageColumns.some(column => column.name === "cached_input_tokens_reported")) {
       this.db.exec("ALTER TABLE request_token_usage ADD COLUMN cached_input_tokens_reported INTEGER NOT NULL DEFAULT 0;");
+      usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
+    }
+    this.migrateLegacyPoolConstraints();
+    const bindingColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(session_bindings)").all();
+    if (!bindingColumns.some(column => column.name === "upstream_session_id")) {
+      this.db.exec("ALTER TABLE session_bindings ADD COLUMN upstream_session_id TEXT;");
+    }
+  }
+
+  private migrateLegacyPoolConstraints(): void {
+    const bindingSql = this.db.query<{ sql: string | null }, [string]>(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get("session_bindings")?.sql || "";
+    const usageSql = this.db.query<{ sql: string | null }, [string]>(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get("request_token_usage")?.sql || "";
+    const migrateBindings = bindingSql.includes("CHECK") && !bindingSql.includes("'codex'");
+    const migrateUsage = usageSql.includes("CHECK") && !usageSql.includes("'codex'");
+    if (!migrateBindings && !migrateUsage) return;
+
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      if (migrateBindings) {
+        this.db.exec(`
+          DROP INDEX IF EXISTS idx_session_bindings_updated_at;
+          DROP INDEX IF EXISTS idx_session_bindings_account;
+          ALTER TABLE session_bindings RENAME TO session_bindings_legacy_pool;
+          CREATE TABLE session_bindings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_key TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            inferred INTEGER NOT NULL DEFAULT 0,
+            account_email TEXT NOT NULL,
+            model TEXT NOT NULL,
+            model_family TEXT NOT NULL,
+            pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
+            project_id TEXT,
+            endpoint TEXT,
+            upstream_session_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            last_used_at INTEGER NOT NULL,
+            request_count INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(session_key, model)
+          );
+          INSERT INTO session_bindings (
+            id, session_key, session_id, source, inferred, account_email, model,
+            model_family, pool, project_id, endpoint, upstream_session_id,
+            created_at, updated_at, last_used_at, request_count
+          )
+          SELECT
+            id, session_key, session_id, source, inferred, account_email, model,
+            model_family, pool, project_id, endpoint, NULL,
+            created_at, updated_at, last_used_at, request_count
+          FROM session_bindings_legacy_pool;
+          DROP TABLE session_bindings_legacy_pool;
+          CREATE INDEX idx_session_bindings_updated_at ON session_bindings(updated_at DESC);
+          CREATE INDEX idx_session_bindings_account ON session_bindings(account_email);
+        `);
+      }
+      if (migrateUsage) {
+        this.db.exec(`
+          DROP INDEX IF EXISTS idx_request_token_usage_session;
+          DROP INDEX IF EXISTS idx_request_token_usage_created_at;
+          DROP INDEX IF EXISTS idx_request_token_usage_model;
+          DROP INDEX IF EXISTS idx_request_token_usage_account;
+          ALTER TABLE request_token_usage RENAME TO request_token_usage_legacy_pool;
+          CREATE TABLE request_token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL UNIQUE,
+            session_key TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            session_source TEXT NOT NULL,
+            session_inferred INTEGER NOT NULL DEFAULT 0,
+            account_email TEXT NOT NULL,
+            model TEXT NOT NULL,
+            model_family TEXT NOT NULL,
+            upstream_model TEXT,
+            pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
+            endpoint TEXT,
+            streamed INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_input_tokens_reported INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens_reported INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          );
+          INSERT INTO request_token_usage (
+            id, request_id, session_key, session_id, session_source, session_inferred,
+            account_email, model, model_family, upstream_model, pool, endpoint,
+            streamed, input_tokens, cached_input_tokens, cached_input_tokens_reported,
+            output_tokens, reasoning_tokens, reasoning_tokens_reported, total_tokens,
+            created_at, updated_at
+          )
+          SELECT
+            id, request_id, session_key, session_id, session_source, session_inferred,
+            account_email, model, model_family, upstream_model, pool, endpoint,
+            streamed, input_tokens, cached_input_tokens, cached_input_tokens_reported,
+            output_tokens, reasoning_tokens, reasoning_tokens_reported, total_tokens,
+            created_at, updated_at
+          FROM request_token_usage_legacy_pool;
+          DROP TABLE request_token_usage_legacy_pool;
+          CREATE INDEX idx_request_token_usage_session ON request_token_usage(session_key, created_at DESC);
+          CREATE INDEX idx_request_token_usage_created_at ON request_token_usage(created_at DESC);
+          CREATE INDEX idx_request_token_usage_model ON request_token_usage(model, created_at DESC);
+          CREATE INDEX idx_request_token_usage_account ON request_token_usage(account_email, created_at DESC);
+        `);
+      }
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
     }
   }
 
@@ -303,9 +425,9 @@ export class SessionBindingStore {
     this.db.query(`
       INSERT INTO session_bindings (
         session_key, session_id, source, inferred, account_email, model,
-        model_family, pool, project_id, endpoint, created_at, updated_at,
+        model_family, pool, project_id, endpoint, upstream_session_id, created_at, updated_at,
         last_used_at, request_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       ON CONFLICT(session_key, model) DO UPDATE SET
         session_id = excluded.session_id,
         source = excluded.source,
@@ -315,6 +437,7 @@ export class SessionBindingStore {
         pool = excluded.pool,
         project_id = excluded.project_id,
         endpoint = excluded.endpoint,
+        upstream_session_id = COALESCE(excluded.upstream_session_id, session_bindings.upstream_session_id),
         updated_at = excluded.updated_at,
         last_used_at = excluded.last_used_at,
         request_count = session_bindings.request_count + 1
@@ -329,6 +452,7 @@ export class SessionBindingStore {
       input.pool,
       input.projectId ?? null,
       input.endpoint ?? null,
+      input.upstreamSessionId ?? null,
       now,
       now,
       now,

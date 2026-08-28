@@ -89,6 +89,14 @@ const DEFAULT_CONFIG: ProxyConfig = {
   },
   scheduling: {
     maxCacheFirstWaitSeconds: 60
+  },
+  codex: {
+    enabled: true,
+    models: [],
+    baseUrl: 'https://chatgpt.com/backend-api/codex',
+    responsesTimeoutMs: 120000,
+    compactTimeoutMs: 60000,
+    maxAttempts: 3
   }
 };
 

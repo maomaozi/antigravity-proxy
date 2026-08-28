@@ -40,9 +40,11 @@ PORT=3001 bun run start
 
 ## API Usage
 
-The proxy supports both OpenAI Chat Completions (`/v1/chat/completions`) and
-Responses (`/v1/responses`) request/stream formats. If the server is running on
-a different port, replace `3000` in the examples below.
+The proxy supports OpenAI Chat Completions (`/v1/chat/completions`) and
+Responses (`/v1/responses`) request/stream formats. Codex OAuth accounts can
+also use native Responses forwarding and context compaction
+(`/v1/responses/compact`). If the server is running on a different port,
+replace `3000` in the examples below.
 
 ### Basic Chat Completion
 
@@ -96,6 +98,77 @@ Conversation history is currently stateless: resend the complete ordered
 that do not have an equivalent in the current implementation are rejected
 explicitly, including `previous_response_id`, `conversation`, `store: true`,
 background responses, file-ID input, and remote image URLs.
+
+### Codex OAuth and Native Responses
+
+Codex is kept on a separate upstream protocol path: it does **not** pass through
+the Antigravity/Google request or response translators. Route a model to Codex
+in either of these explicit ways:
+
+- Use `codex/<upstream-model>` in a request, for example `codex/gpt-5-codex`.
+- Add the raw upstream model ID to `codex.models` in `config.json` (or through
+  the dashboard configuration dialog).
+
+This explicit routing avoids collisions with Antigravity models whose names
+also contain `gpt`.
+
+Add Codex OAuth accounts from the dashboard with **Add Codex Account**. The
+proxy requests an OpenAI device code, displays the verification URL and
+one-time code, and performs polling/token exchange on the server. The browser
+never receives the device auth ID, access token, refresh token, or ID token.
+Codex credentials are stored separately in `data/codex-accounts.json` by
+default; set `CODEX_ACCOUNTS_FILE` to use another path.
+
+For native Codex Responses:
+
+```bash
+curl http://127.0.0.1:3000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "codex/gpt-5-codex",
+    "input": "Summarize this repository.",
+    "stream": true
+  }'
+```
+
+Streaming Responses bytes are forwarded without re-serializing them. A side
+observer reads final usage metadata for the existing Usage/Sessions statistics.
+When `stream` is false, the native upstream SSE is aggregated into canonical
+Responses JSON without translating output item types.
+
+Codex context compaction is exposed as a peer endpoint:
+
+```bash
+curl http://127.0.0.1:3000/v1/responses/compact \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "codex/gpt-5-codex",
+    "input": []
+  }'
+```
+
+Compact is non-streaming. Its input, cached input, visible output, reasoning,
+total tokens, account, model, and `/v1/responses/compact` endpoint are recorded
+in the same per-request usage store and under the same session affinity as
+ordinary `/v1/responses` calls. Codex `output_tokens` includes reasoning tokens;
+the proxy normalizes that only for internal statistics so visible output and
+reasoning keep the dashboard's existing non-overlapping meanings. The upstream
+API response itself is not changed.
+
+The default Codex configuration is equivalent to:
+
+```json
+{
+  "codex": {
+    "enabled": true,
+    "models": [],
+    "baseUrl": "https://chatgpt.com/backend-api/codex",
+    "responsesTimeoutMs": 120000,
+    "compactTimeoutMs": 60000,
+    "maxAttempts": 3
+  }
+}
+```
 
 ### Session Affinity
 
@@ -308,4 +381,6 @@ accounts are ranked by health and idle time before a new binding is persisted.
 
 ## Security Notes
 - **Safety Filters**: Controlled via `SAFETY_THRESHOLD` (default: `BLOCK_NONE`).
-- **Credentials**: OAuth tokens are stored locally in `antigravity-accounts.json`. Do not share or commit this file.
+- **Antigravity credentials**: OAuth tokens are stored locally in `antigravity-accounts.json`. Do not share or commit this file.
+- **Codex credentials**: Codex OAuth tokens are stored separately in `data/codex-accounts.json` by default. `data/` is ignored by Git; keep any custom `CODEX_ACCOUNTS_FILE` private as well.
+- **Device-code login**: Only the verification URL, one-time user code, status, and login ID are exposed to the dashboard. Token polling and token exchange stay server-side.

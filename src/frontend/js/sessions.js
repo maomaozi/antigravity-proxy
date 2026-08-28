@@ -80,7 +80,7 @@ function renderTable() {
                     <div class="mt-1 text-[9px] text-zinc-400">${family}</div>
                 </td>
                 <td class="px-4 py-3">
-                    <span class="inline-flex px-1.5 py-0.5 rounded border ${row.pool === 'cli' ? 'border-blue-200 dark:border-blue-900 text-blue-600 dark:text-blue-400' : 'border-violet-200 dark:border-violet-900 text-violet-600 dark:text-violet-400'} text-[9px] font-bold uppercase">${escapeHtml(row.pool)}</span>
+                    <span class="inline-flex px-1.5 py-0.5 rounded border ${row.pool === 'cli' ? 'border-blue-200 dark:border-blue-900 text-blue-600 dark:text-blue-400' : row.pool === 'codex' ? 'border-amber-200 dark:border-amber-900 text-amber-600 dark:text-amber-400' : 'border-violet-200 dark:border-violet-900 text-violet-600 dark:text-violet-400'} text-[9px] font-bold uppercase">${escapeHtml(row.pool)}</span>
                     <div class="mt-1 text-[9px] text-zinc-400" title="${escapeHtml(row.endpoint || '')}">${endpoint}</div>
                 </td>
                 <td class="px-4 py-3 tabular-nums text-zinc-600 dark:text-zinc-400">${row.requestCount}</td>
