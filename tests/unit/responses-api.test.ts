@@ -262,6 +262,45 @@ describe("Responses API request adapter", () => {
     expect(outputs.map((part: any) => part.functionResponse.id)).toEqual(["call_a", "call_b"]);
   });
 
+  test("preserves Codex view_image output as a Gemini multimodal function response", () => {
+    const imageUrl = "data:image/png;base64,aGVsbG8=";
+    const body = {
+      model: "antigravity-gemini-3.7-flash",
+      input: [
+        { role: "user", content: "Inspect the local image" },
+        {
+          type: "function_call",
+          call_id: "call_view_image",
+          name: "view_image",
+          arguments: '{"path":"/tmp/test.png"}',
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_view_image",
+          output: [{ type: "input_image", image_url: imageUrl, detail: "high" }],
+        },
+      ],
+    };
+
+    expect(validateResponsesRequest(body)).toBeUndefined();
+    const request = adaptResponsesRequest(body);
+    expect(request.messages[2]).toEqual({
+      role: "tool",
+      content: [{ type: "image", url: imageUrl }],
+      toolCallId: "call_view_image",
+    });
+
+    const google = transformCompletionToGoogleBody(request, "project", false, "", "session");
+    expect(google.request.contents[2].parts).toEqual([{
+      functionResponse: {
+        id: "call_view_image",
+        name: "view_image",
+        response: { result: "" },
+        parts: [{ inlineData: { mimeType: "image/png", data: "aGVsbG8=" } }],
+      },
+    }]);
+  });
+
   test("rejects Responses-only platform features that the proxy cannot implement faithfully", () => {
     expect(validateResponsesRequest({ model: "m", input: "hi", previous_response_id: "resp_old" })).toContain("previous_response_id");
     expect(validateResponsesRequest({ model: "m", input: "hi", store: true })).toContain("store=true");

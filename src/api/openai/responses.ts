@@ -14,15 +14,20 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function outputString(value: unknown): string {
+function adaptToolOutput(value: unknown): string | CompletionContentPart[] {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
-    return value
-      .map(part => {
-        if (part?.type === "input_text" || part?.type === "output_text") return String(part.text ?? "");
-        return JSON.stringify(part);
-      })
-      .join("");
+    const parts: CompletionContentPart[] = [];
+    for (const part of value) {
+      if (part?.type === "input_text" || part?.type === "output_text" || part?.type === "text") {
+        parts.push({ type: "text", text: String(part.text ?? "") });
+      } else if (part?.type === "input_image" && typeof part.image_url === "string") {
+        parts.push({ type: "image", url: part.image_url });
+      } else {
+        parts.push({ type: "text", text: JSON.stringify(part) });
+      }
+    }
+    return parts;
   }
   return JSON.stringify(value ?? "");
 }
@@ -290,7 +295,7 @@ function adaptInputItems(input: unknown, instructions: unknown): CompletionMessa
       flushAssistant();
       messages.push({
         role: "tool",
-        content: outputString(item.output),
+        content: adaptToolOutput(item.output),
         toolCallId: String(item.call_id ?? ""),
         name: asString(item.name),
       });

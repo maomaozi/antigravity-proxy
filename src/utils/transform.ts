@@ -351,17 +351,35 @@ export function transformCompletionToGoogleBody(
     }
   }
 
+  const toInlineData = (url: string) => {
+    const match = url.match(/^data:([^;,]+);base64,(.+)$/s);
+    if (!match) return undefined;
+    return { inlineData: { mimeType: match[1], data: match[2] } };
+  };
+
   const toFunctionResponsePart = (msg: any) => {
+    const contentParts = Array.isArray(msg.content) ? msg.content : undefined;
+    const textContent = contentParts
+      ? contentParts.filter((part: any) => part?.type === "text").map((part: any) => part.text ?? "").join("")
+      : msg.content;
+
     let responseObj;
     try {
-      responseObj = typeof msg.content === "string" ? JSON.parse(msg.content) : msg.content;
+      responseObj = typeof textContent === "string" ? JSON.parse(textContent) : textContent;
     } catch {
-      responseObj = msg.content;
+      responseObj = textContent;
     }
 
     if (typeof responseObj !== "object" || responseObj === null || Array.isArray(responseObj)) {
-      responseObj = { result: responseObj };
+      responseObj = { result: responseObj ?? "" };
     }
+
+    const mediaParts = contentParts
+      ? contentParts
+          .filter((part: any) => part?.type === "image" && typeof part.url === "string")
+          .map((part: any) => toInlineData(part.url))
+          .filter(Boolean)
+      : [];
 
     const { callId } = decodeToolCallMetadata(msg.toolCallId);
     // The name is part of Google's correlation contract. Prefer the name of
@@ -373,7 +391,8 @@ export function transformCompletionToGoogleBody(
         name: proxyConfig.features.sanitizeToolNames
           ? sanitizeFunctionName(responseName)
           : responseName,
-        response: responseObj
+        response: responseObj,
+        ...(mediaParts.length ? { parts: mediaParts } : {}),
       }
     };
   };
@@ -412,18 +431,8 @@ export function transformCompletionToGoogleBody(
           if (part.type === "text") {
             parts.push({ text: part.text });
            } else if (part.type === "image" && part.url) {
-            const url = part.url;
-            if (url.startsWith("data:")) {
-              const match = url.match(/^data:([^;]+);base64,(.+)$/);
-              if (match) {
-                parts.push({
-                  inlineData: {
-                    mimeType: match[1],
-                    data: match[2]
-                  }
-                });
-              }
-            }
+            const inlineData = toInlineData(part.url);
+            if (inlineData) parts.push(inlineData);
           }
         }
       } else {
