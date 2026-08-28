@@ -65,6 +65,13 @@ const codexAccountManager = new CodexAccountManager({
   storagePath: process.env.CODEX_ACCOUNTS_FILE || "data/codex-accounts.json",
 });
 await codexAccountManager.init();
+const CODEX_USAGE_REFRESH_MS = 60_000;
+const refreshCodexUsageState = () => codexAccountManager.getUsageSnapshots().catch(error => {
+  console.warn(`[Codex] Usage refresh failed: ${error?.message || error}`);
+});
+const codexUsageTimer = setInterval(refreshCodexUsageState, CODEX_USAGE_REFRESH_MS);
+codexUsageTimer.unref();
+refreshCodexUsageState();
 const codexDeviceAuthService = new CodexDeviceAuthService({
   onCredentials: async credentials => { await codexAccountManager.upsertCredentials(credentials); },
 });
@@ -468,6 +475,17 @@ Bun.serve({
     if (cleanPath === "/api/codex/accounts" && req.method === "GET") {
         return new Response(JSON.stringify({ accounts: codexAccountManager.listPublic() }), {
             headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+    }
+
+    if (cleanPath === "/api/codex/usage" && req.method === "GET") {
+        const accounts = await codexAccountManager.getUsageSnapshots();
+        return new Response(JSON.stringify({ accounts, generatedAt: Date.now() }), {
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "no-store"
+            }
         });
     }
 

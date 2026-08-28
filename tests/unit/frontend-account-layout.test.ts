@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 const header = await Bun.file(new URL("../../src/frontend/components/header.html", import.meta.url)).text();
 const main = await Bun.file(new URL("../../src/frontend/components/main.html", import.meta.url)).text();
+const app = await Bun.file(new URL("../../src/frontend/js/app.js", import.meta.url)).text();
 
 describe("dashboard account provider layout", () => {
   test("keeps provider login actions out of the global header", () => {
@@ -16,5 +17,16 @@ describe("dashboard account provider layout", () => {
     expect(main).toContain('href="/oauth/start"');
     expect(main).toContain("Add Google Account");
     expect(main).toContain("Add Codex Account");
+  });
+
+  test("exposes Codex quota usage and reset controls in the account table", () => {
+    expect(main).toContain("Refresh Usage");
+    expect(main).toContain(">Usage</th>");
+    expect(main).toContain(">Reset</th>");
+  });
+
+  test("renders Codex quota windows with Google-style remaining bars", () => {
+    expect(app).toContain("codexQuotaBarClass");
+    expect(app).toContain("% left");
   });
 });

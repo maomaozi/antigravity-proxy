@@ -117,7 +117,19 @@ proxy requests an OpenAI device code, displays the verification URL and
 one-time code, and performs polling/token exchange on the server. The browser
 never receives the device auth ID, access token, refresh token, or ID token.
 Codex credentials are stored separately in `data/codex-accounts.json` by
-default; set `CODEX_ACCOUNTS_FILE` to use another path.
+default; set `CODEX_ACCOUNTS_FILE` to use another path. The dashboard also
+queries `https://chatgpt.com/backend-api/wham/usage` with each account's Codex
+OAuth token and account ID to show the current subscription plan, quota-window
+usage percentages, and reset countdowns. Quota data is refreshed on load,
+manually with **Refresh Usage**, and every 60 seconds; a 401 triggers one OAuth
+refresh and retry. OAuth tokens remain server-side.
+
+The dashboard also reads Codex subscription quota from the ChatGPT WHAM usage
+endpoint. It displays each reported quota window as remaining capacity with its
+reset countdown. The server refreshes that state independently of the browser;
+accounts reported as disallowed, limit-reached, or 100% used are excluded from
+Codex account selection until their observed reset time (or a later WHAM refresh
+marks them available again).
 
 For native Codex Responses:
 

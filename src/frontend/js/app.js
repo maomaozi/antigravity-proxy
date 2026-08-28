@@ -714,11 +714,54 @@ async function redisoverProject(email) {
     }
 }
 
+function codexWindowLabel(window, fallback) {
+    const seconds = Number(window?.limitWindowSeconds);
+    if (Number.isFinite(seconds) && seconds > 0) {
+        if (seconds >= 4 * 3600 && seconds <= 6 * 3600) return '5h';
+        if (seconds >= 6 * 86400 && seconds <= 8 * 86400) return '7d';
+        if (seconds % 86400 === 0) return `${seconds / 86400}d`;
+        if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+        return `${Math.round(seconds / 60)}m`;
+    }
+    return fallback;
+}
+
+function codexQuotaWindows(usage) {
+    if (!usage) return [];
+    const windows = [
+        usage.primaryWindow ? { ...usage.primaryWindow, fallback: 'primary' } : null,
+        usage.secondaryWindow ? { ...usage.secondaryWindow, fallback: 'secondary' } : null,
+    ].filter(Boolean);
+    return windows.sort((a, b) => {
+        const aa = Number(a.limitWindowSeconds);
+        const bb = Number(b.limitWindowSeconds);
+        if (!Number.isFinite(aa)) return 1;
+        if (!Number.isFinite(bb)) return -1;
+        return aa - bb;
+    });
+}
+
+function codexResetTarget(window, fetchedAt) {
+    const direct = Number(window?.resetAt);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    const remaining = Number(window?.resetAfterSeconds);
+    if (Number.isFinite(remaining) && remaining >= 0 && Number.isFinite(fetchedAt)) {
+        return fetchedAt + remaining * 1000;
+    }
+    return null;
+}
+
+function codexQuotaBarClass(remaining) {
+    if (remaining >= 80) return 'bg-emerald-500';
+    if (remaining < 20) return 'bg-rose-500';
+    return 'bg-zinc-300 dark:bg-zinc-600';
+}
+
 function renderCodexAccounts() {
     const tbody = $('codex-accounts-table-body');
     if (!tbody) return;
     if (!globalCodexAccounts.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center text-xs text-zinc-400">// No Codex accounts. Add one with device-code login.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-xs text-zinc-400">// No Codex accounts. Add one with device-code login.</td></tr>';
         return;
     }
     const now = Date.now();
@@ -726,15 +769,55 @@ function renderCodexAccounts() {
         const cooling = Number(account.cooldownUntil || 0) > now;
         const expiresAt = Number(account.expiresAt || 0);
         const expiry = expiresAt > now ? `${Math.max(1, Math.ceil((expiresAt - now) / 60000))}m` : 'refresh on use';
+        const usage = account.usage || null;
+        const windows = codexQuotaWindows(usage);
+        const usageHtml = account.usageError
+            ? `<div class="text-[9px] text-rose-500" title="${escapeHtml(account.usageError.message || 'Quota unavailable')}">quota unavailable</div>`
+            : windows.length
+                ? windows.map(window => {
+                    const usedRaw = Number(window.usedPercent);
+                    const hasUsage = Number.isFinite(usedRaw);
+                    const used = hasUsage ? Math.max(0, Math.min(100, usedRaw)) : 0;
+                    const remaining = hasUsage ? Math.max(0, 100 - used) : 0;
+                    const remainingText = hasUsage ? `${remaining.toFixed(remaining % 1 ? 1 : 0)}% left` : '—';
+                    const usedText = hasUsage ? `${used.toFixed(used % 1 ? 1 : 0)}% used` : 'Usage unavailable';
+                    return `<div class="grid grid-cols-[28px_1fr_58px] items-center gap-2 min-w-[190px]" title="${escapeHtml(usedText)}">
+                        <span class="text-[9px] uppercase text-zinc-400">${escapeHtml(codexWindowLabel(window, window.fallback))}</span>
+                        <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
+                            <div class="h-full ${codexQuotaBarClass(remaining)} transition-all duration-500" style="width: ${remaining}%"></div>
+                        </div>
+                        <span class="text-[9px] font-bold tabular-nums text-right text-zinc-600 dark:text-zinc-400">${escapeHtml(remainingText)}</span>
+                    </div>`;
+                }).join('')
+                : '<span class="text-[9px] text-zinc-400">loading…</span>';
+        const resetHtml = account.usageError
+            ? '<span class="text-[9px] text-zinc-400">—</span>'
+            : windows.length
+                ? windows.map(window => {
+                    const target = codexResetTarget(window, account.usageFetchedAt);
+                    const relative = target ? formatReset(target) : '—';
+                    const title = target ? new Date(target).toLocaleString() : 'Reset time unavailable';
+                    return `<div class="flex items-center gap-2 whitespace-nowrap" title="${escapeHtml(title)}"><span class="text-[9px] uppercase text-zinc-400 w-7">${escapeHtml(codexWindowLabel(window, window.fallback))}</span><span class="text-[10px] font-mono text-zinc-700 dark:text-zinc-300">${escapeHtml(relative)}</span></div>`;
+                }).join('')
+                : '<span class="text-[9px] text-zinc-400">loading…</span>';
+        const quotaBlocked = usage?.limitReached === true || usage?.allowed === false || windows.some(window => Number(window.usedPercent) >= 100);
+        const statusClass = quotaBlocked
+            ? 'border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400'
+            : cooling
+                ? 'border-amber-200 dark:border-amber-900 text-amber-600 dark:text-amber-400'
+                : 'border-emerald-200 dark:border-emerald-900 text-emerald-600 dark:text-emerald-400';
+        const statusText = quotaBlocked ? 'Limit' : cooling ? 'Cooldown' : 'Ready';
         return `<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
             <td class="px-4 py-3">
                 <div class="text-xs text-zinc-800 dark:text-zinc-200">${escapeHtml(account.email)}</div>
-                <div class="mt-1 text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Codex OAuth</div>
+                <div class="mt-1 text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400">${escapeHtml(usage?.planType || 'Codex OAuth')}</div>
             </td>
             <td class="px-4 py-3 text-[10px] text-zinc-500 font-mono">${escapeHtml(account.accountId || '-')}</td>
             <td class="px-4 py-3 text-[10px] text-zinc-500">${escapeHtml(expiry)}</td>
+            <td class="px-4 py-3 space-y-1">${usageHtml}</td>
+            <td class="px-4 py-3 space-y-1">${resetHtml}</td>
             <td class="px-4 py-3">
-                <span class="inline-flex px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase ${cooling ? 'border-amber-200 dark:border-amber-900 text-amber-600 dark:text-amber-400' : 'border-emerald-200 dark:border-emerald-900 text-emerald-600 dark:text-emerald-400'}">${cooling ? 'Cooldown' : 'Ready'}</span>
+                <span class="inline-flex px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase ${statusClass}">${statusText}</span>
             </td>
             <td class="px-4 py-3 text-right">
                 <button data-codex-delete="${encodeURIComponent(account.email)}" class="px-2 py-1 text-[9px] uppercase tracking-wider text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors">Remove</button>
@@ -746,6 +829,29 @@ function renderCodexAccounts() {
     });
 }
 
+async function loadCodexUsage() {
+    if (!globalCodexAccounts.length) return;
+    try {
+        const response = await fetch('/api/codex/usage', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const byEmail = new Map((data.accounts || []).map(snapshot => [snapshot.email, snapshot]));
+        const fetchedAt = Number(data.generatedAt) || Date.now();
+        globalCodexAccounts = globalCodexAccounts.map(account => {
+            const snapshot = byEmail.get(account.email);
+            return {
+                ...account,
+                usage: snapshot?.usage || null,
+                usageError: snapshot?.error || null,
+                usageFetchedAt: fetchedAt,
+            };
+        });
+        renderCodexAccounts();
+    } catch (error) {
+        addLog(`[CODEX] Usage refresh failed: ${error.message}`);
+    }
+}
+
 async function loadCodexAccounts() {
     try {
         const response = await fetch('/api/codex/accounts');
@@ -753,9 +859,10 @@ async function loadCodexAccounts() {
         const data = await response.json();
         globalCodexAccounts = data.accounts || [];
         renderCodexAccounts();
+        await loadCodexUsage();
     } catch (error) {
         const tbody = $('codex-accounts-table-body');
-        if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-xs text-rose-500">${escapeHtml(error.message)}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-xs text-rose-500">${escapeHtml(error.message)}</td></tr>`;
     }
 }
 
@@ -1009,6 +1116,7 @@ function initializeApp() {
             });
         }
     }, 1000);
+    setInterval(loadCodexUsage, 60_000);
 }
 
 window.initializeApp = initializeApp;
