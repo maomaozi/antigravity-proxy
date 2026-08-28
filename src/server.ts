@@ -25,9 +25,12 @@ import { resolveCodexModel } from "./codex/routing";
 
 const sessionStore = initSessionBindingStore();
 
+function getCodexModelIds() {
+  return getProxyConfig().codex?.models || [];
+}
+
 function getSupportedModelIds() {
-  const codexModels = getProxyConfig().codex?.models || [];
-  return [...SUPPORTED_MODELS.map(model => model.id), ...codexModels];
+  return [...SUPPORTED_MODELS.map(model => model.id), ...getCodexModelIds()];
 }
 
 const logBuffer: string[] = [];
@@ -366,11 +369,12 @@ Bun.serve({
                     version: APP_VERSION,
                     accounts: getAccounts(),
                     supportedModels: getSupportedModelIds(),
+                    codexModels: getCodexModelIds(),
                     cooldowns: getCooldowns(),
                     logs: logBuffer
                 });
 
-                onUpdate = (data: any) => send("update", { ...data, supportedModels: getSupportedModelIds() });
+                onUpdate = (data: any) => send("update", { ...data, supportedModels: getSupportedModelIds(), codexModels: getCodexModelIds() });
                 onFlash = (data: { email: string, status: 'success' | 'error' }) => send("flash", data);
                 onLog = (msg: string) => send("log", { message: msg });
                 onCooldown = (data: any) => send("cooldown", data);
@@ -535,7 +539,8 @@ Bun.serve({
             version: APP_VERSION,
             accounts: getAccounts(),
             codexAccounts: codexAccountManager.listPublic(),
-            supportedModels: getSupportedModelIds()
+            supportedModels: getSupportedModelIds(),
+            codexModels: getCodexModelIds()
         }), { headers: { "Content-Type": "application/json" } });
     }
 

@@ -29,4 +29,12 @@ describe("dashboard account provider layout", () => {
     expect(app).toContain("codexQuotaBarClass");
     expect(app).toContain("% left");
   });
+
+  test("includes configured Codex models in the top family cards", () => {
+    expect(app).toContain("globalCodexModels");
+    expect(app).toContain("Codex Models");
+    expect(app).toContain("calculateCodexFamilyStat");
+    expect(app).toContain("renderDashboardFamilies");
+    expect(main).toContain("lg:grid-cols-5");
+  });
 });

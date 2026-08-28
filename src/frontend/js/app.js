@@ -1,6 +1,7 @@
 let globalAccounts = [];
 let globalCooldowns = {};
 let globalSupportedModels = [];
+let globalCodexModels = [];
 let expandedAccounts = new Set();
 let expandedFamilies = new Set();
 let lastActivityMap = new Map();
@@ -113,28 +114,28 @@ function toggleFamily(idx) {
         expandedFamilies.add(familyIdx);
     }
     updateToggleAllButton();
-    renderFamilyGrid(calculateFamilyStats(globalAccounts));
+    renderDashboardFamilies();
 }
 
 function toggleAllFamilies() {
-    const keys = Object.keys(MODEL_FAMILIES);
-    const allExpanded = expandedFamilies.size === keys.length;
+    const total = buildDashboardFamilyStats().length;
+    const allExpanded = total > 0 && expandedFamilies.size === total;
 
     if (allExpanded) {
         expandedFamilies.clear();
     } else {
-        keys.forEach((_, index) => expandedFamilies.add(index));
+        for (let index = 0; index < total; index++) expandedFamilies.add(index);
     }
 
     updateToggleAllButton();
-    renderFamilyGrid(calculateFamilyStats(globalAccounts));
+    renderDashboardFamilies();
 }
 
 function updateToggleAllButton() {
     const btn = $('btn-toggle-all');
     if (!btn) return;
-    const keys = Object.keys(MODEL_FAMILIES);
-    const isAllExpanded = expandedFamilies.size === keys.length;
+    const total = buildDashboardFamilyStats().length;
+    const isAllExpanded = total > 0 && expandedFamilies.size === total;
 
     const span = btn.querySelector('span');
     const svg = btn.querySelector('svg');
@@ -320,6 +321,76 @@ function calculateFamilyStats(accounts) {
     });
 }
 
+function calculateCodexFamilyStat() {
+    if (!globalCodexModels.length) return null;
+
+    const now = Date.now();
+    const familyAccounts = [];
+    let availabilitySum = 0;
+    let measuredAccounts = 0;
+    let healthyCount = 0;
+    let earliestReset = null;
+
+    globalCodexAccounts.forEach(account => {
+        const windows = codexQuotaWindows(account.usage);
+        const measured = windows.map(window => {
+            const used = Number(window.usedPercent);
+            if (!Number.isFinite(used)) return null;
+            return {
+                window,
+                remaining: Math.max(0, Math.min(100, 100 - used)),
+            };
+        }).filter(Boolean);
+        const quotaBlocked = account.usage?.limitReached === true || account.usage?.allowed === false || measured.some(item => item.remaining <= 0);
+        const unavailable = account.available === false || Number(account.cooldownUntil || 0) > now || quotaBlocked;
+
+        let availability = null;
+        let resetTime = null;
+        if (measured.length) {
+            const minimum = Math.min(...measured.map(item => item.remaining));
+            availability = unavailable ? 0 : minimum;
+            const constraining = measured.filter(item => item.remaining === minimum);
+            const resetCandidates = constraining
+                .map(item => codexResetTarget(item.window, account.usageFetchedAt))
+                .filter(value => Number.isFinite(value) && value > now);
+            if (resetCandidates.length) resetTime = Math.min(...resetCandidates);
+            availabilitySum += availability;
+            measuredAccounts++;
+        }
+        if (!unavailable) healthyCount++;
+        if (resetTime && (!earliestReset || resetTime < earliestReset)) earliestReset = resetTime;
+
+        familyAccounts.push({
+            email: account.email,
+            avgQuota: availability === null ? 0 : Math.round(availability),
+            resetTime,
+            isUnavailable: unavailable,
+            hasQuota: availability !== null,
+        });
+    });
+
+    return {
+        name: 'Codex Models',
+        provider: 'codex',
+        availability: measuredAccounts ? Math.round(availabilitySum / measuredAccounts) : 0,
+        healthy: healthyCount,
+        total: globalCodexAccounts.length,
+        models: [...globalCodexModels].sort(),
+        familyData: { accounts: familyAccounts, earliestReset },
+    };
+}
+
+function buildDashboardFamilyStats() {
+    const stats = calculateFamilyStats(globalAccounts);
+    const codex = calculateCodexFamilyStat();
+    if (codex) stats.push(codex);
+    return stats;
+}
+
+function renderDashboardFamilies() {
+    renderFamilyGrid(buildDashboardFamilyStats());
+}
+
 function organizeAccountDetails(account) {
     const groups = new Map();
     if (account.quota) {
@@ -338,22 +409,26 @@ function renderFamilyGrid(stats) {
 
     const html = stats.map((stat, index) => {
         const isExpanded = expandedFamilies.has(index);
-        const familyData = getFamilyQuotaData(globalAccounts, stat.name);
+        const familyData = stat.familyData || getFamilyQuotaData(globalAccounts, stat.name);
         
-        const accountsWithFamily = globalAccounts.filter(acc => acc.quota && acc.quota.some(q => getFamilyName(q.groupName) === stat.name));
+        const accountsWithFamily = stat.provider === 'codex'
+            ? globalCodexAccounts
+            : globalAccounts.filter(acc => acc.quota && acc.quota.some(q => getFamilyName(q.groupName) === stat.name));
         
-        const allAccountsDownForFamily = accountsWithFamily.length > 0 && accountsWithFamily.every(acc => {
-            const sboxExp = globalCooldowns[`${acc.email}|sandbox|${stat.name}`];
-            const cliExp = globalCooldowns[`${acc.email}|cli|${stat.name}`];
-            return (sboxExp && sboxExp > Date.now()) && (cliExp && cliExp > Date.now());
-        });
+        const allAccountsDownForFamily = stat.provider === 'codex'
+            ? stat.total > 0 && stat.healthy === 0
+            : accountsWithFamily.length > 0 && accountsWithFamily.every(acc => {
+                const sboxExp = globalCooldowns[`${acc.email}|sandbox|${stat.name}`];
+                const cliExp = globalCooldowns[`${acc.email}|cli|${stat.name}`];
+                return (sboxExp && sboxExp > Date.now()) && (cliExp && cliExp > Date.now());
+            });
 
         let indicatorColor = allAccountsDownForFamily ? 'text-rose-500' : (stat.availability > 50 ? 'text-emerald-500' : (stat.availability < 20 ? 'text-rose-500' : 'text-zinc-400 dark:text-zinc-300'));
         let barIndicatorColor = allAccountsDownForFamily ? 'bg-rose-500' : (stat.availability > 50 ? 'bg-emerald-500' : (stat.availability < 20 ? 'bg-rose-500' : 'bg-zinc-300 dark:bg-zinc-600'));
         let borderColor = allAccountsDownForFamily ? 'border-rose-200 dark:border-rose-900/50' : 'border-zinc-200 dark:border-zinc-800';
 
-        const modelsInFamily = globalSupportedModels
-            .filter(m => getFamilyName(m) === stat.name)
+        const modelsInFamily = (stat.models || globalSupportedModels
+            .filter(m => getFamilyName(m) === stat.name))
             .map(m => m.replace('models/', '').replace('anthropic/', ''))
             .sort()
             .join(', ');
@@ -395,11 +470,13 @@ function renderFamilyGrid(stats) {
                             .map(acc => {
                                  let quotaColor = acc.avgQuota >= 80 ? 'bg-emerald-500' : 'bg-zinc-300 dark:bg-zinc-600';
                                  if (acc.avgQuota < 20) quotaColor = 'bg-rose-500';
-                                 const fullAcc = globalAccounts.find(a => a.email === acc.email);
-                            let isCooldown = false;
+                                 const fullAcc = stat.provider === 'codex'
+                                     ? globalCodexAccounts.find(a => a.email === acc.email)
+                                     : globalAccounts.find(a => a.email === acc.email);
+                            let isCooldown = Boolean(stat.provider === 'codex' && acc.isUnavailable);
                             let remaining = 0;
                             
-                            if (fullAcc) {
+                            if (fullAcc && stat.provider !== 'codex') {
                                 const expiry = getCategoryCooldown(acc.email, stat.name, fullAcc.quota || []);
                                 if (expiry && expiry > Date.now()) {
                                     isCooldown = true;
@@ -631,6 +708,7 @@ function updateUI(data) {
         if (data.accounts) globalAccounts = data.accounts;
         if (data.cooldowns) globalCooldowns = data.cooldowns;
         if (data.supportedModels) globalSupportedModels = data.supportedModels;
+        if (data.codexModels) globalCodexModels = data.codexModels;
         if (data.version && $('app-version')) $('app-version').textContent = 'v' + data.version;
     }
     
@@ -640,8 +718,7 @@ function updateUI(data) {
     if ($('stat-total-accounts')) $('stat-total-accounts').textContent = accounts.length;
     if ($('last-updated')) $('last-updated').textContent = new Date().toLocaleTimeString();
 
-    const familyStats = calculateFamilyStats(accounts);
-    renderFamilyGrid(familyStats);
+    renderDashboardFamilies();
     renderAccountsTable(accounts);
 }
 
@@ -847,6 +924,7 @@ async function loadCodexUsage() {
             };
         });
         renderCodexAccounts();
+        renderDashboardFamilies();
     } catch (error) {
         addLog(`[CODEX] Usage refresh failed: ${error.message}`);
     }
@@ -859,6 +937,7 @@ async function loadCodexAccounts() {
         const data = await response.json();
         globalCodexAccounts = data.accounts || [];
         renderCodexAccounts();
+        renderDashboardFamilies();
         await loadCodexUsage();
     } catch (error) {
         const tbody = $('codex-accounts-table-body');
@@ -970,6 +1049,8 @@ async function loadConfig() {
     try {
         const res = await fetch('/api/config');
         currentConfig = await res.json();
+        globalCodexModels = currentConfig.codex?.models || globalCodexModels;
+        renderDashboardFamilies();
     } catch (e) {
         console.error('[Config] Failed to load:', e);
     }
@@ -1055,6 +1136,8 @@ async function saveConfig() {
         
         if (res.ok) {
             currentConfig = await res.json();
+            globalCodexModels = currentConfig.codex?.models || [];
+            renderDashboardFamilies();
             addLog('[CONFIG] Configuration saved successfully');
             closeConfigModal();
         } else {
