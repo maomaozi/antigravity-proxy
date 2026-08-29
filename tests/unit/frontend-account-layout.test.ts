@@ -51,4 +51,10 @@ describe("dashboard account provider layout", () => {
     expect(app).toContain('onclick="toggleFamily(${index})"');
   });
 
+  test("keeps expanded metric quota bars visible in narrow cards", () => {
+    expect(app).toContain("grid-cols-[minmax(0,72px)_minmax(36px,1fr)_max-content]");
+    expect(app).toContain("sm:grid-cols-[minmax(0,88px)_minmax(48px,1fr)_max-content]");
+    expect(app).not.toContain("grid-cols-[100px_1fr_85px]");
+  });
+
 });

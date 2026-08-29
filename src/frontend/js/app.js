@@ -484,7 +484,7 @@ function renderFamilyGrid(stats) {
                                 }
                             }
 
-                            let rowClass = "grid grid-cols-[100px_1fr_85px] items-center gap-3 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors";
+                            let rowClass = "grid grid-cols-[minmax(0,72px)_minmax(36px,1fr)_max-content] sm:grid-cols-[minmax(0,88px)_minmax(48px,1fr)_max-content] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors";
                             let textClass = "text-zinc-600 dark:text-zinc-400";
                             
                             if (isCooldown) {
