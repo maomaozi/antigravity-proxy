@@ -57,4 +57,11 @@ describe("dashboard account provider layout", () => {
     expect(app).not.toContain("grid-cols-[100px_1fr_85px]");
   });
 
+  test("keeps family cards aligned while expanding independently", () => {
+    expect(main).toContain("lg:grid-cols-5 items-start");
+    expect(app).toContain("flex flex-col self-start");
+    expect(app).toContain("min-w-0 flex-1 h-12 overflow-hidden");
+    expect(app).not.toContain("flex flex-col h-full");
+  });
+
 });
