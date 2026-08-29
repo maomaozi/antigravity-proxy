@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 const header = await Bun.file(new URL("../../src/frontend/components/header.html", import.meta.url)).text();
 const main = await Bun.file(new URL("../../src/frontend/components/main.html", import.meta.url)).text();
 const app = await Bun.file(new URL("../../src/frontend/js/app.js", import.meta.url)).text();
+const server = await Bun.file(new URL("../../src/server.ts", import.meta.url)).text();
+const sessions = await Bun.file(new URL("../../src/frontend/js/sessions.js", import.meta.url)).text();
+const sessionsPage = await Bun.file(new URL("../../src/frontend/sessions.html", import.meta.url)).text();
 
 describe("dashboard account provider layout", () => {
   test("keeps provider login actions out of the global header", () => {
@@ -17,17 +20,55 @@ describe("dashboard account provider layout", () => {
     expect(main).toContain('href="/oauth/start"');
     expect(main).toContain("Add Google Account");
     expect(main).toContain("Add Codex Account");
+    expect(main).not.toContain("Flush");
+    expect(main).not.toContain("Refresh Usage");
   });
 
-  test("exposes Codex quota usage and reset controls in the account table", () => {
-    expect(main).toContain("Refresh Usage");
-    expect(main).toContain(">Usage</th>");
-    expect(main).toContain(">Reset</th>");
+  test("uses the same primary account columns for Google and Codex", () => {
+    expect(main.match(/>Identity<\/th>/g)?.length).toBe(2);
+    expect(main.match(/>Health<\/th>/g)?.length).toBe(2);
+    expect(main.match(/>Last Active<\/th>/g)?.length).toBe(2);
+    expect(main.match(/>Action<\/th>/g)?.length).toBe(2);
+    expect(main).not.toContain(">Account ID</th>");
+    expect(main).not.toContain(">Token</th>");
   });
 
   test("renders Codex quota windows with Google-style remaining bars", () => {
     expect(app).toContain("codexQuotaBarClass");
-    expect(app).toContain("% left");
+    expect(app).toContain("Resource Allocations");
+    expect(app).toContain("toggleCodexAccount");
+  });
+
+  test("counts active credentials across both providers instead of Google rows only", () => {
+    expect(header).toContain('id="stat-active-accounts"');
+    expect(app).toContain("updateAccountSummary");
+    expect(app).toContain("googleAccounts.filter(isGoogleAccountActive)");
+    expect(app).toContain("codexAccounts.filter(isCodexAccountActive)");
+  });
+
+  test("keeps Codex availability and last-active metadata fresh with quota refreshes", () => {
+    expect(server).toContain("publicAccountsByEmail");
+    expect(app).toContain("snapshot?.lastUsed");
+    expect(app).toContain("snapshot?.cooldownUntil");
+    expect(app).toContain("typeof snapshot?.available === 'boolean'");
+    expect(app).toContain("!account.usage && account.available === false");
+  });
+
+  test("keeps last-active and cooldown-derived dashboard state fresh", () => {
+    expect(app).toContain("lastActivityMap.get(acc.email) || Number(acc.lastUsed || 0)");
+    expect(app).toContain("hasActiveCooldowns || hadActiveCooldowns");
+    expect(app).toContain("renderDashboardFamilies();");
+    expect(app).toContain("updateAccountSummary();");
+  });
+
+  test("counts active sessions rather than active model bindings on the sessions page", () => {
+    expect(sessionsPage).toContain("Active Sessions · 1h");
+    expect(sessions).toContain(".map(row => row.sessionKey)");
+  });
+
+  test("uses family-aware Google cooldown keys in dashboard status", () => {
+    expect(app).toContain('`${email}|cli|${category}`');
+    expect(app).toContain('`${email}|sandbox|${category}`');
   });
 
   test("includes configured Codex models in the top family cards", () => {

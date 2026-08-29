@@ -42,7 +42,9 @@ function renderStats() {
     byId('stat-sessions').textContent = new Set(bindings.map(row => row.sessionKey)).size;
     byId('stat-bindings').textContent = totalBindings;
     byId('stat-accounts').textContent = new Set(bindings.map(row => row.accountEmail)).size;
-    byId('stat-active').textContent = bindings.filter(row => Date.now() - row.lastUsedAt < 3_600_000).length;
+    byId('stat-active').textContent = new Set(
+        bindings.filter(row => Date.now() - row.lastUsedAt < 3_600_000).map(row => row.sessionKey)
+    ).size;
     byId('result-count').textContent = `${totalBindings} result${totalBindings === 1 ? '' : 's'}`;
 }
 

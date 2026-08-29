@@ -22,12 +22,12 @@
                 SESSIONS
             </a>
 
-            <div class="hidden md:flex items-center gap-3 px-3 py-1.5">
+            <div class="hidden md:flex items-center gap-3 px-3 py-1.5" title="Available credentials across Google and Codex">
                 <span class="relative flex h-2 w-2">
-                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  <span id="account-status-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span id="account-status-dot" class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                 </span>
-                <span class="text-xs font-medium text-zinc-500 dark:text-zinc-400 transition-colors"><span id="stat-total-accounts" class="text-zinc-900 dark:text-white transition-colors">0</span> <span class="text-zinc-400 dark:text-zinc-500 transition-colors">active</span></span>
+                <span class="text-xs font-medium text-zinc-500 dark:text-zinc-400 transition-colors"><span id="stat-active-accounts" class="text-zinc-900 dark:text-white transition-colors">0</span><span class="text-zinc-400 dark:text-zinc-500 transition-colors"> / </span><span id="stat-total-accounts" class="text-zinc-900 dark:text-white transition-colors">0</span> <span class="text-zinc-400 dark:text-zinc-500 transition-colors">active</span></span>
             </div>
 
             <div class="flex items-center gap-2">

@@ -483,7 +483,12 @@ Bun.serve({
     }
 
     if (cleanPath === "/api/codex/usage" && req.method === "GET") {
-        const accounts = await codexAccountManager.getUsageSnapshots();
+        const usageSnapshots = await codexAccountManager.getUsageSnapshots();
+        const publicAccountsByEmail = new Map(codexAccountManager.listPublic().map(account => [account.email, account]));
+        const accounts = usageSnapshots.map(snapshot => ({
+            ...publicAccountsByEmail.get(snapshot.email),
+            ...snapshot,
+        }));
         return new Response(JSON.stringify({ accounts, generatedAt: Date.now() }), {
             headers: {
                 "Content-Type": "application/json",

@@ -3,6 +3,7 @@ let globalCooldowns = {};
 let globalSupportedModels = [];
 let globalCodexModels = [];
 let expandedAccounts = new Set();
+let expandedCodexAccounts = new Set();
 let expandedFamilies = new Set();
 let lastActivityMap = new Map();
 let isLogsCollapsed = false;
@@ -21,8 +22,8 @@ function escapeHtml(value) {
 
 function getCategoryCooldown(email, category, quotas) {
      const now = Date.now();
-     const cliExpiry = globalCooldowns[`${email}|cli`];
-     const sandboxExpiry = globalCooldowns[`${email}|sandbox`];
+     const cliExpiry = globalCooldowns[`${email}|cli|${category}`];
+     const sandboxExpiry = globalCooldowns[`${email}|sandbox|${category}`];
      
      const isCliDown = cliExpiry && cliExpiry > now;
      const isSandboxDown = sandboxExpiry && sandboxExpiry > now;
@@ -37,6 +38,57 @@ function getCategoryCooldown(email, category, quotas) {
      if (isSandboxDown) return sandboxExpiry;
      
      return null;
+}
+
+function isCodexProviderEnabled() {
+    return currentConfig?.codex?.enabled !== false;
+}
+
+function isGoogleAccountActive(account) {
+    if (!account?.refreshToken || account.challenge) return false;
+    const families = [...new Set((account.quota || []).map(quota => getFamilyName(quota.groupName)))];
+    if (!families.length) return true;
+    const now = Date.now();
+    return families.some(family => {
+        const cliExpiry = Number(globalCooldowns[`${account.email}|cli|${family}`] || 0);
+        const sandboxExpiry = Number(globalCooldowns[`${account.email}|sandbox|${family}`] || 0);
+        return cliExpiry <= now || sandboxExpiry <= now;
+    });
+}
+
+function codexAccountState(account) {
+    if (!isCodexProviderEnabled()) return { key: 'disabled', label: 'Disabled' };
+    const now = Date.now();
+    const windows = codexQuotaWindows(account.usage);
+    const quotaBlocked = account.usage?.limitReached === true
+        || account.usage?.allowed === false
+        || windows.some(window => Number(window.usedPercent) >= 100);
+    if (quotaBlocked) return { key: 'limit', label: 'Limit' };
+    if (Number(account.cooldownUntil || 0) > now) return { key: 'cooldown', label: 'Cooldown' };
+    if (!account.usage && account.available === false) return { key: 'unavailable', label: 'Unavailable' };
+    return { key: 'ready', label: 'Ready' };
+}
+
+function isCodexAccountActive(account) {
+    return codexAccountState(account).key === 'ready';
+}
+
+function updateAccountSummary() {
+    const googleAccounts = globalAccounts || [];
+    const codexAccounts = globalCodexAccounts || [];
+    const total = googleAccounts.length + codexAccounts.length;
+    const active = googleAccounts.filter(isGoogleAccountActive).length + codexAccounts.filter(isCodexAccountActive).length;
+    if ($('stat-active-accounts')) $('stat-active-accounts').textContent = active;
+    if ($('stat-total-accounts')) $('stat-total-accounts').textContent = total;
+
+    const dot = $('account-status-dot');
+    const ping = $('account-status-ping');
+    if (dot) {
+        dot.classList.toggle('bg-emerald-500', active > 0);
+        dot.classList.toggle('bg-zinc-400', active === 0);
+        dot.classList.toggle('dark:bg-zinc-600', active === 0);
+    }
+    if (ping) ping.classList.toggle('hidden', active === 0);
 }
 
 function formatTimeAgo(timestamp) {
@@ -322,7 +374,7 @@ function calculateFamilyStats(accounts) {
 }
 
 function calculateCodexFamilyStat() {
-    if (!globalCodexModels.length) return null;
+    if (!globalCodexModels.length || !isCodexProviderEnabled()) return null;
 
     const now = Date.now();
     const familyAccounts = [];
@@ -342,7 +394,7 @@ function calculateCodexFamilyStat() {
             };
         }).filter(Boolean);
         const quotaBlocked = account.usage?.limitReached === true || account.usage?.allowed === false || measured.some(item => item.remaining <= 0);
-        const unavailable = account.available === false || Number(account.cooldownUntil || 0) > now || quotaBlocked;
+        const unavailable = Number(account.cooldownUntil || 0) > now || quotaBlocked || (!account.usage && account.available === false);
 
         let availability = null;
         let resetTime = null;
@@ -529,7 +581,7 @@ function renderAccountsTable(accounts) {
     tbody.innerHTML = accounts.map(acc => {
         const safeEmail = acc.email.replace(/[@.]/g, '-');
         const isExpanded = expandedAccounts.has(acc.email);
-        const lastActive = lastActivityMap.get(acc.email);
+        const lastActive = lastActivityMap.get(acc.email) || Number(acc.lastUsed || 0);
         const initials = acc.email.substring(0, 2).toUpperCase();
         const now = Date.now();
         const emailCooldowns = Object.keys(globalCooldowns).filter(k => k.startsWith(acc.email + '|'));
@@ -715,7 +767,7 @@ function updateUI(data) {
     const accounts = globalAccounts || [];
     accounts.sort((a,b) => b.healthScore - a.healthScore);
 
-    if ($('stat-total-accounts')) $('stat-total-accounts').textContent = accounts.length;
+    updateAccountSummary();
     if ($('last-updated')) $('last-updated').textContent = new Date().toLocaleTimeString();
 
     renderDashboardFamilies();
@@ -733,26 +785,14 @@ async function deleteAccount(email) {
     await fetch(`/api/accounts/${email}`, { method: 'DELETE' });
     globalAccounts = globalAccounts.filter(a => a.email !== email);
     renderAccountsTable(globalAccounts);
+    renderDashboardFamilies();
+    updateAccountSummary();
 }
 
 async function resetAccountHealth(email) {
     if (!confirm(`Reset health for ${email}?`)) return;
     await fetch(`/api/accounts/${email}/reset`, { method: 'POST' });
     addLog(`[ACTION] Health reset for ${email}`);
-}
-
-async function resetAllAccounts() {
-    if (!confirm('Are you sure you want to reset the state of ALL accounts? This will clear all cooldowns, validation flags, and health scores.')) return;
-    try {
-        const res = await fetch('/api/accounts/reset-all', { method: 'POST' });
-        if (res.ok) {
-            addLog('[ACTION] Reset all accounts state successfully');
-        } else {
-            addLog('[ERROR] Failed to reset all accounts');
-        }
-    } catch (e) {
-        addLog(`[ERROR] Reset all failed: ${e.message}`);
-    }
 }
 
 async function editProjectId(email, currentPid) {
@@ -834,80 +874,141 @@ function codexQuotaBarClass(remaining) {
     return 'bg-zinc-300 dark:bg-zinc-600';
 }
 
+function codexAvailability(account) {
+    const measured = codexQuotaWindows(account.usage)
+        .map(window => Number(window.usedPercent))
+        .filter(value => Number.isFinite(value))
+        .map(value => Math.max(0, Math.min(100, 100 - value)));
+    if (!measured.length) return null;
+    return Math.min(...measured);
+}
+
+function toggleCodexAccount(email) {
+    if (expandedCodexAccounts.has(email)) expandedCodexAccounts.delete(email);
+    else expandedCodexAccounts.add(email);
+    renderCodexAccounts();
+}
+
 function renderCodexAccounts() {
     const tbody = $('codex-accounts-table-body');
     if (!tbody) return;
     if (!globalCodexAccounts.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-xs text-zinc-400">// No Codex accounts. Add one with device-code login.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-zinc-500 font-mono text-xs italic">// Waiting for accounts...</td></tr>';
+        updateAccountSummary();
         return;
     }
     const now = Date.now();
     tbody.innerHTML = globalCodexAccounts.map(account => {
-        const cooling = Number(account.cooldownUntil || 0) > now;
+        const encodedEmail = encodeURIComponent(account.email);
+        const safeEmail = account.email.replace(/[@.]/g, '-');
+        const initials = account.email.substring(0, 2).toUpperCase();
+        const isExpanded = expandedCodexAccounts.has(account.email);
         const expiresAt = Number(account.expiresAt || 0);
         const expiry = expiresAt > now ? `${Math.max(1, Math.ceil((expiresAt - now) / 60000))}m` : 'refresh on use';
         const usage = account.usage || null;
         const windows = codexQuotaWindows(usage);
-        const usageHtml = account.usageError
-            ? `<div class="text-[9px] text-rose-500" title="${escapeHtml(account.usageError.message || 'Quota unavailable')}">quota unavailable</div>`
+        const state = codexAccountState(account);
+        const availability = codexAvailability(account);
+        const healthText = availability === null ? state.label : `${Math.round(availability)}%`;
+        const healthClass = state.key === 'ready'
+            ? (availability !== null && availability < 20
+                ? 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-900/30 dark:text-rose-500 dark:border-rose-800'
+                : 'bg-zinc-50 text-emerald-600 border-emerald-200 dark:bg-zinc-900 dark:text-emerald-500 dark:border-emerald-500/30')
+            : state.key === 'cooldown'
+                ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-900'
+                : 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-900/30 dark:text-rose-500 dark:border-rose-800';
+        const quotaCards = account.usageError
+            ? `<div class="col-span-full rounded border border-rose-200 dark:border-rose-900/50 bg-rose-50/50 dark:bg-rose-950/10 p-4 text-[10px] text-rose-600 dark:text-rose-400" title="${escapeHtml(account.usageError.message || 'Quota unavailable')}">Quota usage is currently unavailable.</div>`
             : windows.length
                 ? windows.map(window => {
                     const usedRaw = Number(window.usedPercent);
                     const hasUsage = Number.isFinite(usedRaw);
-                    const used = hasUsage ? Math.max(0, Math.min(100, usedRaw)) : 0;
-                    const remaining = hasUsage ? Math.max(0, 100 - used) : 0;
-                    const remainingText = hasUsage ? `${remaining.toFixed(remaining % 1 ? 1 : 0)}% left` : '—';
-                    const usedText = hasUsage ? `${used.toFixed(used % 1 ? 1 : 0)}% used` : 'Usage unavailable';
-                    return `<div class="grid grid-cols-[28px_1fr_58px] items-center gap-2 min-w-[190px]" title="${escapeHtml(usedText)}">
-                        <span class="text-[9px] uppercase text-zinc-400">${escapeHtml(codexWindowLabel(window, window.fallback))}</span>
-                        <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
-                            <div class="h-full ${codexQuotaBarClass(remaining)} transition-all duration-500" style="width: ${remaining}%"></div>
+                    const remaining = hasUsage ? Math.max(0, Math.min(100, 100 - usedRaw)) : 0;
+                    const target = codexResetTarget(window, account.usageFetchedAt);
+                    const reset = target ? formatReset(target) : '—';
+                    const label = codexWindowLabel(window, window.fallback);
+                    return `<div class="bg-white dark:bg-[#0f0f0f] rounded border border-zinc-200 dark:border-zinc-800 overflow-hidden transition-colors p-4">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">${escapeHtml(label)} Window</div>
+                                <div class="flex items-baseline gap-2">
+                                    <span class="text-xl font-bold ${hasUsage && remaining < 20 ? 'text-rose-500' : 'text-emerald-500'} tracking-tighter leading-none">${hasUsage ? `${Math.round(remaining)}%` : '—'}</span>
+                                    <span class="text-[8px] text-zinc-500 dark:text-zinc-600 font-medium">AVAILABILITY</span>
+                                </div>
+                            </div>
                         </div>
-                        <span class="text-[9px] font-bold tabular-nums text-right text-zinc-600 dark:text-zinc-400">${escapeHtml(remainingText)}</span>
+                        <div class="h-0.5 w-full bg-zinc-100 dark:bg-zinc-900 mt-4 overflow-hidden">
+                            <div class="h-full ${codexQuotaBarClass(remaining)} transition-all duration-500" style="width: ${hasUsage ? remaining : 0}%"></div>
+                        </div>
+                        <div class="flex items-center justify-between mt-2.5">
+                            <div class="text-[8px] text-zinc-500 dark:text-zinc-600 uppercase tracking-wider font-medium">Status: ${escapeHtml(state.label)}</div>
+                            <div class="flex items-baseline gap-1.5">
+                                <span class="text-[7px] text-zinc-600 dark:text-zinc-700 uppercase tracking-tighter">Quota resets in</span>
+                                <span class="text-[9px] text-zinc-500 font-bold whitespace-nowrap">${escapeHtml(reset)}</span>
+                            </div>
+                        </div>
                     </div>`;
                 }).join('')
-                : '<span class="text-[9px] text-zinc-400">loading…</span>';
-        const resetHtml = account.usageError
-            ? '<span class="text-[9px] text-zinc-400">—</span>'
-            : windows.length
-                ? windows.map(window => {
-                    const target = codexResetTarget(window, account.usageFetchedAt);
-                    const relative = target ? formatReset(target) : '—';
-                    const title = target ? new Date(target).toLocaleString() : 'Reset time unavailable';
-                    return `<div class="flex items-center gap-2 whitespace-nowrap" title="${escapeHtml(title)}"><span class="text-[9px] uppercase text-zinc-400 w-7">${escapeHtml(codexWindowLabel(window, window.fallback))}</span><span class="text-[10px] font-mono text-zinc-700 dark:text-zinc-300">${escapeHtml(relative)}</span></div>`;
-                }).join('')
-                : '<span class="text-[9px] text-zinc-400">loading…</span>';
-        const quotaBlocked = usage?.limitReached === true || usage?.allowed === false || windows.some(window => Number(window.usedPercent) >= 100);
-        const statusClass = quotaBlocked
-            ? 'border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400'
-            : cooling
-                ? 'border-amber-200 dark:border-amber-900 text-amber-600 dark:text-amber-400'
-                : 'border-emerald-200 dark:border-emerald-900 text-emerald-600 dark:text-emerald-400';
-        const statusText = quotaBlocked ? 'Limit' : cooling ? 'Cooldown' : 'Ready';
-        return `<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
+                : '<div class="col-span-full rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30 p-4 text-[10px] text-zinc-500">Usage data is loading…</div>';
+        const detailsHtml = `<div class="grid grid-cols-1 lg:grid-cols-12 gap-8 font-mono">
+            <div class="lg:col-span-8">
+                <h4 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Resource Allocations</h4>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">${quotaCards}</div>
+            </div>
+            <div class="lg:col-span-4">
+                <h4 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Configuration</h4>
+                <div class="space-y-2">
+                    <div class="flex justify-between items-center gap-4 text-[10px] p-2 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30"><span class="text-zinc-500">Account ID</span><span class="text-zinc-700 dark:text-zinc-300 truncate max-w-[180px]" title="${escapeHtml(account.accountId || '')}">${escapeHtml(account.accountId || 'None')}</span></div>
+                    <div class="flex justify-between items-center gap-4 text-[10px] p-2 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30"><span class="text-zinc-500">Token</span><span class="text-zinc-700 dark:text-zinc-300">${escapeHtml(expiry)}</span></div>
+                    <div class="flex justify-between items-center gap-4 text-[10px] p-2 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30"><span class="text-zinc-500">Plan</span><span class="text-zinc-700 dark:text-zinc-300">${escapeHtml(usage?.planType || 'Codex OAuth')}</span></div>
+                    <div class="flex justify-between items-center gap-4 text-[10px] p-2 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30"><span class="text-zinc-500">Status</span><span class="font-bold uppercase ${state.key === 'ready' ? 'text-emerald-500' : state.key === 'cooldown' ? 'text-amber-500' : 'text-rose-500'}">${escapeHtml(state.label)}</span></div>
+                </div>
+            </div>
+        </div>`;
+        return `<tr id="codex-row-${safeEmail}" class="group hover:bg-zinc-100/50 dark:hover:bg-zinc-900/50 transition-colors border-b border-zinc-200/50 dark:border-zinc-800/50 last:border-0 cursor-pointer" onclick="toggleCodexAccount(decodeURIComponent('${encodedEmail}'))">
             <td class="px-4 py-3">
-                <div class="text-xs text-zinc-800 dark:text-zinc-200">${escapeHtml(account.email)}</div>
-                <div class="mt-1 text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400">${escapeHtml(usage?.planType || 'Codex OAuth')}</div>
+                <div class="flex items-center gap-3">
+                    <div class="w-6 h-6 rounded bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-[10px] font-bold text-zinc-500 group-hover:text-emerald-500 group-hover:border-emerald-500/30 transition-colors">${escapeHtml(initials)}</div>
+                    <div class="min-w-0">
+                        <div class="font-medium text-zinc-700 dark:text-zinc-300 truncate text-xs flex items-center gap-2 group-hover:text-zinc-900 dark:group-hover:text-white transition-colors">
+                            ${escapeHtml(account.email)}
+                            ${state.key === 'ready' ? '' : `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold ${state.key === 'cooldown' ? 'bg-amber-50 text-amber-600 border border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800' : 'bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-800'}">${escapeHtml(state.label.toUpperCase())}</span>`}
+                        </div>
+                        <div class="mt-1 text-[9px] uppercase tracking-wider text-zinc-400">${escapeHtml(usage?.planType || 'Codex OAuth')}</div>
+                    </div>
+                </div>
             </td>
-            <td class="px-4 py-3 text-[10px] text-zinc-500 font-mono">${escapeHtml(account.accountId || '-')}</td>
-            <td class="px-4 py-3 text-[10px] text-zinc-500">${escapeHtml(expiry)}</td>
-            <td class="px-4 py-3 space-y-1">${usageHtml}</td>
-            <td class="px-4 py-3 space-y-1">${resetHtml}</td>
             <td class="px-4 py-3">
-                <span class="inline-flex px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase ${statusClass}">${statusText}</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold border ${healthClass}" title="${escapeHtml(state.label)}">${escapeHtml(healthText)}</span>
             </td>
+            <td class="px-4 py-3"><span class="text-[10px] text-zinc-500 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors">${formatTimeAgo(Number(account.lastUsed || 0))}</span></td>
             <td class="px-4 py-3 text-right">
-                <button data-codex-delete="${encodeURIComponent(account.email)}" class="px-2 py-1 text-[9px] uppercase tracking-wider text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors">Remove</button>
+                <div class="flex items-center justify-end gap-2" onclick="event.stopPropagation()">
+                    <button data-codex-delete="${encodedEmail}" class="text-zinc-400 dark:text-zinc-600 hover:text-rose-500 transition-colors p-1" title="Remove"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+                    <svg class="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-300 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </div>
+            </td>
+        </tr>
+        <tr id="codex-detail-${safeEmail}" class="${isExpanded ? '' : 'hidden'} bg-zinc-50 dark:bg-[#050505] shadow-inner transition-colors">
+            <td colspan="4" class="px-6 py-6 border-b border-zinc-200 dark:border-zinc-800">
+                ${detailsHtml}
+                <div class="mt-6 flex justify-end">
+                    <button data-codex-delete="${encodedEmail}" class="text-[10px] text-rose-600 dark:text-rose-500 hover:text-rose-700 dark:hover:text-rose-400 font-bold uppercase tracking-wider border border-rose-200 dark:border-rose-900/30 hover:border-rose-300 dark:hover:border-rose-900/60 bg-rose-50 dark:bg-rose-950/10 hover:bg-rose-100 dark:hover:bg-rose-950/30 px-3 py-1.5 rounded transition-all">Remove Permanently</button>
+                </div>
             </td>
         </tr>`;
     }).join('');
     tbody.querySelectorAll('[data-codex-delete]').forEach(button => {
         button.addEventListener('click', () => deleteCodexAccount(decodeURIComponent(button.dataset.codexDelete)));
     });
+    updateAccountSummary();
 }
 
 async function loadCodexUsage() {
-    if (!globalCodexAccounts.length) return;
+    if (!globalCodexAccounts.length) {
+        updateAccountSummary();
+        return;
+    }
     try {
         const response = await fetch('/api/codex/usage', { cache: 'no-store' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -918,6 +1019,11 @@ async function loadCodexUsage() {
             const snapshot = byEmail.get(account.email);
             return {
                 ...account,
+                accountId: snapshot?.accountId || account.accountId,
+                expiresAt: Number.isFinite(Number(snapshot?.expiresAt)) ? Number(snapshot.expiresAt) : account.expiresAt,
+                lastUsed: Number.isFinite(Number(snapshot?.lastUsed)) ? Number(snapshot.lastUsed) : account.lastUsed,
+                cooldownUntil: Number.isFinite(Number(snapshot?.cooldownUntil)) ? Number(snapshot.cooldownUntil) : account.cooldownUntil,
+                available: typeof snapshot?.available === 'boolean' ? snapshot.available : account.available,
                 usage: snapshot?.usage || null,
                 usageError: snapshot?.error || null,
                 usageFetchedAt: fetchedAt,
@@ -925,6 +1031,7 @@ async function loadCodexUsage() {
         });
         renderCodexAccounts();
         renderDashboardFamilies();
+        updateAccountSummary();
     } catch (error) {
         addLog(`[CODEX] Usage refresh failed: ${error.message}`);
     }
@@ -938,10 +1045,11 @@ async function loadCodexAccounts() {
         globalCodexAccounts = data.accounts || [];
         renderCodexAccounts();
         renderDashboardFamilies();
+        updateAccountSummary();
         await loadCodexUsage();
     } catch (error) {
         const tbody = $('codex-accounts-table-body');
-        if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-xs text-rose-500">${escapeHtml(error.message)}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="4" class="p-8 text-center text-xs text-rose-500">${escapeHtml(error.message)}</td></tr>`;
     }
 }
 
@@ -1051,6 +1159,8 @@ async function loadConfig() {
         currentConfig = await res.json();
         globalCodexModels = currentConfig.codex?.models || globalCodexModels;
         renderDashboardFamilies();
+        renderCodexAccounts();
+        updateAccountSummary();
     } catch (e) {
         console.error('[Config] Failed to load:', e);
     }
@@ -1138,6 +1248,8 @@ async function saveConfig() {
             currentConfig = await res.json();
             globalCodexModels = currentConfig.codex?.models || [];
             renderDashboardFamilies();
+            renderCodexAccounts();
+            updateAccountSummary();
             addLog('[CONFIG] Configuration saved successfully');
             closeConfigModal();
         } else {
@@ -1187,17 +1299,21 @@ function initializeApp() {
     loadCodexAccounts();
     setupSSE();
     setupLogsInteraction();
+    let hadActiveCooldowns = false;
     setInterval(() => {
         const hasActiveCooldowns = Object.values(globalCooldowns).some(expiry => expiry > Date.now());
-        if (hasActiveCooldowns) {
+        if (hasActiveCooldowns || hadActiveCooldowns) {
             renderAccountsTable(globalAccounts);
+            renderDashboardFamilies();
+            updateAccountSummary();
         } else {
             globalAccounts.forEach(acc => {
                 const safe = acc.email.replace(/[@.]/g, '-');
                 const el = $(`time-${safe}`);
-                if (el) el.textContent = formatTimeAgo(lastActivityMap.get(acc.email));
+                if (el) el.textContent = formatTimeAgo(lastActivityMap.get(acc.email) || Number(acc.lastUsed || 0));
             });
         }
+        hadActiveCooldowns = hasActiveCooldowns;
     }, 1000);
     setInterval(loadCodexUsage, 60_000);
 }
