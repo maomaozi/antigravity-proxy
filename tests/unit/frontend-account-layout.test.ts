@@ -37,4 +37,18 @@ describe("dashboard account provider layout", () => {
     expect(app).toContain("renderDashboardFamilies");
     expect(main).toContain("lg:grid-cols-5");
   });
+  test("keeps mobile dashboard on natural document scrolling", async () => {
+    const index = await Bun.file(new URL("../../src/frontend/index.html", import.meta.url)).text();
+    expect(index).toContain("min-h-full lg:h-full");
+    expect(index).toContain("lg:overflow-hidden");
+    expect(index).not.toContain("h-[calc(100vh-4rem)]");
+    expect(main).toContain("lg:overflow-y-auto");
+    expect(main).not.toContain('<div class="flex-grow overflow-y-auto bg-zinc-50');
+    expect(main).toContain('id="logs-resizer" class="hidden lg:block');
+  });
+
+  test("expands one metric family when its card is tapped", () => {
+    expect(app).toContain('onclick="toggleFamily(${index})"');
+  });
+
 });

@@ -435,7 +435,7 @@ function renderFamilyGrid(stats) {
 
         return `
         <div class="bg-white dark:bg-[#0f0f0f] rounded border ${borderColor} overflow-hidden group hover:border-zinc-400 dark:hover:border-zinc-700 transition-colors flex flex-col h-full">
-            <div class="p-4 cursor-pointer flex-grow flex flex-col" onclick="toggleAllFamilies()">
+            <div class="p-3 sm:p-4 cursor-pointer flex-grow flex flex-col" onclick="toggleFamily(${index})">
                 <div class="flex items-start justify-between mb-4">
                     <div>
                         <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">${stat.name}</div>

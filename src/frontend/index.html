@@ -13,10 +13,10 @@
     <script src="js/tailwind-config.js"></script>
     <link rel="stylesheet" href="css/styles.css">
 </head>
-<body class="bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-200 h-full flex flex-col transition-colors duration-300 overflow-hidden font-mono selection:bg-emerald-500/30 selection:text-emerald-700 dark:selection:text-emerald-200">
+<body class="bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-200 min-h-full lg:h-full flex flex-col transition-colors duration-300 lg:overflow-hidden font-mono selection:bg-emerald-500/30 selection:text-emerald-700 dark:selection:text-emerald-200">
 
     <div id="header-container"></div>
-    <main id="main-container" class="flex-grow flex flex-col h-[calc(100vh-4rem)] overflow-hidden"></main>
+    <main id="main-container" class="flex flex-col min-h-0 min-w-0 lg:flex-1 lg:overflow-hidden"></main>
     <div id="modal-container"></div>
 
     <script src="js/app.js"></script>
