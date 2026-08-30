@@ -13,6 +13,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Multi-Agent Support**: Specifically designed to work with **Claude Code**, **OpenCode**, and other agentic frameworks.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
+- **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks hourly for inactive Gemini or Codex 5-hour windows. Each inactive account receives one minimal request to start its window; the first check runs one hour after server startup.
 - **Dual-Pool Routing**:
   - **CLI Pool**: Routes to production Gemini endpoints.
   - **Sandbox Pool**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models.

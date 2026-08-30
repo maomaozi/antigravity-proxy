@@ -35,6 +35,8 @@ describe("dashboard account provider layout", () => {
 
   test("renders Codex quota windows with Google-style remaining bars", () => {
     expect(app).toContain("codexQuotaBarClass");
+    expect(app).toContain("codexWindowIsActive");
+    expect(app).toContain("remaining < duration - 5");
     expect(app).toContain("Resource Allocations");
     expect(app).toContain("toggleCodexAccount");
   });

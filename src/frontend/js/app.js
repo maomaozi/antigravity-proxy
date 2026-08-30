@@ -386,7 +386,7 @@ function calculateCodexFamilyStat() {
     globalCodexAccounts.forEach(account => {
         const windows = codexQuotaWindows(account.usage);
         const measured = windows.map(window => {
-            const used = Number(window.usedPercent);
+            const used = window.usedPercent === null || window.usedPercent === undefined ? NaN : Number(window.usedPercent);
             if (!Number.isFinite(used)) return null;
             return {
                 window,
@@ -858,7 +858,21 @@ function codexQuotaWindows(usage) {
     });
 }
 
+function codexWindowIsActive(window, fetchedAt) {
+    if (window?.usedPercent === null || window?.usedPercent === undefined) return false;
+    const used = Number(window.usedPercent);
+    if (!Number.isFinite(used)) return false;
+    if (used > 0) return true;
+    const duration = Number(window.limitWindowSeconds);
+    const remaining = Number(window.resetAfterSeconds);
+    if (Number.isFinite(duration) && Number.isFinite(remaining)) return remaining < duration - 5;
+    const direct = Number(window.resetAt);
+    return Number.isFinite(duration) && Number.isFinite(direct) && Number.isFinite(fetchedAt)
+        && direct - fetchedAt < (duration - 5) * 1000;
+}
+
 function codexResetTarget(window, fetchedAt) {
+    if (!codexWindowIsActive(window, fetchedAt)) return null;
     const direct = Number(window?.resetAt);
     if (Number.isFinite(direct) && direct > 0) return direct;
     const remaining = Number(window?.resetAfterSeconds);
@@ -876,7 +890,7 @@ function codexQuotaBarClass(remaining) {
 
 function codexAvailability(account) {
     const measured = codexQuotaWindows(account.usage)
-        .map(window => Number(window.usedPercent))
+        .map(window => window.usedPercent === null || window.usedPercent === undefined ? NaN : Number(window.usedPercent))
         .filter(value => Number.isFinite(value))
         .map(value => Math.max(0, Math.min(100, 100 - value)));
     if (!measured.length) return null;
@@ -921,11 +935,11 @@ function renderCodexAccounts() {
             ? `<div class="col-span-full rounded border border-rose-200 dark:border-rose-900/50 bg-rose-50/50 dark:bg-rose-950/10 p-4 text-[10px] text-rose-600 dark:text-rose-400" title="${escapeHtml(account.usageError.message || 'Quota unavailable')}">Quota usage is currently unavailable.</div>`
             : windows.length
                 ? windows.map(window => {
-                    const usedRaw = Number(window.usedPercent);
+                    const usedRaw = window.usedPercent === null || window.usedPercent === undefined ? NaN : Number(window.usedPercent);
                     const hasUsage = Number.isFinite(usedRaw);
                     const remaining = hasUsage ? Math.max(0, Math.min(100, 100 - usedRaw)) : 0;
                     const target = codexResetTarget(window, account.usageFetchedAt);
-                    const reset = target ? formatReset(target) : '—';
+                    const reset = target ? formatReset(target) : (hasUsage && !codexWindowIsActive(window, account.usageFetchedAt) ? 'Ready' : '—');
                     const label = codexWindowLabel(window, window.fallback);
                     return `<div class="bg-white dark:bg-[#0f0f0f] rounded border border-zinc-200 dark:border-zinc-800 overflow-hidden transition-colors p-4">
                         <div class="flex items-center justify-between mb-4">

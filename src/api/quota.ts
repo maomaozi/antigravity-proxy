@@ -3,7 +3,11 @@ import { type AntigravityAccount } from "../auth/types";
 import { getAccounts, saveAccounts } from "../auth/manager";
 import { refreshAccessToken } from "../auth/oauth";
 
-export async function fetchQuota(account: AntigravityAccount, retry = true): Promise<AntigravityAccount['quota'] | null> {
+export async function fetchQuota(
+  account: AntigravityAccount,
+  retry = true,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AntigravityAccount['quota'] | null> {
   if (!account.projectId || !account.accessToken) return null;
   
   if (!account.fingerprint || !account.fingerprint.clientMetadata?.sqmId) {
@@ -11,7 +15,7 @@ export async function fetchQuota(account: AntigravityAccount, retry = true): Pro
   }
 
   try {
-    const res = await fetch(`https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, {
+    const res = await fetchImpl(`https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, {
       method: "POST",
       headers: {
         ...getImpersonationHeaders(account.accessToken, account.fingerprint),
@@ -29,7 +33,7 @@ export async function fetchQuota(account: AntigravityAccount, retry = true): Pro
         account.accessToken = tokens.access_token;
         account.expiresAt = Date.now() + (tokens.expires_in * 1000);
         await saveAccounts(getAccounts());
-        return fetchQuota(account, false); // Retry once
+        return fetchQuota(account, false, fetchImpl); // Retry once
       } catch (e) {
         console.error(`Failed to refresh token for ${account.email} during quota fetch`, e);
         return null;
@@ -107,6 +111,7 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
         if (!isAllowed) continue;
 
         const remainingFraction = m.quotaInfo.remainingFraction ?? 0;
+        const windowActive = remainingFraction < 1;
         
         const limitName = m.quotaInfo.limitName || label;
 
@@ -119,14 +124,14 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
                 group.groupName = group.labels.join(" / ");
             }
         } else {
-            let resetTime = m.quotaInfo.quotaResetTime || 
+            let resetTime = windowActive ? (m.quotaInfo.quotaResetTime ||
                            m.quotaResetTime || 
                            m.quotaInfo.resetTime || 
                            m.resetTime || 
                            m.quotaInfo.nextResetTime || 
                            m.nextResetTime ||
                            m.quotaInfo.quota_reset_time ||
-                           m.quota_reset_time;
+                           m.quota_reset_time) : undefined;
             
             if (typeof resetTime === 'number') {
                 if (resetTime < 10000000000) resetTime *= 1000;
@@ -140,14 +145,14 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
                 }
             }
 
-            if (!resetTime || Number.isNaN(new Date(resetTime).getTime())) {
+            if (windowActive && (!resetTime || Number.isNaN(new Date(resetTime).getTime()))) {
                 resetTime = getNextMidnightPT();
             }
 
-            const diffMs = Math.max(0, new Date(resetTime).getTime() - Date.now());
+            const diffMs = resetTime ? Math.max(0, new Date(resetTime).getTime() - Date.now()) : 0;
             const hours = Math.floor(diffMs / (1000 * 60 * 60));
             const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-            const resetIn = `${hours}h ${minutes}m`;
+            const resetIn = windowActive ? `${hours}h ${minutes}m` : "Ready";
             const pct = Math.round(remainingFraction * 100);
             const quotaLeft = `${pct}%`;
 
@@ -158,6 +163,8 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
                 usage: m.quotaInfo.quotaUsage || "Unknown",
                 limitName: limitName,
                 remainingFraction: remainingFraction,
+                windowActive,
+                modelId: modelId && !modelId.includes(" ") ? modelId : undefined,
                 resetTime: resetTime,
                 quotaLeft,
                 resetIn
@@ -176,16 +183,27 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
     return results.length > 0 ? results : null;
 }
 
-export async function refreshAllQuotas() {
+let quotaRefreshInFlight: Promise<void> | null = null;
+
+async function performQuotaRefresh(): Promise<void> {
     const accounts = getAccounts();
-    
-    await Promise.all(accounts.map(async (acc) => {
+    let changed = false;
+    await Promise.all(accounts.map(async acc => {
         if (acc.projectId) { 
             const quota = await fetchQuota(acc);
             if (quota) {
                 acc.quota = quota;
-                await saveAccounts(getAccounts());
+                changed = true;
             }
         }
     }));
+    if (changed) await saveAccounts(getAccounts());
+}
+
+export function refreshAllQuotas(): Promise<void> {
+    if (quotaRefreshInFlight) return quotaRefreshInFlight;
+    quotaRefreshInFlight = performQuotaRefresh().finally(() => {
+        quotaRefreshInFlight = null;
+    });
+    return quotaRefreshInFlight;
 }

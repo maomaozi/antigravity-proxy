@@ -237,10 +237,15 @@ export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, s
   return null;
 }
 
-async function ensureAccountReady(account: AntigravityAccount): Promise<AntigravityAccount | null> {
+export async function prepareAccountForRequest(email: string, forceRefresh = false): Promise<AntigravityAccount | null> {
+  const account = accounts.find(candidate => candidate.email === email);
+  return account ? ensureAccountReady(account, forceRefresh) : null;
+}
+
+async function ensureAccountReady(account: AntigravityAccount, forceRefresh = false): Promise<AntigravityAccount | null> {
   const now = Date.now();
   const config = getProxyConfig();
-  const needsRefresh = !account.accessToken || (account.expiresAt && account.expiresAt < now + config.tokens.expiryBufferMs);
+  const needsRefresh = forceRefresh || !account.accessToken || (account.expiresAt && account.expiresAt < now + config.tokens.expiryBufferMs);
   
   if (needsRefresh) {
     try {

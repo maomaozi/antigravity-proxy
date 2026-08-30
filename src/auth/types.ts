@@ -58,6 +58,8 @@ export interface AntigravityAccount {
     remainingFraction: number; // 0.0 - 1.0
     quotaLeft: string; // e.g., "80%"
     resetIn: string; // e.g., "14h 20m"
+    windowActive?: boolean;
+    modelId?: string;
     resetTime?: string; // ISO date
   }>
 }

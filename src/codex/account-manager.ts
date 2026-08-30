@@ -42,6 +42,7 @@ export interface CodexUsageSnapshot {
 }
 
 function finiteNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -263,6 +264,13 @@ export class CodexAccountManager {
       }
     }
     return null;
+  }
+
+  async prepareAccountForRequest(email: string, forceRefresh = false): Promise<CodexAccount | null> {
+    const account = this.accounts.find(item => item.email === email);
+    if (!account) return null;
+    if (forceRefresh && !await this.refreshAccount(email)) return null;
+    return this.ensureReady(this.accounts.find(item => item.email === email) || account);
   }
 
   async refreshAccount(email: string): Promise<boolean> {

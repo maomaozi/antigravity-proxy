@@ -15,6 +15,7 @@ import { adaptResponsesRequest, createResponsesStreamEncoder, encodeResponsesRes
 import { executeCompletion } from "./api/completion-executor";
 import { OAUTH_CONFIG } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
+import { createWindowActivationRuntime, startQuotaWindowActivationScheduler } from "./api/window-activation";
 import { SUPPORTED_MODELS } from "./models";
 import { resolveSessionIdentity } from "./session/identity";
 import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings } from "./session/store";
@@ -93,6 +94,7 @@ function createCodexProxyService() {
 setInterval(refreshAllQuotas, proxyConfig.quota.refreshIntervalMs);
 // Initial quota refresh on startup
 refreshAllQuotas();
+startQuotaWindowActivationScheduler(createWindowActivationRuntime(codexAccountManager));
 
 const PORT = Number(process.env.PORT || 3000);
 
