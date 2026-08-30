@@ -214,66 +214,19 @@ reuses the previously successful account whenever it is available. When a bound 
 failing over, which helps preserve upstream prompt-cache affinity. Configure the
 maximum wait with `scheduling.maxCacheFirstWaitSeconds` in `config.json`.
 
-### JSON Object Output
+### Structured JSON Output
 
-Use `json_object` when the response must be a valid JSON object but does not
-need to follow a predefined schema:
+The proxy supports OpenAI-compatible `response_format` with the following current behavior:
 
-```bash
-curl http://127.0.0.1:3000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "antigravity-gemini-3.7-flash",
-    "messages": [
-      {"role": "user", "content": "Return a user object with name Alice and age 30."}
-    ],
-    "response_format": {
-      "type": "json_object"
-    }
-  }'
-```
+| Model | `json_object` | `json_schema` |
+| --- | --- | --- |
+| Claude Opus/Sonnet | Supported via an unconstrained upstream object schema | Supported |
+| Gemini 3.7 Flash / 3.1 Pro | Not reliably enforced without an explicit schema | Supported for the upstream schema subset |
+| GPT-OSS | Not supported by the current upstream path | Not supported by the current upstream path |
 
-The returned `choices[0].message.content` is a JSON string, for example:
+For Claude, structured-output requests are mapped at the protocol level without modifying the user prompt. Claude thinking is disabled for these requests because the upstream API cannot combine thinking with schema-forced output.
 
-```json
-{"name":"Alice","age":30}
-```
-
-### Strict JSON Schema Output
-
-Use `json_schema` when the output must conform to a specific structure:
-
-```bash
-curl http://127.0.0.1:3000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "antigravity-gemini-3.7-flash",
-    "messages": [
-      {"role": "user", "content": "Return the current processing status."}
-    ],
-    "response_format": {
-      "type": "json_schema",
-      "json_schema": {
-        "name": "processing_status",
-        "strict": true,
-        "schema": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "status": {"type": "string", "enum": ["ok"]},
-            "count": {"type": "integer"}
-          },
-          "required": ["status", "count"]
-        }
-      }
-    }
-  }'
-```
-
-Structured JSON output is supported for Gemini and Claude models. Claude
-thinking is disabled for `json_schema` requests because the upstream API cannot
-combine thinking with schema-forced tool use. GPT-OSS currently does not support
-these response-format constraints through the upstream API.
+For Gemini, use `json_schema` when structured output is required. Core constraints such as `properties`, `required`, basic types, `enum`, nested objects, and array item types are enforced, while some JSON Schema constraints such as `minimum`, `maximum`, `minItems`, and `maxItems` are not reliably enforced by the current upstream models.
 
 ## Integration Guides
 

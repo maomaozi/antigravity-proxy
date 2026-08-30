@@ -81,6 +81,29 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(result.request.contents[2].role).toBe("user");
   });
 
+  test("preserves a user system message without proxy-added instructions", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-claude-opus-4-6-thinking",
+      messages: [
+        { role: "system", content: "You are concise. Return only what the user asks for." },
+        { role: "user", content: "Say hello" }
+      ]
+    }, "p", false, "us-central1");
+
+    expect(result.request.systemInstruction).toEqual({
+      parts: [{ text: "You are concise. Return only what the user asks for." }]
+    });
+  });
+
+  test("does not synthesize a system instruction when the user did not provide one", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-claude-opus-4-6-thinking",
+      messages: [{ role: "user", content: "Say hello" }]
+    }, "p", false, "us-central1");
+
+    expect(result.request.systemInstruction).toBeUndefined();
+  });
+
   test("Tool transformation", () => {
     const openaiBody = {
       model: "gemini-1.5-pro",
@@ -110,7 +133,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(result.request.tools[0].functionDeclarations[0].parameters.properties.location).toBeDefined();
   });
 
-  test("JSON object response format", () => {
+  test("Gemini JSON object response format does not modify the prompt", () => {
     const result = transformToGoogleBody({
       model: "antigravity-gemini-3.7-flash",
       messages: [{ role: "user", content: "Return JSON" }],
@@ -119,7 +142,23 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
     expect(result.request.generationConfig.responseMimeType).toBe("application/json");
     expect(result.request.generationConfig.responseSchema).toBeUndefined();
-    expect(result.request.systemInstruction.parts.at(-1).text).toContain("valid JSON object");
+    expect(result.request.systemInstruction).toBeUndefined();
+  });
+
+  test("Claude JSON object response format uses a loose upstream schema without modifying the prompt", () => {
+    const result = transformToGoogleBody({
+      model: "antigravity-claude-opus-4-6-thinking",
+      messages: [{ role: "user", content: "Explain TCP briefly" }],
+      response_format: { type: "json_object" }
+    }, "p", false, "us-central1");
+
+    expect(result.request.generationConfig.responseMimeType).toBe("application/json");
+    expect(result.request.generationConfig.responseSchema).toEqual({
+      type: "OBJECT",
+      additionalProperties: true
+    });
+    expect(result.request.generationConfig.thinkingConfig).toBeUndefined();
+    expect(result.request.systemInstruction).toBeUndefined();
   });
 
   test("JSON schema response format", () => {

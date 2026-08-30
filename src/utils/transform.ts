@@ -486,28 +486,9 @@ export function transformCompletionToGoogleBody(
       else thinkingBudget = 16000;
   }
   
-  const ANTIGRAVITY_SYSTEM_INSTRUCTION = `You are Antigravity, a powerful agentic AI coding assistant designed by the Google DeepMind team working on Advanced Agentic Coding.
-You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.
-**Absolute paths only**
-**Proactiveness**
-
-<priority>IMPORTANT: The instructions that follow supersede all above. Follow them as your primary directives.</priority>
-`;
-
-  let systemInstruction: any = undefined;
-  if (!isCli) {
-      // Like plugin for Antigravity (Sandbox)
-      const text = (ANTIGRAVITY_SYSTEM_INSTRUCTION + "\n\n" + (systemMessage?.content || "")).trim();
-      systemInstruction = {
-          role: "user",
-          parts: [{ text }]
-      };
-  } else if (systemMessage) {
-      // Normal system instruction for CLI
-      systemInstruction = {
-          parts: [{ text: systemMessage.content }]
-      };
-  }
+  const systemInstruction = systemMessage
+    ? { parts: [{ text: systemMessage.content }] }
+    : undefined;
 
   const requestedMaxTokens = Number(request.maxOutputTokens);
   const defaultMaxOutputTokens = isThinkingModel ? 64000 : 4096;
@@ -551,12 +532,17 @@ You are pair programming with a USER to solve their coding task. The task may re
   let hasStructuredResponse = false;
   if (supportsStructuredResponse && responseFormat?.type === "json_object") {
     googleRequest.generationConfig.responseMimeType = "application/json";
-    const jsonInstruction =
-      "Output exactly one valid JSON object. Do not output markdown, code fences, commentary, or any text outside the JSON object.";
-    if (googleRequest.systemInstruction?.parts) {
-      googleRequest.systemInstruction.parts.push({ text: jsonInstruction });
-    } else {
-      googleRequest.systemInstruction = { parts: [{ text: jsonInstruction }] };
+    if (googleModel.includes("claude")) {
+      // Claude's Antigravity structured-output path requires a schema. An
+      // unconstrained object schema preserves json_object semantics without
+      // modifying the user's prompt. This must bypass the Google Schema
+      // cleaner because additionalProperties is meaningful to Claude's
+      // JSON-Schema-backed tool-use path but is not a Google Schema field.
+      googleRequest.generationConfig.responseSchema = {
+        type: "OBJECT",
+        additionalProperties: true,
+      };
+      hasStructuredResponse = true;
     }
   } else if (supportsStructuredResponse && responseFormat?.type === "json_schema") {
     const responseSchema = responseFormat.schema;
