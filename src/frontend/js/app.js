@@ -119,6 +119,22 @@ function formatReset(iso) {
     return parts.join(' ');
 }
 
+function formatCompactReset(iso) {
+    if (!iso) return '-';
+    const diff = new Date(iso).getTime() - Date.now();
+    if (diff <= 0) return 'Ready';
+
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+    if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+    if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    if (minutes > 0) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+    return seconds > 0 ? `${seconds}s` : 'Ready';
+}
+
 function getFamilyQuotaData(accounts, familyName) {
     const familyAccounts = [];
     let earliestReset = null;
@@ -535,7 +551,7 @@ function renderFamilyGrid(stats) {
                 ${stat.windowStats.map(window => `<div class="grid grid-cols-[28px_32px_1fr] gap-x-2 items-baseline text-[9px] font-bold whitespace-nowrap">
                     <span class="text-zinc-500">${escapeHtml(window.label)}</span>
                     <span class="text-right ${window.availability < 20 ? 'text-rose-500' : 'text-zinc-600 dark:text-zinc-400'}">${window.availability}%</span>
-                    <span class="text-right text-zinc-600 dark:text-zinc-400">${window.earliestReset ? formatReset(window.earliestReset) : 'Ready'}</span>
+                    <span class="text-right text-zinc-600 dark:text-zinc-400">${window.earliestReset ? formatCompactReset(window.earliestReset) : 'Ready'}</span>
                 </div>`).join('')}
             </div>`
             : `<div class="flex flex-col items-end shrink-0" title="Time until next quota refill">
@@ -591,7 +607,9 @@ function renderFamilyGrid(stats) {
                                 }
                             }
 
-                            let rowClass = "grid grid-cols-[minmax(0,72px)_minmax(36px,1fr)_max-content] sm:grid-cols-[minmax(0,88px)_minmax(48px,1fr)_max-content] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors";
+                            let rowClass = stat.provider === 'codex'
+                                ? "grid grid-cols-[minmax(0,64px)_minmax(24px,1fr)_96px] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors"
+                                : "grid grid-cols-[minmax(0,72px)_minmax(36px,1fr)_max-content] sm:grid-cols-[minmax(0,88px)_minmax(48px,1fr)_max-content] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors";
                             let textClass = "text-zinc-600 dark:text-zinc-400";
                             
                             if (isCooldown) {
@@ -600,10 +618,10 @@ function renderFamilyGrid(stats) {
                             }
 
                             const resetSummary = stat.provider === 'codex' && acc.windows?.length
-                                ? `<div class="space-y-0.5 text-right">${acc.windows.map(window => `<div class="grid grid-cols-[24px_28px_1fr] gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
+                                ? `<div class="w-[96px] space-y-0.5 text-right">${acc.windows.map(window => `<div class="grid grid-cols-[20px_26px_1fr] gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
                                     <span class="text-zinc-500">${escapeHtml(window.label)}</span>
                                     <span class="${window.remaining < 20 ? 'text-rose-500' : 'text-zinc-500'}">${window.remaining}%</span>
-                                    <span class="${isCooldown ? 'text-rose-500' : 'text-zinc-500'}">${window.resetTime ? formatReset(window.resetTime) : 'Ready'}</span>
+                                    <span class="${isCooldown ? 'text-rose-500' : 'text-zinc-500'}">${window.resetTime ? formatCompactReset(window.resetTime) : 'Ready'}</span>
                                 </div>`).join('')}</div>`
                                 : `<div class="text-[9px] ${isCooldown ? 'text-rose-500' : 'text-zinc-500'} font-bold tabular-nums whitespace-nowrap text-right">
                                     ${isCooldown ? 'WAIT' : (acc.resetTime ? formatReset(new Date(acc.resetTime).toISOString()) : 'Ready')}
