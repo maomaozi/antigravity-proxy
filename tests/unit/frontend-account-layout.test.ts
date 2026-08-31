@@ -168,11 +168,13 @@ describe("dashboard account provider layout", () => {
     expect(app).not.toContain("grid-cols-[100px_1fr_85px]");
   });
 
-  test("keeps Codex 5h and 7d summaries inside narrow dashboard cards", () => {
+  test("renders Codex 5h and 7d as separate progress bars", () => {
     expect(app).toContain("formatCompactReset");
-    expect(app).toContain("grid-cols-[minmax(0,64px)_minmax(24px,1fr)_96px]");
-    expect(app).toContain('w-[96px] space-y-0.5 text-right');
-    expect(app).toContain("grid-cols-[20px_26px_1fr]");
+    expect(app).toContain('w-[132px] space-y-1.5');
+    expect(app).toContain("codexQuotaBarClass(window.availability)");
+    expect(app).toContain("grid-cols-[minmax(0,64px)_minmax(0,1fr)]");
+    expect(app).toContain("grid-cols-[20px_minmax(0,1fr)_26px_44px]");
+    expect(app).toContain("codexQuotaBarClass(window.remaining)");
   });
 
   test("keeps family cards aligned while expanding independently", () => {

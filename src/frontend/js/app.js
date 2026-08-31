@@ -544,14 +544,16 @@ function renderFamilyGrid(stats) {
             .join(', ');
 
         const quotaWindowSummary = stat.provider === 'codex' && stat.windowStats?.length
-            ? `<div class="shrink-0 min-w-[126px]" title="Codex quota windows">
-                <div class="grid grid-cols-[28px_32px_1fr] gap-x-2 text-[7px] text-zinc-500 dark:text-zinc-700 uppercase tracking-tighter mb-0.5">
-                    <span>Window</span><span class="text-right">Left</span><span class="text-right">Reset in</span>
-                </div>
-                ${stat.windowStats.map(window => `<div class="grid grid-cols-[28px_32px_1fr] gap-x-2 items-baseline text-[9px] font-bold whitespace-nowrap">
-                    <span class="text-zinc-500">${escapeHtml(window.label)}</span>
-                    <span class="text-right ${window.availability < 20 ? 'text-rose-500' : 'text-zinc-600 dark:text-zinc-400'}">${window.availability}%</span>
-                    <span class="text-right text-zinc-600 dark:text-zinc-400">${window.earliestReset ? formatCompactReset(window.earliestReset) : 'Ready'}</span>
+            ? `<div class="shrink-0 w-[132px] space-y-1.5" title="Codex quota windows">
+                ${stat.windowStats.map(window => `<div>
+                    <div class="grid grid-cols-[20px_28px_1fr] gap-x-1 items-baseline text-[8px] font-bold tabular-nums whitespace-nowrap mb-0.5">
+                        <span class="text-zinc-500">${escapeHtml(window.label)}</span>
+                        <span class="text-right ${window.availability < 20 ? 'text-rose-500' : 'text-zinc-600 dark:text-zinc-400'}">${window.availability}%</span>
+                        <span class="text-right text-zinc-600 dark:text-zinc-400">${window.earliestReset ? formatCompactReset(window.earliestReset) : 'Ready'}</span>
+                    </div>
+                    <div class="h-0.5 w-full bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
+                        <div class="h-full ${codexQuotaBarClass(window.availability)} transition-all duration-500" style="width: ${window.availability}%"></div>
+                    </div>
                 </div>`).join('')}
             </div>`
             : `<div class="flex flex-col items-end shrink-0" title="Time until next quota refill">
@@ -608,7 +610,7 @@ function renderFamilyGrid(stats) {
                             }
 
                             let rowClass = stat.provider === 'codex'
-                                ? "grid grid-cols-[minmax(0,64px)_minmax(24px,1fr)_96px] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors"
+                                ? "grid grid-cols-[minmax(0,64px)_minmax(0,1fr)] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors"
                                 : "grid grid-cols-[minmax(0,72px)_minmax(36px,1fr)_max-content] sm:grid-cols-[minmax(0,88px)_minmax(48px,1fr)_max-content] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors";
                             let textClass = "text-zinc-600 dark:text-zinc-400";
                             
@@ -618,10 +620,13 @@ function renderFamilyGrid(stats) {
                             }
 
                             const resetSummary = stat.provider === 'codex' && acc.windows?.length
-                                ? `<div class="w-[96px] space-y-0.5 text-right">${acc.windows.map(window => `<div class="grid grid-cols-[20px_26px_1fr] gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
+                                ? `<div class="space-y-1">${acc.windows.map(window => `<div class="grid grid-cols-[20px_minmax(0,1fr)_26px_44px] items-center gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
                                     <span class="text-zinc-500">${escapeHtml(window.label)}</span>
-                                    <span class="${window.remaining < 20 ? 'text-rose-500' : 'text-zinc-500'}">${window.remaining}%</span>
-                                    <span class="${isCooldown ? 'text-rose-500' : 'text-zinc-500'}">${window.resetTime ? formatCompactReset(window.resetTime) : 'Ready'}</span>
+                                    <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
+                                        <div class="h-full ${codexQuotaBarClass(window.remaining)}" style="width: ${window.remaining}%"></div>
+                                    </div>
+                                    <span class="text-right ${window.remaining < 20 ? 'text-rose-500' : 'text-zinc-500'}">${window.remaining}%</span>
+                                    <span class="text-right ${isCooldown ? 'text-rose-500' : 'text-zinc-500'}">${window.resetTime ? formatCompactReset(window.resetTime) : 'Ready'}</span>
                                 </div>`).join('')}</div>`
                                 : `<div class="text-[9px] ${isCooldown ? 'text-rose-500' : 'text-zinc-500'} font-bold tabular-nums whitespace-nowrap text-right">
                                     ${isCooldown ? 'WAIT' : (acc.resetTime ? formatReset(new Date(acc.resetTime).toISOString()) : 'Ready')}
@@ -632,10 +637,11 @@ function renderFamilyGrid(stats) {
                                 <div class="text-[10px] ${textClass} truncate">
                                     ${acc.email.split('@')[0]}
                                 </div>
-                                <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 rounded-none overflow-hidden">
-                                    <div class="h-full ${quotaColor} rounded-none" style="width: ${acc.avgQuota}%"></div>
-                                </div>
-                                ${resetSummary}
+                                ${stat.provider === 'codex'
+                                    ? resetSummary
+                                    : `<div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 rounded-none overflow-hidden">
+                                        <div class="h-full ${quotaColor} rounded-none" style="width: ${acc.avgQuota}%"></div>
+                                    </div>${resetSummary}`}
                             </div>
                             `;
                         }).join('')}
