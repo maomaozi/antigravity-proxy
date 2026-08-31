@@ -7,6 +7,19 @@ const server = await Bun.file(new URL("../../src/server.ts", import.meta.url)).t
 const sessions = await Bun.file(new URL("../../src/frontend/js/sessions.js", import.meta.url)).text();
 const sessionsPage = await Bun.file(new URL("../../src/frontend/sessions.html", import.meta.url)).text();
 
+function createCodexQuotaHarness() {
+  return new Function("window", `${app}
+    return {
+      calculate(accounts) {
+        globalCodexAccounts = accounts;
+        globalCodexModels = ["gpt-5-codex"];
+        currentConfig = { codex: { enabled: true } };
+        return calculateCodexFamilyStat();
+      }
+    };
+  `)({});
+}
+
 describe("dashboard account provider layout", () => {
   test("keeps provider login actions out of the global header", () => {
     expect(header).not.toContain('href="/oauth/start"');
@@ -39,6 +52,61 @@ describe("dashboard account provider layout", () => {
     expect(app).toContain("remaining < duration - 5");
     expect(app).toContain("Resource Allocations");
     expect(app).toContain("toggleCodexAccount");
+  });
+
+  test("keeps 5-hour and 7-day Codex windows separate regardless of primary order", () => {
+    const now = Date.now();
+    const stat = createCodexQuotaHarness().calculate([{
+      email: "quota@example.com",
+      available: true,
+      cooldownUntil: 0,
+      usageFetchedAt: now,
+      usage: {
+        allowed: true,
+        limitReached: false,
+        primaryWindow: {
+          usedPercent: 20,
+          limitWindowSeconds: 7 * 24 * 60 * 60,
+          resetAt: now + 6 * 24 * 60 * 60 * 1000,
+          resetAfterSeconds: 6 * 24 * 60 * 60,
+        },
+        secondaryWindow: {
+          usedPercent: 8,
+          limitWindowSeconds: 5 * 60 * 60,
+          resetAt: now + 2 * 60 * 60 * 1000,
+          resetAfterSeconds: 2 * 60 * 60,
+        },
+      },
+    }]);
+
+    expect(stat.windowStats.map((window: any) => window.label)).toEqual(["5h", "7d"]);
+    expect(stat.windowStats.map((window: any) => window.availability)).toEqual([92, 80]);
+    expect(stat.familyData.accounts[0].windows.map((window: any) => window.label)).toEqual(["5h", "7d"]);
+    expect(stat.availability).toBe(80);
+  });
+
+  test("supports Codex plans that report only one quota window", () => {
+    const now = Date.now();
+    const stat = createCodexQuotaHarness().calculate([{
+      email: "single@example.com",
+      available: true,
+      cooldownUntil: 0,
+      usageFetchedAt: now,
+      usage: {
+        allowed: true,
+        limitReached: false,
+        primaryWindow: {
+          usedPercent: 10,
+          limitWindowSeconds: 5 * 60 * 60,
+          resetAt: now + 60 * 60 * 1000,
+          resetAfterSeconds: 60 * 60,
+        },
+        secondaryWindow: null,
+      },
+    }]);
+
+    expect(stat.windowStats).toHaveLength(1);
+    expect(stat.windowStats[0]).toMatchObject({ label: "5h", availability: 90 });
   });
 
   test("counts active credentials across both providers instead of Google rows only", () => {

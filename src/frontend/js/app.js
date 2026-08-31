@@ -378,6 +378,7 @@ function calculateCodexFamilyStat() {
 
     const now = Date.now();
     const familyAccounts = [];
+    const windowStatsByKey = new Map();
     let availabilitySum = 0;
     let measuredAccounts = 0;
     let healthyCount = 0;
@@ -388,8 +389,11 @@ function calculateCodexFamilyStat() {
         const measured = windows.map(window => {
             const used = window.usedPercent === null || window.usedPercent === undefined ? NaN : Number(window.usedPercent);
             if (!Number.isFinite(used)) return null;
+            const duration = Number(window.limitWindowSeconds);
             return {
                 window,
+                duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+                label: codexWindowLabel(window, window.fallback),
                 remaining: Math.max(0, Math.min(100, 100 - used)),
             };
         }).filter(Boolean);
@@ -412,14 +416,51 @@ function calculateCodexFamilyStat() {
         if (!unavailable) healthyCount++;
         if (resetTime && (!earliestReset || resetTime < earliestReset)) earliestReset = resetTime;
 
+        measured.forEach(item => {
+            const key = item.duration === null ? `fallback:${item.window.fallback}` : `duration:${item.duration}`;
+            const resetTarget = codexResetTarget(item.window, account.usageFetchedAt);
+            const aggregate = windowStatsByKey.get(key) || {
+                key,
+                label: item.label,
+                duration: item.duration,
+                availabilitySum: 0,
+                measuredAccounts: 0,
+                earliestReset: null,
+            };
+            aggregate.availabilitySum += item.remaining;
+            aggregate.measuredAccounts++;
+            if (resetTarget && resetTarget > now && (!aggregate.earliestReset || resetTarget < aggregate.earliestReset)) {
+                aggregate.earliestReset = resetTarget;
+            }
+            windowStatsByKey.set(key, aggregate);
+        });
+
         familyAccounts.push({
             email: account.email,
             avgQuota: availability === null ? 0 : Math.round(availability),
             resetTime,
             isUnavailable: unavailable,
             hasQuota: availability !== null,
+            windows: measured.map(item => ({
+                label: item.label,
+                duration: item.duration,
+                remaining: Math.round(item.remaining),
+                resetTime: codexResetTarget(item.window, account.usageFetchedAt),
+            })),
         });
     });
+
+    const windowStats = Array.from(windowStatsByKey.values())
+        .map(window => ({
+            key: window.key,
+            label: window.label,
+            duration: window.duration,
+            availability: window.measuredAccounts
+                ? Math.round(window.availabilitySum / window.measuredAccounts)
+                : 0,
+            earliestReset: window.earliestReset,
+        }))
+        .sort((a, b) => (a.duration ?? Number.MAX_SAFE_INTEGER) - (b.duration ?? Number.MAX_SAFE_INTEGER));
 
     return {
         name: 'Codex Models',
@@ -429,6 +470,7 @@ function calculateCodexFamilyStat() {
         total: globalCodexAccounts.length,
         models: [...globalCodexModels].sort(),
         familyData: { accounts: familyAccounts, earliestReset },
+        windowStats,
     };
 }
 
@@ -485,6 +527,22 @@ function renderFamilyGrid(stats) {
             .sort()
             .join(', ');
 
+        const quotaWindowSummary = stat.provider === 'codex' && stat.windowStats?.length
+            ? `<div class="shrink-0 min-w-[126px]" title="Codex quota windows">
+                <div class="grid grid-cols-[28px_32px_1fr] gap-x-2 text-[7px] text-zinc-500 dark:text-zinc-700 uppercase tracking-tighter mb-0.5">
+                    <span>Window</span><span class="text-right">Left</span><span class="text-right">Reset in</span>
+                </div>
+                ${stat.windowStats.map(window => `<div class="grid grid-cols-[28px_32px_1fr] gap-x-2 items-baseline text-[9px] font-bold whitespace-nowrap">
+                    <span class="text-zinc-500">${escapeHtml(window.label)}</span>
+                    <span class="text-right ${window.availability < 20 ? 'text-rose-500' : 'text-zinc-600 dark:text-zinc-400'}">${window.availability}%</span>
+                    <span class="text-right text-zinc-600 dark:text-zinc-400">${window.earliestReset ? formatReset(window.earliestReset) : 'Ready'}</span>
+                </div>`).join('')}
+            </div>`
+            : `<div class="flex flex-col items-end shrink-0" title="Time until next quota refill">
+                <span class="text-[8px] text-zinc-500 dark:text-zinc-700 uppercase tracking-tighter">Quota increase in</span>
+                <span class="text-[10px] text-zinc-600 dark:text-zinc-400 font-bold">${familyData.earliestReset ? formatReset(new Date(familyData.earliestReset).toISOString()) : '--'}</span>
+            </div>`;
+
         return `
         <div class="bg-white dark:bg-[#0f0f0f] rounded border ${borderColor} overflow-hidden group hover:border-zinc-400 dark:hover:border-zinc-700 transition-colors flex flex-col self-start">
             <div class="p-3 sm:p-4 cursor-pointer flex flex-col" onclick="toggleFamily(${index})">
@@ -500,10 +558,7 @@ function renderFamilyGrid(stats) {
 
                 <div class="flex items-center justify-between gap-4 mt-auto">
                      <div class="min-w-0 flex-1 h-12 overflow-hidden text-[10px] text-zinc-500 dark:text-zinc-600 leading-tight" title="${modelsInFamily}">${modelsInFamily}</div>
-                     <div class="flex flex-col items-end shrink-0" title="Time until next quota refill">
-                        <span class="text-[8px] text-zinc-500 dark:text-zinc-700 uppercase tracking-tighter">Quota increase in</span>
-                        <span class="text-[10px] text-zinc-600 dark:text-zinc-400 font-bold">${familyData.earliestReset ? formatReset(new Date(familyData.earliestReset).toISOString()) : '--'}</span>
-                    </div>
+                     ${quotaWindowSummary}
                 </div>
             </div>
 
@@ -544,6 +599,16 @@ function renderFamilyGrid(stats) {
                                 textClass = "text-rose-500 font-bold";
                             }
 
+                            const resetSummary = stat.provider === 'codex' && acc.windows?.length
+                                ? `<div class="space-y-0.5 text-right">${acc.windows.map(window => `<div class="grid grid-cols-[24px_28px_1fr] gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
+                                    <span class="text-zinc-500">${escapeHtml(window.label)}</span>
+                                    <span class="${window.remaining < 20 ? 'text-rose-500' : 'text-zinc-500'}">${window.remaining}%</span>
+                                    <span class="${isCooldown ? 'text-rose-500' : 'text-zinc-500'}">${window.resetTime ? formatReset(window.resetTime) : 'Ready'}</span>
+                                </div>`).join('')}</div>`
+                                : `<div class="text-[9px] ${isCooldown ? 'text-rose-500' : 'text-zinc-500'} font-bold tabular-nums whitespace-nowrap text-right">
+                                    ${isCooldown ? 'WAIT' : (acc.resetTime ? formatReset(new Date(acc.resetTime).toISOString()) : 'Ready')}
+                                </div>`;
+
                             return `
                             <div class="${rowClass}">
                                 <div class="text-[10px] ${textClass} truncate">
@@ -552,9 +617,7 @@ function renderFamilyGrid(stats) {
                                 <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 rounded-none overflow-hidden">
                                     <div class="h-full ${quotaColor} rounded-none" style="width: ${acc.avgQuota}%"></div>
                                 </div>
-                                <div class="text-[9px] ${isCooldown ? 'text-rose-500' : 'text-zinc-500'} font-bold tabular-nums whitespace-nowrap text-right">
-                                    ${isCooldown ? 'WAIT' : (acc.resetTime ? formatReset(new Date(acc.resetTime).toISOString()) : 'Ready')}
-                                </div>
+                                ${resetSummary}
                             </div>
                             `;
                         }).join('')}
