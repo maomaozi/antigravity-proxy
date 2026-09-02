@@ -13,6 +13,8 @@ let currentConfig = null;
 let globalCodexAccounts = [];
 let activeCodexLoginId = null;
 let codexLoginPollTimer = null;
+let usageDisplayRefreshInFlight = null;
+let usageRefreshLabelTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -1105,10 +1107,10 @@ function renderCodexAccounts() {
     updateAccountSummary();
 }
 
-async function loadCodexUsage() {
+async function loadCodexUsage(throwOnError = false) {
     if (!globalCodexAccounts.length) {
         updateAccountSummary();
-        return;
+        return true;
     }
     try {
         const response = await fetch('/api/codex/usage', { cache: 'no-store' });
@@ -1133,9 +1135,53 @@ async function loadCodexUsage() {
         renderCodexAccounts();
         renderDashboardFamilies();
         updateAccountSummary();
+        return true;
     } catch (error) {
         addLog(`[CODEX] Usage refresh failed: ${error.message}`);
+        if (throwOnError) throw error;
+        return false;
     }
+}
+
+async function refreshUsageDisplay() {
+    if (usageDisplayRefreshInFlight) return usageDisplayRefreshInFlight;
+
+    const button = $('usage-refresh-button');
+    const icon = $('usage-refresh-icon');
+    const label = $('usage-refresh-label');
+    if (usageRefreshLabelTimer) clearTimeout(usageRefreshLabelTimer);
+    if (button) {
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+    }
+    icon?.classList.add('animate-spin');
+    if (label) label.textContent = 'Refreshing…';
+
+    usageDisplayRefreshInFlight = (async () => {
+        try {
+            const response = await fetch('/api/status', { cache: 'no-store' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            updateUI(await response.json());
+            await loadCodexUsage(true);
+            if ($('last-updated')) $('last-updated').textContent = new Date().toLocaleTimeString();
+            if (label) label.textContent = 'Refreshed';
+        } catch (error) {
+            if (label) label.textContent = 'Retry';
+            addLog(`[USAGE] Display refresh failed: ${error.message}`);
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            }
+            icon?.classList.remove('animate-spin');
+            usageDisplayRefreshInFlight = null;
+            usageRefreshLabelTimer = setTimeout(() => {
+                if (label) label.textContent = 'Refresh usage';
+            }, 2000);
+        }
+    })();
+
+    return usageDisplayRefreshInFlight;
 }
 
 async function loadCodexAccounts() {

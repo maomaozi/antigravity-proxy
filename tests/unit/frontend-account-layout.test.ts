@@ -34,7 +34,12 @@ describe("dashboard account provider layout", () => {
     expect(main).toContain("Add Google Account");
     expect(main).toContain("Add Codex Account");
     expect(main).not.toContain("Flush");
-    expect(main).not.toContain("Refresh Usage");
+    expect(header).toContain('id="usage-refresh-button"');
+    expect(header).toContain("Refresh usage");
+    expect(main).not.toContain('id="usage-refresh-button"');
+    expect(app).toContain("refreshUsageDisplay");
+    expect(app).toContain("fetch('/api/status', { cache: 'no-store' })");
+    expect(app).toContain("await loadCodexUsage(true)");
   });
 
   test("uses the same primary account columns for Google and Codex", () => {
