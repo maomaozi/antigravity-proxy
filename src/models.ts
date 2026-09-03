@@ -10,6 +10,7 @@ export interface SupportedModel {
  * utils/transform.ts because Antigravity's public and backend IDs can differ.
  */
 export const SUPPORTED_MODELS: readonly SupportedModel[] = [
+  { id: "antigravity-gemini-3.8-flash", name: "Gemini 3.8 Flash", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "medium" },
   { id: "antigravity-gemini-3.7-flash", name: "Gemini 3.7 Flash", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "medium" },
   { id: "antigravity-gemini-3.6-flash", name: "Gemini 3.6 Flash", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "medium" },
   { id: "antigravity-gemini-3.5-flash", name: "Gemini 3.5 Flash", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "medium" },

@@ -208,12 +208,15 @@ export function transformCompletionToGoogleBody(
     hasCurrentModelRoute = true;
   };
 
+  const gemini38Match = resolvedModel.match(/^gemini-3\.8-flash(?:-(low|medium|high))?$/);
   const gemini37Match = resolvedModel.match(/^gemini-3\.7-flash(?:-(low|medium|high))?$/);
   const gemini36Match = resolvedModel.match(/^gemini-3\.6-flash(?:-(low|medium|high))?$/);
   const gemini35Match = resolvedModel.match(/^gemini-3\.5-flash(?:-(low|medium|high))?$/);
   const gemini31ProMatch = resolvedModel.match(/^gemini-3\.1-pro(?:-(low|high))?$/);
 
-  if (gemini37Match) {
+  if (gemini38Match) {
+    routeCurrentModel("gemini-3.8-flash-tiered", gemini38Match[1] || "medium");
+  } else if (gemini37Match) {
     routeCurrentModel("gemini-3.7-flash-tiered", gemini37Match[1] || "medium");
   } else if (gemini36Match) {
     const tier = gemini36Match[1] || "medium";
@@ -263,6 +266,7 @@ export function transformCompletionToGoogleBody(
       "claude-sonnet-4-5-thinking", 
       "claude-opus-4-6-thinking",
       "gpt-oss-120b-medium",
+      "gemini-3.8-flash-tiered",
       "gemini-3.7-flash-tiered",
       "gemini-3.6-flash-medium",
       "gemini-3.5-flash-low",
@@ -472,6 +476,7 @@ export function transformCompletionToGoogleBody(
   }
 
   const isThinkingModel = rawModel.includes("-thinking") ||
+                          rawModel.includes("gemini-3.8-flash") ||
                           rawModel.includes("gemini-3.7-flash") ||
                           rawModel.includes("gemini-3.6-flash") ||
                           rawModel.includes("gemini-3.5-flash") ||

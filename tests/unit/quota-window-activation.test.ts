@@ -55,7 +55,12 @@ function codexSnapshot(email: string, usedPercent: number): CodexUsageSnapshot {
 describe("quota window activation", () => {
   test("does not turn Google's full unused duration into an active reset countdown", async () => {
     const now = Date.now();
-    const fakeFetch = (async () => Response.json({
+    let requestedUrl = "";
+    let requestedHeaders: any;
+    const fakeFetch = (async (input: any, init?: any) => {
+      requestedUrl = String(input);
+      requestedHeaders = init?.headers;
+      return Response.json({
       availableModels: {
         "models/gemini-unused": {
           displayMetadata: { label: "Gemini Unused" },
@@ -66,10 +71,16 @@ describe("quota window activation", () => {
           quotaInfo: { remainingFraction: 0.9, quotaResetTime: "3600s" },
         },
       },
-    })) as unknown as typeof fetch;
+      });
+    }) as unknown as typeof fetch;
     const account = googleAccount("quota@example.com", 1);
 
     const quota = await fetchQuota(account, true, fakeFetch);
+
+    expect(requestedUrl).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
+    const headers = new Headers(requestedHeaders);
+    expect(headers.get("user-agent")).toContain("Antigravity/2.9.1");
+    expect(headers.get("user-agent")).not.toBe("antigravity");
 
     const unused = quota?.find(item => item.groupName === "Gemini Unused");
     expect(unused).toMatchObject({

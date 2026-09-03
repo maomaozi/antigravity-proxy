@@ -15,12 +15,9 @@ export async function fetchQuota(
   }
 
   try {
-    const res = await fetchImpl(`https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, {
+    const res = await fetchImpl(`https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, {
       method: "POST",
-      headers: {
-        ...getImpersonationHeaders(account.accessToken, account.fingerprint),
-        "User-Agent": "antigravity",
-      },
+      headers: getImpersonationHeaders(account.accessToken, account.fingerprint),
       body: JSON.stringify({
         project: account.projectId
       })

@@ -15,7 +15,7 @@ export const OAUTH_CONFIG = {
   redirectUri: process.env.OAUTH_REDIRECT_URI || `http://localhost:${process.env.PORT || "3000"}/oauth-callback`
 };
 
-// Gemini 3.7 Flash is gated by the current Antigravity client generation.
+// Current Gemini Flash models are gated by the Antigravity client generation.
 const ANTIGRAVITY_VERSION = "2.9.1";
 
 const PLATFORMS = ["darwin/x64", "darwin/arm64"] as const;

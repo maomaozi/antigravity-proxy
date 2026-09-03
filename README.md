@@ -53,7 +53,7 @@ replace `3000` in the examples below.
 curl http://127.0.0.1:3000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "antigravity-gemini-3.7-flash",
+    "model": "antigravity-gemini-3.8-flash",
     "messages": [
       {"role": "user", "content": "Explain what a reverse proxy is."}
     ]
@@ -72,7 +72,7 @@ Chat Completions:
 curl http://127.0.0.1:3000/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "antigravity-gemini-3.7-flash",
+    "model": "antigravity-gemini-3.8-flash",
     "input": "Explain what a reverse proxy is."
   }'
 ```
@@ -222,7 +222,7 @@ The proxy supports OpenAI-compatible `response_format` with the following curren
 | Model | `json_object` | `json_schema` |
 | --- | --- | --- |
 | Claude Opus/Sonnet | Supported via an unconstrained upstream object schema | Supported |
-| Gemini 3.7 Flash / 3.1 Pro | Not reliably enforced without an explicit schema | Supported for the upstream schema subset |
+| Gemini 3.8 / 3.7 Flash / 3.1 Pro | Not reliably enforced without an explicit schema | Supported for the upstream schema subset |
 | GPT-OSS | Not supported by the current upstream path | Not supported by the current upstream path |
 
 For Claude, structured-output requests are mapped at the protocol level without modifying the user prompt. Claude thinking is disabled for these requests because the upstream API cannot combine thinking with schema-forced output.
@@ -254,6 +254,16 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
             "baseURL": "http://localhost:3000/v1"
         },
         "models": {
+            "antigravity-gemini-3.8-flash": {
+                "name": "Gemini 3.8 Flash (Antigravity)",
+                "limit": { "context": 1048576, "output": 65536 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "medium": { "reasoningEffort": "medium" },
+                    "high": { "reasoningEffort": "high" }
+                }
+            },
             "antigravity-gemini-3.7-flash": {
                 "name": "Gemini 3.7 Flash (Antigravity)",
                 "limit": { "context": 1048576, "output": 65536 },
@@ -322,6 +332,7 @@ thinking level to the model ID:
 
 | Model | Levels | Default |
 | --- | --- | --- |
+| `antigravity-gemini-3.8-flash` | `low`, `medium`, `high` | `medium` |
 | `antigravity-gemini-3.7-flash` | `low`, `medium`, `high` | `medium` |
 | `antigravity-gemini-3.6-flash` | `low`, `medium`, `high` | `medium` |
 | `antigravity-gemini-3.5-flash` | `low`, `medium`, `high` | `medium` |
@@ -330,7 +341,7 @@ thinking level to the model ID:
 | `antigravity-claude-opus-4-6-thinking` | Fixed thinking | Thinking |
 | `antigravity-gpt-oss-120b` | Fixed | `medium` |
 
-For example, use `antigravity-gemini-3.7-flash-high` or
+For example, use `antigravity-gemini-3.8-flash-high` or
 `antigravity-gemini-3.1-pro-low`. The base model ID selects the default shown
 above.
 
