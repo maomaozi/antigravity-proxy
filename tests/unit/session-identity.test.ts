@@ -62,6 +62,14 @@ describe("session identity resolution", () => {
     expect(identity.source).toBe("x-session-affinity");
   });
 
+  test("keeps history fallback for non-Codex Responses requests", () => {
+    const identity = resolveCodexAffinityIdentity(new Headers(), { input: "wire shape differs" }, [
+      { role: "system", content: "You are a coding agent" },
+      { role: "user", content: "Inspect the scheduler" },
+    ]);
+    expect(identity.source).toBe("history-anchor");
+  });
+
   test("history fallback remains stable as the conversation grows", () => {
     const initial = resolveSessionIdentity(new Headers(), {
       messages: [

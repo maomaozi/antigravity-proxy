@@ -269,7 +269,7 @@ Bun.serve({
       const responseId = "resp_" + Math.random().toString(36).substring(2, 14);
       const createdAt = Math.floor(Date.now() / 1000);
       const requestStartedAt = Date.now();
-      const sessionIdentity = resolveSessionIdentity(req.headers, responsesBody, completionRequest.messages);
+      const sessionIdentity = resolveCodexAffinityIdentity(req.headers, responsesBody, completionRequest.messages);
       const execution = await executeCompletion({
         request: completionRequest,
         sessionIdentity,

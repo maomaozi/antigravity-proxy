@@ -1,4 +1,5 @@
 import { type AntigravityAccount } from "./types";
+import { createHash } from "node:crypto";
 import { loadConfig, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
 import { generateFingerprint } from "../utils/headers";
@@ -156,7 +157,23 @@ function getPidOffset(): number {
   return process.pid % Math.max(accounts.length, 1);
 }
 
-export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, sessionKey?: string, excludeEmails: string[] = [], skipRescue: boolean = false): Promise<AntigravityAccount | null> {
+function rendezvousScore(routingKey: string, accountKey: string): bigint {
+  const digest = createHash("sha256")
+    .update(routingKey)
+    .update("\0")
+    .update(accountKey)
+    .digest("hex");
+  return BigInt(`0x${digest.slice(0, 16)}`);
+}
+
+export async function getBestAccount(
+  pool?: 'cli' | 'sandbox',
+  model?: string,
+  sessionKey?: string,
+  excludeEmails: string[] = [],
+  skipRescue: boolean = false,
+  routingKey?: string,
+): Promise<AntigravityAccount | null> {
   if (accounts.length === 0) return null;
   const now = Date.now();
   const usable = accounts.filter(a => a.refreshToken && !a.challenge && !excludeEmails.includes(a.email));
@@ -219,18 +236,25 @@ export async function getBestAccount(pool?: 'cli' | 'sandbox', model?: string, s
     
     if (candidates.length === 0) return null;
     
-    const config = getProxyConfig();
-    candidates.sort((a, b) => {
-        const priorityB = calculatePriority(b, now, model, pool);
-        const priorityA = calculatePriority(a, now, model, pool);
-        if (Math.abs(priorityA - priorityB) < 0.1) {
-            return a.lastUsed - b.lastUsed;
-        }
-        return priorityB - priorityA;
-    });
+    if (routingKey) {
+      candidates.sort((a, b) => {
+        const aScore = rendezvousScore(routingKey, a.email);
+        const bScore = rendezvousScore(routingKey, b.email);
+        if (aScore === bScore) return a.email.localeCompare(b.email);
+        return aScore > bScore ? -1 : 1;
+      });
+    } else {
+      candidates.sort((a, b) => {
+          const priorityB = calculatePriority(b, now, model, pool);
+          const priorityA = calculatePriority(a, now, model, pool);
+          if (Math.abs(priorityA - priorityB) < 0.1) {
+              return a.lastUsed - b.lastUsed;
+          }
+          return priorityB - priorityA;
+      });
+    }
 
-    const offset = getPidOffset();
-    const selectedIndex = offset % candidates.length;
+    const selectedIndex = routingKey ? 0 : getPidOffset() % candidates.length;
     
     return await ensureAccountReady(candidates[selectedIndex]);
   }

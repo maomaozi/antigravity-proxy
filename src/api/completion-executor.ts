@@ -95,6 +95,7 @@ export async function executeCompletion({
   const isCliOnlyModel = false;
 
   const sessionId = sessionIdentity.key;
+  const routingKey = sessionIdentity.source === "thread-id" ? sessionIdentity.id : undefined;
   const existingBinding = getSessionBinding(sessionIdentity.key, request.model);
   if (existingBinding && !isSandboxOnlyModel && !isCliOnlyModel) {
     useCliPool = existingBinding.pool === "cli";
@@ -128,12 +129,13 @@ export async function executeCompletion({
       sessionIdentity.key,
       triedEmails,
       true,
+      routingKey,
     );
 
     if (!account && !isSandboxOnlyModel && !isCliOnlyModel) {
       console.log(`[Manager] No READY accounts in ${useCliPool ? "CLI" : "Sandbox"} pool, trying the other pool first...`);
       const otherPool = useCliPool ? "sandbox" : "cli";
-      account = await getBestAccount(otherPool, request.model, sessionIdentity.key, triedEmails, true);
+      account = await getBestAccount(otherPool, request.model, sessionIdentity.key, triedEmails, true, routingKey);
       if (account) {
         useCliPool = !useCliPool;
         console.log(`[Switch] Found ready account in ${useCliPool ? "CLI" : "Sandbox"} pool.`);
@@ -147,6 +149,7 @@ export async function executeCompletion({
         sessionIdentity.key,
         triedEmails,
         false,
+        routingKey,
       );
     }
 

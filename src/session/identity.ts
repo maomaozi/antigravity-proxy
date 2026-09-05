@@ -118,12 +118,12 @@ export function resolveSessionIdentity(headers: Headers, body: any, historyMessa
   return makeIdentity(`generated:${randomUUID()}`, "generated", true);
 }
 
-export function resolveCodexAffinityIdentity(headers: Headers, body: any): SessionIdentity {
+export function resolveCodexAffinityIdentity(headers: Headers, body: any, historyMessages?: unknown[]): SessionIdentity {
   const explicitAffinity = asNonEmptyString(headers.get("x-session-affinity"));
   if (explicitAffinity) return makeIdentity(explicitAffinity, "x-session-affinity", false);
 
   const threadId = asNonEmptyString(headers.get("thread-id"));
   if (threadId) return makeIdentity(`codex-thread:${threadId}`, "thread-id", false);
 
-  return resolveSessionIdentity(headers, body);
+  return resolveSessionIdentity(headers, body, historyMessages);
 }
