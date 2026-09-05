@@ -17,7 +17,7 @@ import { OAUTH_CONFIG } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { createWindowActivationRuntime, startQuotaWindowActivationScheduler } from "./api/window-activation";
 import { SUPPORTED_MODELS } from "./models";
-import { resolveSessionIdentity } from "./session/identity";
+import { resolveCodexAffinityIdentity, resolveSessionIdentity } from "./session/identity";
 import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings } from "./session/store";
 import { CodexAccountManager } from "./codex/account-manager";
 import { CodexDeviceAuthService } from "./codex/device-auth";
@@ -219,11 +219,12 @@ Bun.serve({
         }
         const requestId = "resp_" + Math.random().toString(36).substring(2, 14);
         const requestStartedAt = Date.now();
-        const sessionIdentity = resolveSessionIdentity(req.headers, responsesBody);
+        const sessionIdentity = resolveCodexAffinityIdentity(req.headers, responsesBody);
         return createCodexProxyService().responses({
           body: responsesBody,
           model: modelRoute.upstreamModel,
           identity: sessionIdentity,
+          threadId: req.headers.get("thread-id")?.trim() || undefined,
           requestId,
           requestStartedAt,
         });
@@ -340,11 +341,12 @@ Bun.serve({
       }
       const requestId = "compact_" + Math.random().toString(36).substring(2, 14);
       const requestStartedAt = Date.now();
-      const sessionIdentity = resolveSessionIdentity(req.headers, compactBody);
+      const sessionIdentity = resolveCodexAffinityIdentity(req.headers, compactBody);
       return createCodexProxyService().compact({
         body: compactBody,
         model: modelRoute.upstreamModel,
         identity: sessionIdentity,
+        threadId: req.headers.get("thread-id")?.trim() || undefined,
         requestId,
         requestStartedAt,
       });

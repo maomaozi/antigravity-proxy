@@ -54,6 +54,46 @@ describe("CodexAccountManager", () => {
     expect((await manager.selectAccount({ preferredEmail: "b@example.com" }))?.email).toBe("b@example.com");
   });
 
+  test("uses stable rendezvous routing for a routing key", async () => {
+    const manager = new CodexAccountManager({ storagePath: ":memory:" });
+    await manager.init();
+    for (const name of ["a", "b", "c", "d"]) {
+      await manager.upsertCredentials({
+        email: `${name}@example.com`,
+        accountId: name,
+        accessToken: name,
+        refreshToken: `r${name}`,
+        expiresAt: Date.now() + 3600_000,
+      });
+    }
+
+    const first = await manager.selectAccount({ routingKey: "thread-123" });
+    const second = await manager.selectAccount({ routingKey: "thread-123" });
+    expect(first?.email).toBeTruthy();
+    expect(second?.email).toBe(first?.email);
+  });
+
+  test("rendezvous routing spreads independent threads across the available pool", async () => {
+    const manager = new CodexAccountManager({ storagePath: ":memory:" });
+    await manager.init();
+    for (const name of ["a", "b", "c", "d"]) {
+      await manager.upsertCredentials({
+        email: `${name}@example.com`,
+        accountId: name,
+        accessToken: name,
+        refreshToken: `r${name}`,
+        expiresAt: Date.now() + 3600_000,
+      });
+    }
+
+    const selected = new Set<string>();
+    for (let index = 0; index < 64; index++) {
+      const account = await manager.selectAccount({ routingKey: `thread-${index}` });
+      if (account) selected.add(account.email);
+    }
+    expect(selected.size).toBeGreaterThanOrEqual(3);
+  });
+
   test("refreshes expired tokens using the Codex OAuth refresh flow and rotates refresh token", async () => {
     let requestBody = "";
     const fakeFetch = async (_input: string | URL | Request, init?: RequestInit) => {

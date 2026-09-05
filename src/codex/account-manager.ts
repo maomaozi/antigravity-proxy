@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CodexCredentials } from "./device-auth";
@@ -103,6 +104,15 @@ interface CodexQuotaState {
   blocked: boolean;
   blockedUntil: number | null;
   fetchedAt: number;
+}
+
+function rendezvousScore(routingKey: string, accountKey: string): bigint {
+  const digest = createHash("sha256")
+    .update(routingKey)
+    .update("\0")
+    .update(accountKey)
+    .digest("hex");
+  return BigInt(`0x${digest.slice(0, 16)}`);
 }
 
 export class CodexAccountManager {
@@ -247,14 +257,30 @@ export class CodexAccountManager {
     return true;
   }
 
-  async selectAccount(options: { preferredEmail?: string | null; excludeEmails?: Iterable<string> } = {}): Promise<CodexAccount | null> {
+  async selectAccount(options: {
+    preferredEmail?: string | null;
+    excludeEmails?: Iterable<string>;
+    routingKey?: string;
+  } = {}): Promise<CodexAccount | null> {
     const excluded = new Set(options.excludeEmails || []);
     const now = this.now();
     const candidates = this.accounts.filter(account => !excluded.has(account.email) && account.cooldownUntil <= now && !this.isQuotaBlocked(account.email, now));
     if (!candidates.length) return null;
 
     const preferred = options.preferredEmail ? candidates.find(account => account.email === options.preferredEmail) : undefined;
-    const ordered = preferred ? [preferred, ...candidates.filter(account => account !== preferred)] : [...candidates].sort((a, b) => a.lastUsed - b.lastUsed);
+    let ordered: CodexAccount[];
+    if (preferred) {
+      ordered = [preferred, ...candidates.filter(account => account !== preferred)];
+    } else if (options.routingKey) {
+      ordered = [...candidates].sort((a, b) => {
+        const aScore = rendezvousScore(options.routingKey!, a.accountId || a.email);
+        const bScore = rendezvousScore(options.routingKey!, b.accountId || b.email);
+        if (aScore === bScore) return a.email.localeCompare(b.email);
+        return aScore > bScore ? -1 : 1;
+      });
+    } else {
+      ordered = [...candidates].sort((a, b) => a.lastUsed - b.lastUsed);
+    }
     for (const account of ordered) {
       const ready = await this.ensureReady(account);
       if (ready) {

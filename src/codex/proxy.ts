@@ -37,6 +37,7 @@ interface ProxyRequest {
   body: any;
   model: string;
   identity: SessionIdentity;
+  threadId?: string;
   requestId: string;
   requestStartedAt: number;
 }
@@ -91,7 +92,11 @@ export class CodexProxyService {
     let lastRetryAfterMs: number | undefined;
 
     for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
-      const account = await this.manager.selectAccount({ preferredEmail, excludeEmails: excluded });
+      const account = await this.manager.selectAccount({
+        preferredEmail,
+        excludeEmails: excluded,
+        routingKey: request.identity.id,
+      });
       if (!account) {
         if (lastResponse) return this.errorResponse(lastStatus, lastBody, lastRetryAfterMs);
         return Response.json({ error: { message: "No available codex account", type: "upstream_error" } }, { status: 503 });
@@ -99,11 +104,17 @@ export class CodexProxyService {
 
       let upstream: Response;
       try {
+        const upstreamBody = {
+          ...request.body,
+          model: request.model,
+        };
+        if (request.threadId) upstreamBody.prompt_cache_key = `thread:${request.threadId}`;
+
         const options = {
           accessToken: account.accessToken,
           accountId: account.accountId,
           sessionId: upstreamSessionId,
-          body: { ...request.body, model: request.model },
+          body: upstreamBody,
           timeoutMs: operation === "responses" ? this.responsesTimeoutMs : this.compactTimeoutMs,
           fetchImpl: this.fetchImpl,
           baseUrl: this.baseUrl,

@@ -48,6 +48,32 @@ describe("CodexProxyService", () => {
     store.close();
   });
 
+  test("rewrites the upstream prompt cache key to the Codex thread id", async () => {
+    let upstreamBody: any;
+    const fakeFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      upstreamBody = JSON.parse(String(init?.body || "{}"));
+      return new Response(
+        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const manager = await makeManager(fakeFetch);
+    const store = new SessionBindingStore(":memory:");
+    const service = new CodexProxyService({ manager, store, fetchImpl: fakeFetch, maxAttempts: 1 });
+
+    const response = await service.responses({
+      body: { model: "gpt-5-codex", input: "hi", stream: true, prompt_cache_key: "shared-session" },
+      model: "gpt-5-codex",
+      identity,
+      threadId: "thread-a",
+      requestId: "thread-cache-key-1",
+      requestStartedAt: Date.now(),
+    });
+    await response.text();
+    expect(upstreamBody.prompt_cache_key).toBe("thread:thread-a");
+    store.close();
+  });
+
   test("aggregates non-stream Responses while retaining canonical output and usage", async () => {
     const raw = [
       'event: response.output_item.done\ndata: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}\n\n',

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveSessionIdentity } from "../../src/session/identity";
+import { resolveCodexAffinityIdentity, resolveSessionIdentity } from "../../src/session/identity";
 
 describe("session identity resolution", () => {
   test("uses OpenCode affinity ahead of compatibility fields", () => {
@@ -39,6 +39,27 @@ describe("session identity resolution", () => {
     const identity = resolveSessionIdentity(headers, {});
     expect(identity.id).toBe("metadata-session");
     expect(identity.source).toBe("x-codex-turn-metadata");
+  });
+
+  test("uses Codex thread-id for account affinity even when the prompt cache key is shared", () => {
+    const headers = new Headers({
+      "session-id": "codex-session",
+      "thread-id": "codex-thread-a",
+    });
+    const identity = resolveCodexAffinityIdentity(headers, { prompt_cache_key: "codex-session" });
+    expect(identity.id).toBe("codex-thread:codex-thread-a");
+    expect(identity.source).toBe("thread-id");
+    expect(identity.inferred).toBe(false);
+  });
+
+  test("keeps explicit session affinity ahead of Codex thread affinity", () => {
+    const headers = new Headers({
+      "x-session-affinity": "explicit-affinity",
+      "thread-id": "codex-thread-a",
+    });
+    const identity = resolveCodexAffinityIdentity(headers, { prompt_cache_key: "codex-session" });
+    expect(identity.id).toBe("explicit-affinity");
+    expect(identity.source).toBe("x-session-affinity");
   });
 
   test("history fallback remains stable as the conversation grows", () => {
