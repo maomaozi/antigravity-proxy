@@ -81,7 +81,7 @@ function renderUsageStats() {
 function renderUsageTable() {
     const table = usageById('usage-table');
     if (!usageState.records.length) {
-        table.innerHTML = '<tr><td colspan="11" class="p-12 text-center text-zinc-400">// No token usage records found</td></tr>';
+        table.innerHTML = '<tr><td colspan="12" class="p-12 text-center text-zinc-400">// No token usage records found</td></tr>';
     } else {
         table.innerHTML = usageState.records.map(row => {
             const cacheReported = row.cachedInputTokens !== null && row.cachedInputTokens !== undefined;
@@ -96,6 +96,9 @@ function renderUsageTable() {
             const speed = row.tokensPerSecond === null || row.tokensPerSecond === undefined
                 ? '<span title="No valid duration or generated tokens">—</span>'
                 : `<div class="text-cyan-600 dark:text-cyan-400">${formatSpeed(row.tokensPerSecond)}</div><div class="mt-1 text-[9px] text-zinc-400">${formatDuration(row.durationMs)}</div>`;
+            const effort = (row.effort || row.reasoningEffort || '').trim()
+                ? usageEscape((row.effort || row.reasoningEffort).trim())
+                : '-';
             return `<tr class="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
                 <td class="px-3 py-3 max-w-[220px]">
                     <div class="text-zinc-700 dark:text-zinc-300" title="${usageEscape(new Date(row.createdAt).toLocaleString())}">${usageRelativeTime(row.createdAt)}</div>
@@ -119,6 +122,7 @@ function renderUsageTable() {
                 <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.outputTokens)}</td>
                 <td class="px-3 py-3 text-right tabular-nums" title="Visible output + reported reasoning / total end-to-end request time">${speed}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${reasoning}</td>
+                <td class="px-3 py-3 text-right tabular-nums">${effort}</td>
                 <td class="px-3 py-3 text-right tabular-nums font-bold">${formatTokens(row.totalTokens)}</td>
             </tr>`;
         }).join('');
@@ -159,7 +163,7 @@ async function loadUsage() {
         status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     } catch (error) {
         status.textContent = `Refresh failed: ${error.message}`;
-        usageById('usage-table').innerHTML = `<tr><td colspan="11" class="p-12 text-center text-rose-500">${usageEscape(error.message)}</td></tr>`;
+        usageById('usage-table').innerHTML = `<tr><td colspan="12" class="p-12 text-center text-rose-500">${usageEscape(error.message)}</td></tr>`;
     }
 }
 

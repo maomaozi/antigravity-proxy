@@ -40,6 +40,7 @@ interface ProxyRequest {
   threadId?: string;
   requestId: string;
   requestStartedAt: number;
+  signal?: AbortSignal;
 }
 
 export class CodexProxyService {
@@ -92,6 +93,9 @@ export class CodexProxyService {
     let lastRetryAfterMs: number | undefined;
 
     for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
+      if (request.signal?.aborted) {
+        throw new DOMException("Request was aborted by the client", "AbortError");
+      }
       const account = await this.manager.selectAccount({
         preferredEmail,
         excludeEmails: excluded,
@@ -118,11 +122,15 @@ export class CodexProxyService {
           timeoutMs: operation === "responses" ? this.responsesTimeoutMs : this.compactTimeoutMs,
           fetchImpl: this.fetchImpl,
           baseUrl: this.baseUrl,
+          signal: request.signal,
         };
         upstream = operation === "responses"
           ? await callCodexResponsesAPI(options)
           : await callCodexCompactAPI(options);
       } catch (error: any) {
+        if (request.signal?.aborted) {
+          throw error;
+        }
         excluded.add(account.email);
         lastStatus = 502;
         lastBody = JSON.stringify({ error: { message: error?.message || "Upstream network error" } });
@@ -186,6 +194,9 @@ export class CodexProxyService {
 
     let data: any;
     try { data = await aggregateCodexResponsesSSE(upstream); } catch (error: any) {
+      if (request.signal?.aborted) {
+        throw error;
+      }
       return Response.json({ error: { message: error?.message || "Incomplete Codex upstream stream", type: "upstream_error" } }, { status: 502 });
     }
     if (data?.usage) this.recordUsage(account, request, endpoint, false, normalizeCodexUsage(data.usage));
@@ -193,6 +204,10 @@ export class CodexProxyService {
   }
 
   private recordUsage(account: CodexAccount, request: ProxyRequest, endpoint: string, streamed: boolean, usage: CodexNormalizedUsage): void {
+    const rawEffort = request.body?.reasoning?.effort ?? request.body?.reasoning_effort;
+    const effort = typeof rawEffort === "string" && rawEffort.trim()
+      ? rawEffort.trim().toLowerCase()
+      : (typeof request.model === "string" ? request.model.match(/-(?:thinking-)?(low|medium|high)$/i)?.[1]?.toLowerCase() : null) ?? null;
     this.store.recordRequestTokenUsage({
       requestId: request.requestId,
       identity: request.identity,
@@ -203,6 +218,7 @@ export class CodexProxyService {
       pool: "codex",
       endpoint,
       streamed,
+      effort,
       ...usage,
       createdAt: request.requestStartedAt,
     });

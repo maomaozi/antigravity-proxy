@@ -836,8 +836,10 @@ export function createCompletionStreamTransformer(
   let buffer = "";
   let currentHasPriorToolCalls = hasPriorToolCalls;
   let accumulatedThought = "";
+  let lastThoughtSignature: string | undefined;
   let nextToolCallIndex = 0;
   const toolCallIndexes = new Map<string, number>();
+  let hasEmittedDone = false;
 
   const emitUsage = (usage: UpstreamTokenUsage | undefined) => {
     if (!usage || !onUsage) return;
@@ -850,6 +852,7 @@ export function createCompletionStreamTransformer(
 
   const rememberThoughtSignature = (chunk: CompletionChunk) => {
     if (chunk.thoughtText) accumulatedThought += chunk.thoughtText;
+    if (chunk.thoughtSignature) lastThoughtSignature = chunk.thoughtSignature;
 
     // Tool-call signatures belong to the functionCall part and are carried in
     // the synthetic call ID/metadata. Only cache signatures for thought text.
@@ -875,6 +878,7 @@ export function createCompletionStreamTransformer(
 
   const processData = (dataStr: string, controller: TransformStreamDefaultController<CompletionStreamEvent>) => {
     if (dataStr === "[DONE]") {
+      hasEmittedDone = true;
       controller.enqueue({ type: "done" });
       return;
     }
@@ -925,6 +929,13 @@ export function createCompletionStreamTransformer(
       const trimmed = buffer.trim();
       if (trimmed.startsWith("data: ")) {
         processData(trimmed.slice(6), controller);
+      }
+      if (sessionId && lastThoughtSignature && accumulatedThought) {
+        cacheSignature(sessionId, accumulatedThought, lastThoughtSignature);
+      }
+      if (!hasEmittedDone) {
+        hasEmittedDone = true;
+        controller.enqueue({ type: "done" });
       }
     },
   });

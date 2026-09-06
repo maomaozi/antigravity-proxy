@@ -57,6 +57,7 @@ export interface RequestTokenUsage {
   outputTokens: number;
   reasoningTokens: number;
   reasoningTokensReported: boolean;
+  effort: string | null;
   totalTokens: number;
   createdAt: number;
   updatedAt: number;
@@ -79,6 +80,7 @@ export interface RecordRequestTokenUsageInput {
   outputTokens: number;
   reasoningTokens?: number;
   reasoningTokensReported?: boolean;
+  effort?: string | null;
   totalTokens: number;
   createdAt?: number;
 }
@@ -151,6 +153,7 @@ interface RequestTokenUsageRow {
   output_tokens: number;
   reasoning_tokens: number;
   reasoning_tokens_reported: number;
+  effort?: string | null;
   total_tokens: number;
   created_at: number;
   updated_at: number;
@@ -206,6 +209,7 @@ function mapUsageRow(row: RequestTokenUsageRow): RequestTokenUsage {
     outputTokens: row.output_tokens,
     reasoningTokens: row.reasoning_tokens,
     reasoningTokensReported: row.reasoning_tokens_reported === 1,
+    effort: row.effort ?? null,
     totalTokens: row.total_tokens,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -273,6 +277,7 @@ export class SessionBindingStore {
         output_tokens INTEGER NOT NULL DEFAULT 0,
         reasoning_tokens INTEGER NOT NULL DEFAULT 0,
         reasoning_tokens_reported INTEGER NOT NULL DEFAULT 0,
+        effort TEXT,
         total_tokens INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -285,6 +290,8 @@ export class SessionBindingStore {
         ON request_token_usage(model, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_token_usage_account
         ON request_token_usage(account_email, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_request_token_usage_session_model
+        ON request_token_usage(session_key, model);
     `);
 
     let usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
@@ -293,6 +300,11 @@ export class SessionBindingStore {
       usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
     }
     this.migrateLegacyPoolConstraints();
+    usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
+    if (!usageColumns.some(column => column.name === "effort")) {
+      this.db.exec("ALTER TABLE request_token_usage ADD COLUMN effort TEXT;");
+      usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
+    }
     const bindingColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(session_bindings)").all();
     if (!bindingColumns.some(column => column.name === "upstream_session_id")) {
       this.db.exec("ALTER TABLE session_bindings ADD COLUMN upstream_session_id TEXT;");
@@ -378,6 +390,7 @@ export class SessionBindingStore {
             output_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens_reported INTEGER NOT NULL DEFAULT 0,
+            effort TEXT,
             total_tokens INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
@@ -386,14 +399,14 @@ export class SessionBindingStore {
             id, request_id, session_key, session_id, session_source, session_inferred,
             account_email, model, model_family, upstream_model, pool, endpoint,
             streamed, input_tokens, cached_input_tokens, cached_input_tokens_reported,
-            output_tokens, reasoning_tokens, reasoning_tokens_reported, total_tokens,
+            output_tokens, reasoning_tokens, reasoning_tokens_reported, effort, total_tokens,
             created_at, updated_at
           )
           SELECT
             id, request_id, session_key, session_id, session_source, session_inferred,
             account_email, model, model_family, upstream_model, pool, endpoint,
             streamed, input_tokens, cached_input_tokens, cached_input_tokens_reported,
-            output_tokens, reasoning_tokens, reasoning_tokens_reported, total_tokens,
+            output_tokens, reasoning_tokens, reasoning_tokens_reported, NULL, total_tokens,
             created_at, updated_at
           FROM request_token_usage_legacy_pool;
           DROP TABLE request_token_usage_legacy_pool;
@@ -509,9 +522,9 @@ export class SessionBindingStore {
         request_id, session_key, session_id, session_source, session_inferred,
         account_email, model, model_family, upstream_model, pool, endpoint,
         streamed, input_tokens, cached_input_tokens, cached_input_tokens_reported,
-        output_tokens, reasoning_tokens, reasoning_tokens_reported, total_tokens,
+        output_tokens, reasoning_tokens, reasoning_tokens_reported, effort, total_tokens,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(request_id) DO UPDATE SET
         session_key = excluded.session_key,
         session_id = excluded.session_id,
@@ -530,6 +543,7 @@ export class SessionBindingStore {
         output_tokens = MAX(request_token_usage.output_tokens, excluded.output_tokens),
         reasoning_tokens = MAX(request_token_usage.reasoning_tokens, excluded.reasoning_tokens),
         reasoning_tokens_reported = MAX(request_token_usage.reasoning_tokens_reported, excluded.reasoning_tokens_reported),
+        effort = COALESCE(excluded.effort, request_token_usage.effort),
         total_tokens = MAX(request_token_usage.total_tokens, excluded.total_tokens),
         updated_at = excluded.updated_at
     `).run(
@@ -551,6 +565,7 @@ export class SessionBindingStore {
       tokenCount(input.outputTokens),
       tokenCount(input.reasoningTokens),
       input.reasoningTokensReported ? 1 : 0,
+      input.effort ?? null,
       tokenCount(input.totalTokens),
       createdAt,
       now,
@@ -577,8 +592,8 @@ export class SessionBindingStore {
     const search = options.search?.trim();
 
     if (search) {
-      clauses.push("(request_id LIKE ? OR session_id LIKE ? OR account_email LIKE ? OR model LIKE ? OR model_family LIKE ? OR session_source LIKE ?)");
-      args.push(...Array(6).fill(`%${search}%`));
+      clauses.push("(request_id LIKE ? OR session_id LIKE ? OR account_email LIKE ? OR model LIKE ? OR model_family LIKE ? OR session_source LIKE ? OR effort LIKE ?)");
+      args.push(...Array(7).fill(`%${search}%`));
     }
     if (options.model?.trim()) {
       clauses.push("model = ?");

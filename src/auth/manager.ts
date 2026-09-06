@@ -1,14 +1,15 @@
 import { type AntigravityAccount } from "./types";
-import { createHash } from "node:crypto";
 import { loadConfig, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
 import { generateFingerprint } from "../utils/headers";
-import { getProxyConfig as getConfigFromManager } from "../config/manager";
+import { getProxyConfig } from "../config/manager";
 import { deleteSessionBindingsForAccount, getSessionBinding } from "../session/store";
 import { EventEmitter } from "events";
+import { rendezvousScore } from "../utils/hash";
 
 let accounts: AntigravityAccount[] = [];
 const cooldownMap = new Map<string, number>();
+const googleRefreshPromises = new Map<string, Promise<AntigravityAccount | null>>();
 
 export const eventBus = new EventEmitter();
 
@@ -16,7 +17,9 @@ const MODEL_FAMILIES = {
   'Gemini Models': (n: string) => n.includes('gemini'),
   'Claude Sonnet 4.6': (n: string) => n.includes('claude') && n.includes('sonnet') && (n.includes('4-6') || n.includes('4.6')),
   'Claude Opus 4.6': (n: string) => n.includes('claude') && n.includes('opus') && (n.includes('4-6') || n.includes('4.6')),
+  'Claude Models': (n: string) => n.includes('claude'),
   'GPT-OSS 120B': (n: string) => n.includes('gpt-oss') && n.includes('120b'),
+  'GPT Models': (n: string) => n.includes('gpt'),
 };
 
 export function getFamilyName(modelName: string) {
@@ -25,19 +28,6 @@ export function getFamilyName(modelName: string) {
     if (check(n)) return family;
   }
   return 'Other';
-}
-
-function getProxyConfig() {
-  return {
-    rotation: { cooldown: { defaultDurationMs: 60000, maxDurationMs: 3600000 } },
-    scoring: { 
-        weights: { health: 2, lru: 0.1 },
-        healthRange: { min: 0, max: 100, initial: 100 },
-        penalties: { apiError: -10, refreshError: -20, fatalError: -50, systemicError: -10 },
-        rewards: { success: 2 }
-    },
-    tokens: { expiryBufferMs: 60000 }
-  };
 }
 
 export async function initManager() {
@@ -120,8 +110,8 @@ export function flagAccountChallenge(email: string, pool: 'cli' | 'sandbox', mod
 }
 
 function isAccountQuotaExhausted(account: AntigravityAccount, model?: string): boolean {
-  let config: ReturnType<typeof getConfigFromManager>;
-  try { config = getConfigFromManager(); } catch { return false; }
+  let config: ReturnType<typeof getProxyConfig>;
+  try { config = getProxyConfig(); } catch { return false; }
   const threshold = config.features.softQuotaThresholdPercent;
   if (threshold >= 100 || !account.quota || account.quota.length === 0) return false;
 
@@ -151,19 +141,10 @@ function isAccountQuotaExhausted(account: AntigravityAccount, model?: string): b
 }
 
 function getPidOffset(): number {
-  let config: ReturnType<typeof getConfigFromManager>;
-  try { config = getConfigFromManager(); } catch { return 0; }
+  let config: ReturnType<typeof getProxyConfig>;
+  try { config = getProxyConfig(); } catch { return 0; }
   if (!config.features.pidOffsetEnabled) return 0;
   return process.pid % Math.max(accounts.length, 1);
-}
-
-function rendezvousScore(routingKey: string, accountKey: string): bigint {
-  const digest = createHash("sha256")
-    .update(routingKey)
-    .update("\0")
-    .update(accountKey)
-    .digest("hex");
-  return BigInt(`0x${digest.slice(0, 16)}`);
 }
 
 export async function getBestAccount(
@@ -173,6 +154,7 @@ export async function getBestAccount(
   excludeEmails: string[] = [],
   skipRescue: boolean = false,
   routingKey?: string,
+  signal?: AbortSignal,
 ): Promise<AntigravityAccount | null> {
   if (accounts.length === 0) return null;
   const now = Date.now();
@@ -187,8 +169,8 @@ export async function getBestAccount(
       return !expiry || expiry <= now;
     });
 
-    let schedulingConfig: ReturnType<typeof getConfigFromManager>['scheduling'] | undefined;
-    try { schedulingConfig = getConfigFromManager().scheduling; } catch {}
+    let schedulingConfig: ReturnType<typeof getProxyConfig>['scheduling'] | undefined;
+    try { schedulingConfig = getProxyConfig().scheduling; } catch {}
 
     const binding = sessionKey && model ? getSessionBinding(sessionKey, model) : null;
     const stickyEmail = binding?.accountEmail;
@@ -207,15 +189,24 @@ export async function getBestAccount(
           if (ready) return ready;
         } else {
           const waitMs = expiry - now;
-          const maxWaitMs = (schedulingConfig?.maxCacheFirstWaitSeconds || 60) * 1000;
+          const maxWaitMs = Math.min((schedulingConfig?.maxCacheFirstWaitSeconds || 3) * 1000, 3000);
           if (waitMs <= maxWaitMs) {
             console.log(`[CacheFirst] Waiting ${Math.ceil(waitMs / 1000)}s for session-bound account ${stickyEmail}...`);
-            await new Promise(r => setTimeout(r, waitMs));
+            if (signal?.aborted) {
+              throw new DOMException("Request was aborted by the client", "AbortError");
+            }
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, waitMs);
+              signal?.addEventListener("abort", () => {
+                clearTimeout(timer);
+                reject(new DOMException("Request was aborted by the client", "AbortError"));
+              }, { once: true });
+            });
             cooldownMap.delete(cooldownKey);
             const ready = await ensureAccountReady(stickyAccount);
             if (ready) return ready;
           } else {
-            console.log(`[CacheFirst] Session-bound account ${stickyEmail} cooldown (${Math.ceil(waitMs / 1000)}s) exceeds max wait; switching account.`);
+            console.log(`[CacheFirst] Session-bound account ${stickyEmail} cooldown (${Math.ceil(waitMs / 1000)}s) exceeds max wait (3s); switching account.`);
           }
         }
       }
@@ -225,7 +216,7 @@ export async function getBestAccount(
       candidates = usable.filter(a => !(model && a.capabilities?.[model] === false))
         .filter(a => {
           const expiry = cooldownMap.get(`${a.email}|${pool}|${family}`);
-          return !expiry || expiry <= now + 300000;
+          return !expiry || expiry <= now;
         })
         .sort((a, b) => {
           const expA = cooldownMap.get(`${a.email}|${pool}|${family}`) || 0;
@@ -272,17 +263,29 @@ async function ensureAccountReady(account: AntigravityAccount, forceRefresh = fa
   const needsRefresh = forceRefresh || !account.accessToken || (account.expiresAt && account.expiresAt < now + config.tokens.expiryBufferMs);
   
   if (needsRefresh) {
-    try {
-      const tokens = await refreshAccessToken(account.refreshToken);
-      account.accessToken = tokens.access_token;
-      account.expiresAt = now + (tokens.expires_in * 1000);
-      if (!account.projectId) account.projectId = await getProjectId(account.accessToken) || "rising-fact-p41fc";
-      await saveAccounts(accounts);
-    } catch (e) {
-      account.healthScore = Math.max(0, account.healthScore - 20);
-      await saveAccounts(accounts);
-      return null;
-    }
+    const existing = googleRefreshPromises.get(account.email);
+    if (existing) return existing;
+
+    const promise = (async () => {
+      try {
+        const tokens = await refreshAccessToken(account.refreshToken);
+        account.accessToken = tokens.access_token;
+        account.expiresAt = now + (tokens.expires_in * 1000);
+        if (!account.projectId) account.projectId = await getProjectId(account.accessToken) || "rising-fact-p41fc";
+        await saveAccounts(accounts);
+        return account;
+      } catch (e) {
+        account.consecutiveFailures = (account.consecutiveFailures || 0) + 1;
+        account.healthScore = Math.max(0, account.healthScore - 20);
+        await saveAccounts(accounts);
+        return null;
+      } finally {
+        googleRefreshPromises.delete(account.email);
+      }
+    })();
+
+    googleRefreshPromises.set(account.email, promise);
+    return promise;
   }
   return account;
 }

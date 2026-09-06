@@ -1,4 +1,4 @@
-import { initManager, getAccounts, resetAllCooldowns, saveAccounts } from "../auth/manager";
+import { initManager, getAccounts, resetAllCooldowns, saveAccounts } from "../src/auth/manager";
 
 async function main() {
   await initManager();

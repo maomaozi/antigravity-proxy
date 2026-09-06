@@ -706,7 +706,9 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
     const output = await new Response(source.pipeThrough(
       createOpenAIStreamTransformer("gemini-3.7-flash", "req-indexes", false)
     )).text();
-    const events = output.trim().split("\n\n").map(line => JSON.parse(line.slice(6)));
+    const rawEvents = output.trim().split("\n\n");
+    expect(rawEvents.at(-1)).toBe("data: [DONE]");
+    const events = rawEvents.filter(line => line !== "data: [DONE]").map(line => JSON.parse(line.slice(6)));
     expect(events.map(event => event.choices[0].delta.tool_calls[0].index)).toEqual([0, 1]);
   });
 });

@@ -12,7 +12,7 @@
     "lint:check": "bun x tsc --noEmit --skipLibCheck",
     "test": "bun test tests/unit",
     "test:functional": "bun test tests/functional",
-    "reset-accounts": "bun run src/scripts/reset-accounts.ts",
+    "reset-accounts": "bun run scripts/reset-accounts.ts",
     "lint:html": "bun -e \"const c=await Bun.file('src/frontend/index.html').text(); try { new Function(c.match(/<script>([\\s\\S]*?)<\\/script>/)[1]) } catch(e) { console.error(e); process.exit(1) }\""
   },
   "dependencies": {

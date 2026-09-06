@@ -20,7 +20,8 @@ export async function fetchQuota(
       headers: getImpersonationHeaders(account.accessToken, account.fingerprint),
       body: JSON.stringify({
         project: account.projectId
-      })
+      }),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (res.status === 401 && retry) {
@@ -61,8 +62,6 @@ function getNextMidnightPT(): string {
     return new Date(now.getTime() + diffMs).toISOString();
 }
 
-export const supportedModelsCache: Set<string> = new Set();
-
 function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
     // Handle both array and map formats
     let rawModels = data.availableModels || data.models || [];
@@ -84,14 +83,7 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
         // Skip unknown or placeholder models
         if (label === "Unknown" || lowerLabel === "unknown") continue;
 
-        // Cache supported model ID/Name
         const modelId = key.replace("models/", "");
-        // If the key is a valid ID without spaces, cache it. Otherwise cache label.
-        if (modelId && modelId !== "Unknown" && !modelId.includes(" ")) {
-            supportedModelsCache.add(modelId);
-        } else if (label !== "Unknown") {
-            supportedModelsCache.add(label);
-        }
 
         const allowedPatterns = [
             "Claude",

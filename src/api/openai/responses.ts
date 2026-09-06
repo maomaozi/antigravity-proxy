@@ -333,7 +333,9 @@ export function adaptResponsesRequest(body: any): CompletionRequest {
     tools: adaptedTools.tools,
     webSearch: adaptedTools.webSearch || undefined,
     responseFormat: adaptResponseFormat(body?.text),
-    reasoningEffort: typeof body?.reasoning?.effort === "string" ? body.reasoning.effort : undefined,
+    reasoningEffort: typeof body?.reasoning?.effort === "string"
+      ? body.reasoning.effort
+      : (typeof body?.reasoning_effort === "string" ? body.reasoning_effort : undefined),
     maxOutputTokens: typeof body?.max_output_tokens === "number" ? body.max_output_tokens : undefined,
     temperature: typeof body?.temperature === "number" ? body.temperature : undefined,
     topP: typeof body?.top_p === "number" ? body.top_p : undefined,

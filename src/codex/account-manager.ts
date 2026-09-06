@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CodexCredentials } from "./device-auth";
 import { CODEX_AUTH_ISSUER, CODEX_AUTH_SCOPE, CODEX_CLIENT_ID } from "./device-auth";
+import { rendezvousScore } from "../utils/hash";
 
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_USAGE_TIMEOUT_MS = 30_000;
@@ -106,15 +107,6 @@ interface CodexQuotaState {
   fetchedAt: number;
 }
 
-function rendezvousScore(routingKey: string, accountKey: string): bigint {
-  const digest = createHash("sha256")
-    .update(routingKey)
-    .update("\0")
-    .update(accountKey)
-    .digest("hex");
-  return BigInt(`0x${digest.slice(0, 16)}`);
-}
-
 export class CodexAccountManager {
   private accounts: CodexAccount[] = [];
   private readonly storagePath: string;
@@ -124,6 +116,7 @@ export class CodexAccountManager {
   private readonly clientId: string;
   private readonly refreshLeadMs: number;
   private readonly quotaState = new Map<string, CodexQuotaState>();
+  private refreshPromises = new Map<string, Promise<boolean>>();
 
   constructor(options: {
     storagePath?: string;
@@ -300,32 +293,42 @@ export class CodexAccountManager {
   }
 
   async refreshAccount(email: string): Promise<boolean> {
-    const account = this.accounts.find(item => item.email === email);
-    if (!account) return false;
-    try {
-      const response = await this.fetchImpl(`${this.issuer}/oauth/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_id: this.clientId,
-          grant_type: "refresh_token",
-          refresh_token: account.refreshToken,
-          scope: CODEX_AUTH_SCOPE,
-        }).toString(),
-      });
-      if (!response.ok) return false;
-      const tokens: any = await response.json();
-      if (!tokens.access_token) return false;
-      account.accessToken = tokens.access_token;
-      if (tokens.refresh_token) account.refreshToken = tokens.refresh_token;
-      if (tokens.id_token) account.idToken = tokens.id_token;
-      account.expiresAt = this.now() + (Number(tokens.expires_in) || 3600) * 1000;
-      account.cooldownUntil = 0;
-      await this.persist();
-      return true;
-    } catch {
-      return false;
-    }
+    const existing = this.refreshPromises.get(email);
+    if (existing) return existing;
+
+    const promise = (async () => {
+      try {
+        const account = this.accounts.find(item => item.email === email);
+        if (!account) return false;
+        const response = await this.fetchImpl(`${this.issuer}/oauth/token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: this.clientId,
+            grant_type: "refresh_token",
+            refresh_token: account.refreshToken,
+            scope: CODEX_AUTH_SCOPE,
+          }).toString(),
+        });
+        if (!response.ok) return false;
+        const tokens: any = await response.json();
+        if (!tokens.access_token) return false;
+        account.accessToken = tokens.access_token;
+        if (tokens.refresh_token) account.refreshToken = tokens.refresh_token;
+        if (tokens.id_token) account.idToken = tokens.id_token;
+        account.expiresAt = this.now() + (Number(tokens.expires_in) || 3600) * 1000;
+        account.cooldownUntil = 0;
+        await this.persist();
+        return true;
+      } catch {
+        return false;
+      } finally {
+        this.refreshPromises.delete(email);
+      }
+    })();
+
+    this.refreshPromises.set(email, promise);
+    return promise;
   }
 
   async markCooldown(email: string, durationMs: number): Promise<void> {
@@ -378,7 +381,7 @@ export class CodexAccountManager {
   private async persist(): Promise<void> {
     if (this.storagePath === ":memory:") return;
     await mkdir(dirname(this.storagePath), { recursive: true });
-    const temp = `${this.storagePath}.tmp`;
+    const temp = `${this.storagePath}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(temp, JSON.stringify({ accounts: this.accounts }, null, 2), { mode: 0o600 });
     await rename(temp, this.storagePath);
   }

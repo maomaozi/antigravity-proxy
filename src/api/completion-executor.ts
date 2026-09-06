@@ -33,6 +33,18 @@ export interface CompletionExecutionInput {
   sessionIdentity: SessionIdentity;
   requestId: string;
   requestStartedAt: number;
+  signal?: AbortSignal;
+}
+
+function extractEffort(reasoningEffort?: string, model?: string): string | null {
+  if (typeof reasoningEffort === "string" && reasoningEffort.trim()) {
+    return reasoningEffort.trim().toLowerCase();
+  }
+  if (typeof model === "string") {
+    const match = model.match(/-(?:thinking-)?(low|medium|high)$/i);
+    if (match) return match[1].toLowerCase();
+  }
+  return null;
 }
 
 function jsonError(status: number, body: any, attempts: number): CompletionExecution {
@@ -54,6 +66,7 @@ export async function executeCompletion({
   sessionIdentity,
   requestId,
   requestStartedAt,
+  signal,
 }: CompletionExecutionInput): Promise<CompletionExecution> {
   const modelLower = request.model.toLowerCase();
   const isClaudeModel = modelLower.includes("claude");
@@ -89,9 +102,10 @@ export async function executeCompletion({
   const attemptLogs: Array<{ email: string; status: number; reason: string }> = [];
   let systemicErrorCount = 0;
 
-  // GPT and explicit antigravity-* model IDs use the sandbox pool only.
-  const isExplicitAntigravity = modelLower.includes("antigravity-");
-  const isSandboxOnlyModel = modelLower.includes("gpt") || isExplicitAntigravity;
+  // GPT models use the sandbox pool only. Claude models use sandbox pool only.
+  // Stripped model IDs like antigravity-gemini-3.8-flash can use CLI pool for Gemini models!
+  const rawModel = modelLower.replace(/^antigravity-/, "");
+  const isSandboxOnlyModel = rawModel.includes("gpt") || rawModel.includes("claude");
   const isCliOnlyModel = false;
 
   const sessionId = sessionIdentity.key;
@@ -109,6 +123,9 @@ export async function executeCompletion({
   let lastStatus = 0;
 
   while (attempts < maxAttempts) {
+    if (signal?.aborted) {
+      throw new DOMException("Request was aborted by the client", "AbortError");
+    }
     attempts++;
 
     if (attempts > 1) {
@@ -130,12 +147,13 @@ export async function executeCompletion({
       triedEmails,
       true,
       routingKey,
+      signal,
     );
 
     if (!account && !isSandboxOnlyModel && !isCliOnlyModel) {
       console.log(`[Manager] No READY accounts in ${useCliPool ? "CLI" : "Sandbox"} pool, trying the other pool first...`);
       const otherPool = useCliPool ? "sandbox" : "cli";
-      account = await getBestAccount(otherPool, request.model, sessionIdentity.key, triedEmails, true, routingKey);
+      account = await getBestAccount(otherPool, request.model, sessionIdentity.key, triedEmails, true, routingKey, signal);
       if (account) {
         useCliPool = !useCliPool;
         console.log(`[Switch] Found ready account in ${useCliPool ? "CLI" : "Sandbox"} pool.`);
@@ -150,6 +168,7 @@ export async function executeCompletion({
         triedEmails,
         false,
         routingKey,
+        signal,
       );
     }
 
@@ -221,8 +240,12 @@ export async function executeCompletion({
     const timeoutKey = Object.keys(config.models.timeouts || {})
       .find(key => request.model.toLowerCase().includes(key)) || "default";
     const timeoutMs = (config.models.timeouts && config.models.timeouts[timeoutKey]) || 30000;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    if (signal?.aborted) {
+      throw new DOMException("Request was aborted by the client", "AbortError");
+    }
+    const fetchSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+      : AbortSignal.timeout(timeoutMs);
 
     try {
       if (config.features.jitterEnabled) {
@@ -235,9 +258,8 @@ export async function executeCompletion({
         method: "POST",
         headers,
         body: JSON.stringify(googleBody),
-        signal: controller.signal,
+        signal: fetchSignal,
       });
-      clearTimeout(timeoutId);
 
       if (!googleRes.ok) {
         const errText = await googleRes.text();
@@ -329,7 +351,8 @@ export async function executeCompletion({
 
         await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox", status);
         if (status === 429) {
-          markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(request.model));
+          const cooldownDuration = parsedError.resetSeconds ? `${Math.ceil(parsedError.resetSeconds)}s` : undefined;
+          markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(request.model), cooldownDuration);
         }
         continue;
       }
@@ -358,6 +381,7 @@ export async function executeCompletion({
             outputTokens: usage.outputTokens,
             reasoningTokens: usage.reasoningTokens,
             reasoningTokensReported: usage.reasoningTokensReported,
+            effort: extractEffort(request.reasoningEffort, request.model),
             totalTokens: usage.totalTokens,
             createdAt: requestStartedAt,
           });
@@ -424,6 +448,7 @@ export async function executeCompletion({
           outputTokens: finalTokenUsage.outputTokens,
           reasoningTokens: finalTokenUsage.reasoningTokens,
           reasoningTokensReported: finalTokenUsage.reasoningTokensReported,
+          effort: extractEffort(request.reasoningEffort, request.model),
           totalTokens: finalTokenUsage.totalTokens,
           createdAt: requestStartedAt,
         });
@@ -431,7 +456,10 @@ export async function executeCompletion({
       await updateAccountUsage(account.email, true, request.model, useCliPool ? "cli" : "sandbox");
       return { kind: "result", result, attempts };
     } catch (error: any) {
-      if (error.name === "AbortError") {
+      if (signal?.aborted) {
+        throw error;
+      }
+      if (error.name === "AbortError" || error.name === "TimeoutError") {
         console.error(`[Timeout] Request timed out for ${account.email} after ${timeoutMs}ms`);
         account.healthScore = Math.max(config.scoring.healthRange.min, account.healthScore - 5);
       } else {

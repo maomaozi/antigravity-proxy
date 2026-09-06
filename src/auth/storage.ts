@@ -1,4 +1,5 @@
 import { join } from "path";
+import { rename } from "fs/promises";
 import { type AntigravityAccount } from "./types";
 
 const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || join(process.cwd(), "antigravity-accounts.json");
@@ -25,13 +26,11 @@ export async function loadConfig(): Promise<StorageFormat> {
 }
 
 // Kept for backward compatibility but deprecated
-export async function loadAccounts(): Promise<AntigravityAccount[]> {
-    return (await loadConfig()).accounts;
-}
-
 export async function saveConfig(config: StorageFormat): Promise<void> {
   try {
-    await Bun.write(ACCOUNTS_FILE, JSON.stringify(config, null, 2));
+    const tmpPath = `${ACCOUNTS_FILE}.${process.pid}.${Date.now()}.tmp`;
+    await Bun.write(tmpPath, JSON.stringify(config, null, 2));
+    await rename(tmpPath, ACCOUNTS_FILE);
   } catch (e) {
     console.error("Failed to save accounts:", e);
   }

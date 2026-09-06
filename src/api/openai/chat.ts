@@ -88,7 +88,9 @@ export function adaptChatCompletionRequest(body: any): CompletionRequest {
     messages: Array.isArray(body?.messages) ? body.messages.map(adaptMessage) : [],
     tools: Array.isArray(body?.tools) ? body.tools.map(adaptTool) : undefined,
     responseFormat: adaptResponseFormat(body?.response_format),
-    reasoningEffort: typeof body?.reasoning_effort === "string" ? body.reasoning_effort : undefined,
+    reasoningEffort: typeof body?.reasoning_effort === "string"
+      ? body.reasoning_effort
+      : (typeof body?.reasoning?.effort === "string" ? body.reasoning.effort : undefined),
     thinkingBudget: typeof thinkingBudget === "number" ? thinkingBudget : undefined,
     maxOutputTokens: typeof body?.max_tokens === "number" ? body.max_tokens : undefined,
     stopSequences,
@@ -140,13 +142,23 @@ export function encodeChatCompletionChunk(chunk: CompletionChunk): any {
 
 export function createChatCompletionStreamEncoder(): TransformStream<CompletionStreamEvent, Uint8Array> {
   const encoder = new TextEncoder();
+  let emittedDone = false;
   return new TransformStream({
     transform(event, controller) {
       if (event.type === "done") {
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        if (!emittedDone) {
+          emittedDone = true;
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        }
         return;
       }
       controller.enqueue(encoder.encode(`data: ${JSON.stringify(encodeChatCompletionChunk(event.chunk))}\n\n`));
+    },
+    flush(controller) {
+      if (!emittedDone) {
+        emittedDone = true;
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      }
     },
   });
 }
@@ -158,7 +170,6 @@ export function encodeChatCompletionResult(
   created: number = Math.floor(Date.now() / 1000),
 ): any {
   const toolCalls = result.toolCalls.map(call => ({
-    index: call.index,
     id: call.id,
     type: "function",
     function: { name: call.name, arguments: call.arguments },
@@ -176,7 +187,7 @@ export function encodeChatCompletionResult(
       index: 0,
       message: {
         role: "assistant",
-        content: result.text,
+        content: result.text || (toolCalls.length > 0 ? null : ""),
         reasoning_content: result.reasoning || undefined,
         tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
       },

@@ -141,10 +141,7 @@ export async function saveProxyConfig(newConfig: ProxyConfig): Promise<void> {
 }
 
 export function getProxyConfig(): ProxyConfig {
-  if (!config) {
-    throw new Error('[Config] Configuration not initialized. Call loadProxyConfig() first.');
-  }
-  return config;
+  return config || DEFAULT_CONFIG;
 }
 
 export async function updateProxyConfig(updates: Partial<ProxyConfig>): Promise<ProxyConfig> {

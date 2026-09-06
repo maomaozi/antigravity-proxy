@@ -123,17 +123,21 @@ describe("session binding store", () => {
     const initial = store.recordRequestTokenUsage(base);
     expect(initial.cachedInputTokens).toBeNull();
     expect(initial.uncachedInputTokens).toBeNull();
+    expect(initial.effort).toBeNull();
 
     const updated = store.recordRequestTokenUsage({
       ...base,
       cachedInputTokens: 750,
+      effort: "high",
     });
 
     expect(updated.model).toBe("gemini-3.7-flash");
     expect(updated.cachedInputTokens).toBe(750);
     expect(updated.uncachedInputTokens).toBe(250);
     expect(updated.reasoningTokens).toBe(20);
+    expect(updated.effort).toBe("high");
     expect(store.listRequestTokenUsage().total).toBe(1);
+    expect(store.listRequestTokenUsage().records[0].effort).toBe("high");
   });
 
   test("filters request usage by session, model, time, and search with aggregate totals", () => {
@@ -157,6 +161,7 @@ describe("session binding store", () => {
       outputTokens: 10,
       reasoningTokens: 5,
       reasoningTokensReported: true,
+      effort: "medium",
       totalTokens: 115,
       createdAt: 1000,
     });
@@ -200,6 +205,7 @@ describe("session binding store", () => {
     expect(store.listRequestTokenUsage({ model: "MODEL-B" }).records[0].requestId).toBe("request-b");
     expect(store.listRequestTokenUsage({ from: 1500, to: 2500 }).total).toBe(1);
     expect(store.listRequestTokenUsage({ search: "first@example.com" }).total).toBe(1);
+    expect(store.listRequestTokenUsage({ search: "medium" }).total).toBe(1);
     expect(store.clearRequestTokenUsage()).toBe(2);
   });
 

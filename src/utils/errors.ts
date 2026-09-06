@@ -12,6 +12,8 @@ export interface GoogleApiError {
         reason: string;
       };
       validation_url?: string;
+      retryDelay?: string;
+      retry_delay?: string;
     }>;
   };
 }
@@ -24,6 +26,7 @@ export function parseGoogleError(body: string): {
   isModelUnsupported: boolean;
   status: number;
   message?: string;
+  resetSeconds?: number;
 } {
   let reason = "unknown_error";
   let validationUrl: string | undefined;
@@ -32,6 +35,7 @@ export function parseGoogleError(body: string): {
   let isModelUnsupported = false;
   let status = 500;
   let message: string | undefined;
+  let resetSeconds: number | undefined;
 
   try {
     const json: GoogleApiError = JSON.parse(body);
@@ -83,6 +87,22 @@ export function parseGoogleError(body: string): {
             reason = "quota_exhausted";
             status = 429;
           }
+
+          if (detail["@type"]?.includes("RetryInfo") || detail.retryDelay || detail.retry_delay) {
+            const rawDelay = detail.retryDelay || detail.retry_delay || detail.metadata?.quotaResetDelay;
+            if (rawDelay) {
+              const parsed = parseFloat(rawDelay);
+              if (!isNaN(parsed) && parsed > 0) resetSeconds = parsed;
+            }
+          }
+        }
+      }
+
+      if (!resetSeconds && err.message) {
+        const match = err.message.match(/retry\s+in\s+([0-9.]+)\s*s/i) || err.message.match(/retry\s+after\s+([0-9.]+)\s*s/i);
+        if (match) {
+          const parsed = parseFloat(match[1]);
+          if (!isNaN(parsed) && parsed > 0) resetSeconds = parsed;
         }
       }
     }
@@ -94,5 +114,5 @@ export function parseGoogleError(body: string): {
     }
   }
 
-  return { reason, validationUrl, isQuotaExhausted, isChallengeRequired, isModelUnsupported, status, message };
+  return { reason, validationUrl, isQuotaExhausted, isChallengeRequired, isModelUnsupported, status, message, resetSeconds };
 }

@@ -52,6 +52,7 @@ interface CodexCallOptions {
   timeoutMs: number;
   fetchImpl?: FetchImpl;
   baseUrl?: string;
+  signal?: AbortSignal;
 }
 
 async function callCodex(operation: "responses" | "compact", options: CodexCallOptions): Promise<Response> {
@@ -72,10 +73,13 @@ async function callCodex(operation: "responses" | "compact", options: CodexCallO
   if (options.accountId) headers.set("Chatgpt-Account-Id", options.accountId);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1, options.timeoutMs));
+  const fetchSignal = options.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
   try {
     return await (options.fetchImpl || fetch)(
       `${(options.baseUrl || CODEX_BASE_URL).replace(/\/+$/, "")}${isResponses ? "/responses" : "/responses/compact"}`,
-      { method: "POST", headers, body: JSON.stringify(cleanBody), signal: controller.signal },
+      { method: "POST", headers, body: JSON.stringify(cleanBody), signal: fetchSignal },
     );
   } finally {
     clearTimeout(timer);

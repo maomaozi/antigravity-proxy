@@ -173,4 +173,58 @@ describe("CodexProxyService", () => {
     expect(upstreamCalls).toBe(2);
     store.close();
   });
+
+  test("aborts immediately when client signal is already aborted without retrying", async () => {
+    let upstreamCalls = 0;
+    const fakeFetch = (async () => {
+      upstreamCalls++;
+      return new Response("ok");
+    }) as unknown as typeof fetch;
+    const manager = await makeManager(fakeFetch);
+    const store = new SessionBindingStore(":memory:");
+    const service = new CodexProxyService({ manager, store, fetchImpl: fakeFetch, maxAttempts: 3 });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(service.responses({
+      body: { model: "gpt-5-codex", input: "hi" },
+      model: "gpt-5-codex",
+      identity,
+      requestId: "abort-1",
+      requestStartedAt: Date.now(),
+      signal: controller.signal,
+    })).rejects.toThrow();
+
+    expect(upstreamCalls).toBe(0);
+    expect(manager.listPublic()[0].available).toBe(true);
+    store.close();
+  });
+
+  test("terminates retry loop immediately when client aborts during upstream call", async () => {
+    let upstreamCalls = 0;
+    const controller = new AbortController();
+    const fakeFetch = (async () => {
+      upstreamCalls++;
+      controller.abort();
+      const err = new DOMException("The operation was aborted", "AbortError");
+      throw err;
+    }) as unknown as typeof fetch;
+    const manager = await makeManager(fakeFetch);
+    const store = new SessionBindingStore(":memory:");
+    const service = new CodexProxyService({ manager, store, fetchImpl: fakeFetch, maxAttempts: 3 });
+
+    expect(service.responses({
+      body: { model: "gpt-5-codex", input: "hi" },
+      model: "gpt-5-codex",
+      identity,
+      requestId: "abort-2",
+      requestStartedAt: Date.now(),
+      signal: controller.signal,
+    })).rejects.toThrow();
+
+    // Should only have attempted once, not 3 times
+    expect(upstreamCalls).toBe(1);
+    store.close();
+  });
 });
