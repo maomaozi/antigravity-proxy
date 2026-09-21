@@ -61,6 +61,10 @@ function jsonError(status: number, body: any, attempts: number): CompletionExecu
   };
 }
 
+export function isExplicitAntigravityModel(model: string): boolean {
+  return /(?:^|\/)antigravity(?:-|\/)/i.test(model);
+}
+
 export async function executeCompletion({
   request,
   sessionIdentity,
@@ -80,7 +84,7 @@ export async function executeCompletion({
       && (modelLower.includes("thinking-high")
         || modelLower.includes("thinking-medium")
         || modelLower.includes("thinking-low"));
-    const isExplicitAntigravity = modelLower.includes("antigravity-");
+    const isExplicitAntigravity = isExplicitAntigravityModel(modelLower);
     const isExplicitSandboxModel = isAntigravityThinking
       || isExplicitAntigravity
       || modelLower.includes("image");
@@ -102,10 +106,11 @@ export async function executeCompletion({
   const attemptLogs: Array<{ email: string; status: number; reason: string }> = [];
   let systemicErrorCount = 0;
 
-  // GPT models use the sandbox pool only. Claude models use sandbox pool only.
-  // Stripped model IDs like antigravity-gemini-3.8-flash can use CLI pool for Gemini models!
+  // Explicit Antigravity models, GPT models, and Claude models use the sandbox pool only.
   const rawModel = modelLower.replace(/^antigravity-/, "");
-  const isSandboxOnlyModel = rawModel.includes("gpt") || rawModel.includes("claude");
+  const isSandboxOnlyModel = isExplicitAntigravityModel(modelLower)
+    || rawModel.includes("gpt")
+    || rawModel.includes("claude");
   const isCliOnlyModel = false;
 
   const sessionId = sessionIdentity.key;
