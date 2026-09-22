@@ -106,7 +106,7 @@ Codex is kept on a separate upstream protocol path: it does **not** pass through
 the Antigravity/Google request or response translators. Route a model to Codex
 in either of these explicit ways:
 
-- Use `codex/<upstream-model>` in a request, for example `codex/gpt-5-codex`.
+- Use `codex/<upstream-model>` in a request, for example `codex/gpt-6-sol`.
 - Add the raw upstream model ID to `codex.models` in `config.json` (or through
   the dashboard configuration dialog).
 
@@ -138,7 +138,7 @@ For native Codex Responses:
 curl http://127.0.0.1:3000/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "codex/gpt-5-codex",
+    "model": "codex/gpt-6-sol",
     "input": "Summarize this repository.",
     "stream": true
   }'
@@ -148,6 +148,10 @@ Streaming Responses bytes are forwarded without re-serializing them. A side
 observer reads final usage metadata for the existing Usage/Sessions statistics.
 When `stream` is false, the native upstream SSE is aggregated into canonical
 Responses JSON without translating output item types.
+For subscription-backed Codex requests, the proxy converts a string `input`
+to a user message and defaults an omitted `store` to `false`, as required by
+the Codex backend. An explicit `store: true` remains an upstream error because
+the subscription endpoint does not support stored Responses.
 
 Codex context compaction is exposed as a peer endpoint:
 
@@ -155,7 +159,7 @@ Codex context compaction is exposed as a peer endpoint:
 curl http://127.0.0.1:3000/v1/responses/compact \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "codex/gpt-5-codex",
+    "model": "codex/gpt-6-sol",
     "input": []
   }'
 ```

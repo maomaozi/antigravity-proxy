@@ -18,6 +18,14 @@ export function normalizeResponsesBody(body: any): any {
     user,
     ...cleanBody
   } = body || {};
+  if (typeof cleanBody.input === "string") {
+    cleanBody.input = [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: cleanBody.input }],
+    }];
+  }
+  if (cleanBody.store === undefined) cleanBody.store = false;
   cleanBody.stream = true;
   return cleanBody;
 }

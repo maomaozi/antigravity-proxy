@@ -24,8 +24,19 @@ describe("Codex upstream API adapter", () => {
       input: body.input,
       include: body.include,
       unknown_future_field: { keep: true },
+      store: false,
       stream: true,
     });
+  });
+
+  test("converts standard string input and defaults to stateless subscription requests", () => {
+    expect(normalizeResponsesBody({ model: "gpt-6-sol", input: "hello" })).toEqual({
+      model: "gpt-6-sol",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }],
+      store: false,
+      stream: true,
+    });
+    expect(normalizeResponsesBody({ model: "gpt-6-sol", input: [], store: true }).store).toBe(true);
   });
 
   test("normalizes compact body like auth2api and keeps compact non-streaming", () => {
