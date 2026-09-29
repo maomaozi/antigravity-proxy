@@ -106,7 +106,7 @@ describe("quota window activation", () => {
     expect(isCodexFiveHourWindowInactive(roundedActive.usage)).toBe(false);
   });
 
-  test("hourly check activates each inactive provider account and refreshes Codex afterward", async () => {
+  test("scheduled check activates each inactive provider account and refreshes Codex afterward", async () => {
     const activatedGoogle: string[] = [];
     const activatedCodex: string[] = [];
     let codexPostRefreshes = 0;

@@ -16,7 +16,7 @@ import { getProxyConfig } from "../config/manager";
 import { getImpersonationHeaders } from "../utils/headers";
 import { fetchQuota, refreshAllQuotas } from "./quota";
 
-export const WINDOW_ACTIVATION_INTERVAL_MS = 60 * 60_000;
+export const WINDOW_ACTIVATION_INTERVAL_MS = 10 * 60_000;
 
 export interface WindowActivationSummary {
   googleChecked: number;
@@ -282,11 +282,11 @@ export function startQuotaWindowActivationScheduler(
     try {
       const summary = await runQuotaWindowActivationCheck(runtime);
       console.log(
-        `[WindowActivation] Hourly check complete: Gemini ${summary.googleActivated}/${summary.googleChecked},`
+        `[WindowActivation] 10-minute check complete: Gemini ${summary.googleActivated}/${summary.googleChecked},`
           + ` Codex ${summary.codexActivated}/${summary.codexChecked}, failures ${summary.failures}.`,
       );
     } catch (error: any) {
-      console.warn(`[WindowActivation] Hourly check failed: ${error?.message || error}`);
+      console.warn(`[WindowActivation] 10-minute check failed: ${error?.message || error}`);
     } finally {
       running = false;
     }
