@@ -58,21 +58,6 @@ export function isCodexFiveHourWindowInactive(usage: CodexUsage | null): boolean
   });
 }
 
-function googleActivationModel(account: AntigravityAccount): string {
-  const modelIds = (account.quota || [])
-    .filter(quota => quota.groupName.toLowerCase().includes("gemini"))
-    .map(quota => quota.modelId?.trim())
-    .filter((model): model is string => !!model && !model.includes(" "));
-  const rank = (model: string): number => {
-    const lower = model.toLowerCase();
-    if (lower.includes("flash-lite")) return 0;
-    if (lower.includes("flash") && !lower.includes("image")) return 1;
-    if (lower.includes("flash")) return 2;
-    return 3;
-  };
-  return [...new Set(modelIds)].sort((a, b) => rank(a) - rank(b))[0] || "gemini-2.5-flash";
-}
-
 function googleActivationBody(account: AntigravityAccount, model: string): Record<string, unknown> {
   return {
     project: account.projectId,
@@ -82,7 +67,7 @@ function googleActivationBody(account: AntigravityAccount, model: string): Recor
     requestType: "agent",
     request: {
       contents: [{ role: "user", parts: [{ text: "." }] }],
-      generationConfig: { maxOutputTokens: 1 },
+      generationConfig: { maxOutputTokens: 100 },
       sessionId: randomUUID(),
     },
   };
@@ -99,7 +84,7 @@ export async function activateGoogleGeminiWindow(
     const configured = getProxyConfig().endpoints.sandbox;
     const endpoint = (Array.isArray(configured) ? configured : [configured])[0];
     if (!endpoint) return null;
-    const model = googleActivationModel(ready);
+    const model = "gemini-3.7-flash-tiered";
     return fetchImpl(endpoint, {
       method: "POST",
       headers: getImpersonationHeaders(ready.accessToken, ready.fingerprint, model),
