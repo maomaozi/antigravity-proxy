@@ -106,7 +106,7 @@ Codex is kept on a separate upstream protocol path: it does **not** pass through
 the Antigravity/Google request or response translators. Route a model to Codex
 in either of these explicit ways:
 
-- Use `codex/<upstream-model>` in a request, for example `codex/gpt-6-sol`.
+- Use `codex/<upstream-model>` in a request, for example `codex/gpt-6.1-sol`.
 - Add the raw upstream model ID to `codex.models` in `config.json` (or through
   the dashboard configuration dialog).
 
@@ -138,7 +138,7 @@ For native Codex Responses:
 curl http://127.0.0.1:3000/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "codex/gpt-6-sol",
+    "model": "codex/gpt-6.1-sol",
     "input": "Summarize this repository.",
     "stream": true
   }'
@@ -153,13 +153,38 @@ to a user message and defaults an omitted `store` to `false`, as required by
 the Codex backend. An explicit `store: true` remains an upstream error because
 the subscription endpoint does not support stored Responses.
 
-Codex context compaction is exposed as a peer endpoint:
+Current Codex context compaction uses the native Responses path. Append a
+`compaction_trigger` item after the conversation history; the proxy preserves
+the trigger and the returned encrypted `compaction` output. This follows
+[Codex's remote compaction v2 implementation](https://github.com/openai/codex/blob/8ffd91e42aa001b7e897bea812b02f89264f9fa0/codex-rs/core/src/compact_remote_v2_attempt.rs).
+
+```bash
+curl http://127.0.0.1:3000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "codex/gpt-6.1-sol",
+    "input": [
+      {"role": "user", "content": "Remember the project uses Bun."},
+      {"role": "assistant", "content": "The project uses Bun."},
+      {"type": "compaction_trigger"}
+    ],
+    "stream": false
+  }'
+```
+
+Resend the returned `compaction` item with subsequent input to continue the
+conversation. Usage is recorded under `/v1/responses`.
+
+The proxy also exposes the legacy compact endpoint for upstreams that support
+it. The ChatGPT Codex backend returned 404 for this endpoint during the
+`gpt-6.1-sol` compatibility check; use the Responses trigger above with that
+backend.
 
 ```bash
 curl http://127.0.0.1:3000/v1/responses/compact \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "codex/gpt-6-sol",
+    "model": "codex/gpt-6.1-sol",
     "input": []
   }'
 ```
