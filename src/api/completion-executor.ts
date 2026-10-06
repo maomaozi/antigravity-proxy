@@ -36,6 +36,39 @@ export interface CompletionExecutionInput {
   signal?: AbortSignal;
 }
 
+export interface ResolvedTimeouts {
+  firstByteMs: number;
+  streamMs: number;
+}
+
+export function resolveTimeouts(model: string, timeoutsConfig?: Record<string, number>): ResolvedTimeouts {
+  const timeouts = timeoutsConfig || {};
+  const defaultFirstByte = 120_000;
+  const defaultStream = 900_000;
+
+  const streamMs = typeof timeouts.stream === "number" && timeouts.stream > 0
+    ? timeouts.stream
+    : defaultStream;
+
+  const matchedKeys = Object.keys(timeouts)
+    .filter(key => key !== "stream" && key !== "firstByte" && key !== "default" && model.toLowerCase().includes(key))
+    .sort((a, b) => b.length - a.length);
+  const modelKey = matchedKeys[0];
+
+  let firstByteMs: number;
+  if (modelKey && typeof timeouts[modelKey] === "number" && timeouts[modelKey] > 0) {
+    firstByteMs = timeouts[modelKey];
+  } else if (typeof timeouts.firstByte === "number" && timeouts.firstByte > 0) {
+    firstByteMs = timeouts.firstByte;
+  } else if (typeof timeouts.default === "number" && timeouts.default > 0) {
+    firstByteMs = timeouts.default;
+  } else {
+    firstByteMs = defaultFirstByte;
+  }
+
+  return { firstByteMs, streamMs };
+}
+
 function extractEffort(reasoningEffort?: string, model?: string): string | null {
   if (typeof reasoningEffort === "string" && reasoningEffort.trim()) {
     return reasoningEffort.trim().toLowerCase();
@@ -242,15 +275,44 @@ export async function executeCompletion({
         + ` | Endpoint: ${googleUrl.split("/")[2]} | Target Model: ${googleBody.model}`,
     );
 
-    const timeoutKey = Object.keys(config.models.timeouts || {})
-      .find(key => request.model.toLowerCase().includes(key)) || "default";
-    const timeoutMs = (config.models.timeouts && config.models.timeouts[timeoutKey]) || 30000;
     if (signal?.aborted) {
       throw new DOMException("Request was aborted by the client", "AbortError");
     }
-    const fetchSignal = signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-      : AbortSignal.timeout(timeoutMs);
+
+    const { firstByteMs, streamMs } = resolveTimeouts(request.model, config.models.timeouts);
+    const attemptController = new AbortController();
+    let cleanupClientAbort: (() => void) | undefined;
+    if (signal) {
+      const onClientAbort = () => {
+        attemptController.abort(signal.reason);
+      };
+      signal.addEventListener("abort", onClientAbort, { once: true });
+      cleanupClientAbort = () => {
+        signal.removeEventListener("abort", onClientAbort);
+      };
+    }
+
+    let isFirstByteTimedOut = false;
+    let isStreamTimedOut = false;
+
+    let firstByteTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      isFirstByteTimedOut = true;
+      attemptController.abort(new DOMException(`First byte timed out after ${firstByteMs}ms`, "TimeoutError"));
+    }, firstByteMs);
+
+    let streamTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimers = () => {
+      if (firstByteTimer) {
+        clearTimeout(firstByteTimer);
+        firstByteTimer = undefined;
+      }
+      if (streamTimer) {
+        clearTimeout(streamTimer);
+        streamTimer = undefined;
+      }
+      cleanupClientAbort?.();
+      cleanupClientAbort = undefined;
+    };
 
     try {
       if (config.features.jitterEnabled) {
@@ -263,10 +325,16 @@ export async function executeCompletion({
         method: "POST",
         headers,
         body: JSON.stringify(googleBody),
-        signal: fetchSignal,
+        signal: attemptController.signal,
       });
 
+      if (firstByteTimer) {
+        clearTimeout(firstByteTimer);
+        firstByteTimer = undefined;
+      }
+
       if (!googleRes.ok) {
+        clearTimers();
         const errText = await googleRes.text();
         const parsedError = parseGoogleError(errText);
         const status = googleRes.status;
@@ -363,11 +431,17 @@ export async function executeCompletion({
       }
 
       if (!googleRes.body) {
+        clearTimers();
         if (request.stream) {
           return jsonError(502, { error: { message: "No response body from upstream" } }, attempts);
         }
         throw new Error("No response body");
       }
+
+      streamTimer = setTimeout(() => {
+        isStreamTimedOut = true;
+        attemptController.abort(new DOMException(`Stream timed out after ${streamMs}ms`, "TimeoutError"));
+      }, streamMs);
 
       if (request.stream) {
         const persistStreamUsage = (usage: UpstreamTokenUsage) => {
@@ -391,7 +465,18 @@ export async function executeCompletion({
             createdAt: requestStartedAt,
           });
         };
-        const stream = googleRes.body.pipeThrough(createCompletionStreamTransformer(
+        const timeoutWatchdog = new TransformStream<Uint8Array, Uint8Array>({
+          flush() {
+            clearTimers();
+          },
+          cancel() {
+            clearTimers();
+          },
+        });
+
+        const stream = googleRes.body
+          .pipeThrough(timeoutWatchdog)
+          .pipeThrough(createCompletionStreamTransformer(
           request.model,
           requestId,
           false,
@@ -420,7 +505,12 @@ export async function executeCompletion({
         sessionId,
         usage => { finalTokenUsage = usage; },
       ));
-      const result = await collectCompletionStream(completionStream);
+      let result: CompletionResult;
+      try {
+        result = await collectCompletionStream(completionStream);
+      } finally {
+        clearTimers();
+      }
 
       if (!result.text && result.toolCalls.length === 0 && result.finishReason !== "length") {
         console.warn(`[Empty] Account ${account.email} returned empty response for ${request.model}, retrying with another account...`);
@@ -461,11 +551,20 @@ export async function executeCompletion({
       await updateAccountUsage(account.email, true, request.model, useCliPool ? "cli" : "sandbox");
       return { kind: "result", result, attempts };
     } catch (error: any) {
+      clearTimers();
       if (signal?.aborted) {
         throw error;
       }
-      if (error.name === "AbortError" || error.name === "TimeoutError") {
-        console.error(`[Timeout] Request timed out for ${account.email} after ${timeoutMs}ms`);
+      const isTimeout = isFirstByteTimedOut
+        || isStreamTimedOut
+        || error.name === "TimeoutError"
+        || (error.name === "AbortError" && !signal?.aborted);
+
+      if (isTimeout) {
+        const timeoutDesc = isStreamTimedOut
+          ? `stream after ${streamMs}ms`
+          : `first byte after ${firstByteMs}ms`;
+        console.error(`[Timeout] Request timed out for ${account.email} (${timeoutDesc})`);
         account.healthScore = Math.max(config.scoring.healthRange.min, account.healthScore - 5);
       } else {
         console.error(`Proxy error for ${account.email}:`, error);

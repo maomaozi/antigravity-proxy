@@ -41,11 +41,13 @@ const DEFAULT_CONFIG: ProxyConfig = {
       forceToSandbox: ['gpt']
     },
     timeouts: {
-      'default': 30000,
-      'claude': 60000,
-      'gemini-3-pro': 45000,
-      'gemini-3.1-pro': 45000,
-      'thinking': 120000
+      'default': 120000,
+      'firstByte': 120000,
+      'stream': 900000,
+      'claude': 120000,
+      'gemini-3-pro': 120000,
+      'gemini-3.1-pro': 120000,
+      'thinking': 180000
     }
   },
   retry: {
