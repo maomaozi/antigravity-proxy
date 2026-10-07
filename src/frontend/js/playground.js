@@ -47,7 +47,12 @@ $('mode').onchange = () => {
     selections[mode] = $('model').value; mode = $('mode').value;
     $('model').value = selections[mode] || models[0]?.id || '';
     const image = mode === 'image';
-    $('chat-options').hidden = image; $('image-options').hidden = !image; $('upload').hidden = image; $('file-hint').hidden = image;
+    $('chat-options').hidden = image; $('image-options').hidden = !image;
+    $('upload').textContent = image ? '＋ 添加参考图' : '＋ 添加附件';
+    $('file-hint').textContent = image
+        ? '支持 PNG / JPEG / WebP / GIF；最多 8 张，总计 10 MB。图片会随提示词发送给生图模型。'
+        : '支持 PNG / JPEG / WebP / GIF 和 UTF-8 文本、代码文件；最多 8 个，总计 10 MB。文本文件会作为消息正文发送，图片理解取决于模型能力。';
+    $('files').accept = image ? 'image/png,image/jpeg,image/webp,image/gif' : 'image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql';
     $('heading').textContent = image ? '图片生成' : '多轮聊天'; $('send').textContent = image ? '生成图片' : '发送';
     $('prompt').placeholder = image ? '描述你想生成的画面…' : '输入消息… Enter 发送，Shift + Enter 换行';
     attachments = []; renderAttachments(); populate(); reset();
@@ -63,12 +68,13 @@ function renderAttachments() {
     });
 }
 async function addFiles(files) {
-    if (controller || reading || mode !== 'chat') return;
+    if (controller || reading) return;
     error(); reading = true; busy();
     // Capture the mode so a mode switch during reading cannot attach files to image generation.
     const selectedMode = mode;
     try {
         const selected = [...files];
+        if (selectedMode === 'image' && selected.some(file => !/^image\/(png|jpeg|webp|gif)$/.test(file.type))) throw new Error('图片生成仅支持 PNG、JPEG、WebP 或 GIF 参考图。');
         if (selected.length + attachments.length > 8) throw new Error('最多添加 8 个附件。');
         if ([...selected, ...attachments].reduce((total, file) => total + file.size, 0) > 10 * 1024 * 1024) throw new Error('附件总大小不能超过 10 MB。');
         const loaded = await Promise.all(selected.map(readAttachment));
@@ -100,7 +106,7 @@ $('composer').onsubmit = async event => {
     event.preventDefault(); if (controller || reading) return;
     const prompt = $('prompt').value.trim(), model = $('model').value.trim(), files = [...attachments];
     if (!model) return error('请先选择或输入模型 ID。');
-    if (!prompt && (!files.length || mode === 'image')) return error('请输入消息或添加附件。');
+    if (!prompt && (mode === 'image' || !files.length)) return error(mode === 'image' ? '请输入图片修改要求。' : '请输入消息或添加附件。');
     error(); controller = new AbortController(); busy(); $('status').textContent = mode === 'image' ? '正在生成图片…' : '正在回复…';
     message('user', prompt, files);
     const assistant = message('assistant', '');
@@ -109,7 +115,7 @@ $('composer').onsubmit = async event => {
     try {
         const effort = $('effort').value;
         const body = mode === 'image'
-            ? { model, prompt, image_size: $('size').value, aspect_ratio: $('ratio').value, n: 1, response_format: 'b64_json', ...(effort ? { thinking_level: effort } : {}) }
+            ? { model, prompt, ...(files.length ? { images: files.map(file => file.url) } : {}), image_size: $('size').value, aspect_ratio: $('ratio').value, n: 1, response_format: 'b64_json', ...(effort ? { thinking_level: effort } : {}) }
             : { model, input: [...history, input], stream: true, store: false, instructions: $('instructions').value, ...(effort ? { reasoning: { effort } } : {}) };
         const response = await fetch(mode === 'image' ? '/v1/images/generations' : '/v1/responses', { method: 'POST', headers: { 'Content-Type': 'application/json', 'session-id': session }, body: JSON.stringify(body), signal: controller.signal });
         if (!response.ok) { const raw = await response.text(); let detail; try { detail = JSON.parse(raw).error?.message; } catch {} throw new Error(detail || `请求失败（HTTP ${response.status}）：${raw.slice(0, 300)}`); }

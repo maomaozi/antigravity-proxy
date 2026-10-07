@@ -7,6 +7,37 @@ import { generateFingerprint, getImpersonationHeaders } from "../../utils/header
 const IMAGE_SIZES = new Set(["512", "1K", "2K", "4K"]);
 const ASPECT_RATIOS = new Set(["1:1", "1:4", "4:1", "1:8", "8:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]);
 const SQUARE_SIZES: Record<string, string> = { "512x512": "512", "1024x1024": "1K", "2048x2048": "2K", "4096x4096": "4K" };
+const MAX_REFERENCE_IMAGES = 8;
+const MAX_REFERENCE_BYTES = 10 * 1024 * 1024;
+const REFERENCE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+function referenceImageParts(value: unknown): { parts: Array<{ inlineData: { mimeType: string; data: string } }>; error?: string } {
+  if (value === undefined) return { parts: [] };
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_REFERENCE_IMAGES) {
+    return { parts: [], error: `images must contain 1 to ${MAX_REFERENCE_IMAGES} base64 data URLs` };
+  }
+  const parts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
+  let totalBytes = 0;
+  for (const image of value) {
+    if (typeof image !== "string") return { parts: [], error: "Each reference image must be a base64 data URL" };
+    const match = /^data:(image\/[a-z]+);base64,([A-Za-z0-9+/]+={0,2})$/.exec(image);
+    if (!match || !REFERENCE_IMAGE_TYPES.has(match[1]!)) return { parts: [], error: "Reference images must be PNG, JPEG, WebP, or GIF base64 data URLs" };
+    const encoded = match[2]!;
+    if (encoded.length % 4 !== 0) return { parts: [], error: "Reference image has invalid base64 data" };
+    totalBytes += (encoded.length / 4) * 3 - (encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0);
+    if (totalBytes > MAX_REFERENCE_BYTES) return { parts: [], error: "Reference images exceed the 10 MB total limit" };
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.length === 0 || bytes.toString("base64") !== encoded) return { parts: [], error: "Reference image has invalid base64 data" };
+    const mimeType = match[1]!;
+    const validSignature = mimeType === "image/png" ? bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))
+      : mimeType === "image/jpeg" ? bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      : mimeType === "image/webp" ? bytes.length >= 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP"
+      : bytes.toString("ascii", 0, 6) === "GIF87a" || bytes.toString("ascii", 0, 6) === "GIF89a";
+    if (!validSignature) return { parts: [], error: "Reference image data does not match its MIME type" };
+    parts.push({ inlineData: { mimeType, data: encoded } });
+  }
+  return { parts };
+}
 
 export interface ImageGenerationRuntime {
   getAccounts(): AntigravityAccount[];
@@ -72,6 +103,8 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
   if (!ASPECT_RATIOS.has(aspectRatio)) return error("Unsupported aspect_ratio", 400, "invalid_request", 0, "aspect_ratio");
   if (squareSize && aspectRatio !== "1:1") return error("Square pixel size requires aspect_ratio=1:1; use image_size for other ratios", 400, "invalid_request", 0, "aspect_ratio");
   if (body.thinking_level !== undefined && !["minimal", "low", "medium", "high"].includes(body.thinking_level)) return error("thinking_level must be minimal, low, medium, or high", 400, "invalid_request", 0, "thinking_level");
+  const references = referenceImageParts(body.images);
+  if (references.error) return error(references.error, 400, "invalid_request", 0, "images");
 
   let attempts = 0;
   let account: AntigravityAccount | null = null;
@@ -98,7 +131,7 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
       requestType: "image_gen",
       requestId,
       request: {
-        contents: [{ role: "user", parts: [{ text: body.prompt }] }],
+        contents: [{ role: "user", parts: [{ text: body.prompt }, ...references.parts] }],
         generationConfig: {
           responseModalities: ["TEXT", "IMAGE"],
           imageConfig: { aspectRatio, imageSize },

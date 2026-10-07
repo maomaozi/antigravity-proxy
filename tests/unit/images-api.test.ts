@@ -15,6 +15,8 @@ function success(mime = "image/jpeg") {
     { inlineData: { mimeType: mime, data: "aW1hZ2U=" } },
   ] } }] } });
 }
+const png = `data:image/png;base64,${Buffer.from("89504e470d0a1a0a00000000", "hex").toString("base64")}`;
+const jpeg = `data:image/jpeg;base64,${Buffer.from("ffd8ff00", "hex").toString("base64")}`;
 function fixture() {
   const accounts = [account("a"), account("b"), account("c")];
   const calls: Array<{ url: string; headers: Headers; body: any }> = [];
@@ -39,6 +41,29 @@ function fixture() {
 }
 
 describe("Images API", () => {
+  test("sends text and multiple reference images to the existing upstream endpoint in order", async () => {
+    const f = fixture();
+    const response = await handleImageGeneration(request({ model: "gemini-3.1-flash-image", prompt: "Make the sky orange", images: [png, jpeg] }), f.runtime);
+    expect(response.status).toBe(200);
+    expect(f.calls[0]!.body.request.contents).toEqual([{ role: "user", parts: [
+      { text: "Make the sky orange" },
+      { inlineData: { mimeType: "image/png", data: png.split(",")[1] } },
+      { inlineData: { mimeType: "image/jpeg", data: jpeg.split(",")[1] } },
+    ] }]);
+    expect(await response.json()).toMatchObject({ data: [{ b64_json: "aW1hZ2U=" }] });
+  });
+
+  test("rejects malformed reference images before selecting an account", async () => {
+    const invalid = [[], Array(9).fill(png), ["https://example.com/photo.png"], ["data:image/png;base64,AQID"], ["data:image/png;base64,////"], ["data:image/png;base64,%%%"], [`data:image/png;base64,${Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64")}`]];
+    for (const images of invalid) {
+      const f = fixture();
+      const response = await handleImageGeneration(request({ model: "x", prompt: "edit", images }), f.runtime);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { param: "images" } });
+      expect(f.prepared).toHaveLength(0);
+    }
+  });
+
   test("passes an arbitrary mixed-case model unchanged and returns real image parts only", async () => {
     const f = fixture();
     const response = await handleImageGeneration(request({ model: "custom/Future-Image-9.1", prompt: "a cat", image_size: "4K", aspect_ratio: "16:9", thinking_level: "high" }), f.runtime);

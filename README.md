@@ -70,6 +70,7 @@ curl http://127.0.0.1:3000/v1/images/generations \
 | --- | --- | --- |
 | `model` | Yes | Any non-empty upstream model ID; passed unchanged |
 | `prompt` | Yes | Non-empty image description |
+| `images` | No | 1–8 reference images as `data:image/png;base64,...` (also JPEG, WebP, GIF); 10 MB total decoded size |
 | `image_size` | No | `512`, `1K` (default), `2K`, `4K` |
 | `aspect_ratio` | No | `1:1` (default), `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9` |
 | `size` | No | Alias for `image_size`; also accepts square `512x512`, `1024x1024`, `2048x2048`, `4096x4096`. Square pixel sizes require `aspect_ratio: "1:1"` |
@@ -83,6 +84,19 @@ thinking support depend on the model: for example, the current
 [Google image generation documentation](https://ai.google.dev/gemini-api/docs/generate-content/image-generation).
 Use `image_size` plus `aspect_ratio` for non-square images; the model decides
 the exact pixel dimensions for that combination.
+
+To edit or combine existing images, include them in `images` with a prompt
+describing the change. The endpoint sends the prompt and images as ordered
+`generateContent` parts. The model determines how many reference images it
+supports. For example, with a PNG source image:
+
+```bash
+IMAGE_DATA=$(base64 -w 0 source.png)
+curl http://127.0.0.1:3000/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"gemini-3.1-flash-image\",\"prompt\":\"Keep the composition but change the background to a sunset\",\"images\":[\"data:image/png;base64,${IMAGE_DATA}\"]}" \
+  -o edited-image-response.json
+```
 
 Each request uniformly chooses a random Google OAuth account, excluding
 accounts with an active authentication challenge. Expired tokens are refreshed
