@@ -1,17 +1,48 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="h-full antialiased">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>模型 Playground · Antigravity Console</title>
+    <script>
+        try {
+            const preference = localStorage.theme || 'system';
+            document.documentElement.classList.toggle('dark', preference === 'dark' || (preference === 'system' && matchMedia('(prefers-color-scheme: dark)').matches));
+        } catch {}
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="js/tailwind-config.js"></script>
+    <link rel="stylesheet" href="css/styles.css">
     <link rel="stylesheet" href="css/playground.css">
     <script type="module" src="js/playground.js"></script>
 </head>
-<body>
-    <header><a class="brand" href="/frontend/index.html">A <span>Antigravity Proxy</span></a><nav aria-label="导航"><a href="/frontend/index.html">控制台</a><a href="/frontend/usage.html">用量</a><button id="theme" type="button">切换主题</button></nav></header>
-    <main>
-        <aside>
-            <p class="eyebrow">PLAYGROUND</p><h1>模型实验室</h1><p class="muted">对话、理解图片，或将想法变成画面。</p>
+<body class="min-h-full lg:h-full flex flex-col bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-200 font-mono text-xs transition-colors lg:overflow-hidden">
+    <header class="sticky top-0 z-40 h-14 shrink-0 bg-white dark:bg-black border-b border-zinc-200 dark:border-zinc-800">
+        <div class="h-full px-4 sm:px-6 flex items-center justify-between gap-4">
+            <div class="flex items-center gap-4 min-w-0">
+                <a href="/frontend/index.html" class="flex shrink-0 items-center justify-center w-8 h-8 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 font-bold text-lg hover:border-emerald-500/50" aria-label="返回控制台">A</a>
+                <div class="min-w-0"><h1 class="text-sm font-bold text-zinc-900 dark:text-white">模型 Playground</h1><p class="hidden sm:block text-[9px] uppercase tracking-widest text-zinc-400 dark:text-zinc-600">Chat · Image generation</p></div>
+            </div>
+            <nav class="flex items-center gap-2 sm:gap-4" aria-label="导航">
+                <button id="theme" type="button" class="p-1.5 w-8 h-8 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-900 dark:hover:text-white" title="切换主题" aria-label="切换主题">
+                    <svg id="icon-sun" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                    <svg id="icon-moon" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 008.354-5.646z"/></svg>
+                    <svg id="icon-system" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                </button>
+                <a href="/frontend/usage.html" class="hidden sm:inline text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400">Usage</a>
+                <a href="/frontend/sessions.html" class="hidden sm:inline text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400">Sessions</a>
+                <a href="/frontend/index.html" class="px-2.5 py-1.5 rounded border border-zinc-200 dark:border-zinc-800 text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400">Accounts</a>
+            </nav>
+        </div>
+    </header>
+    <main class="flex flex-col lg:flex-row lg:flex-1 min-h-0 w-full max-w-[1800px] mx-auto">
+        <aside class="lg:w-80 lg:shrink-0 lg:overflow-y-auto p-4 sm:p-6 bg-white dark:bg-[#0a0a0a] border-b lg:border-b-0 lg:border-r border-zinc-200 dark:border-zinc-800">
+            <p class="text-[10px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">Playground</p>
+            <h2 class="mt-2 text-lg font-bold text-zinc-900 dark:text-white">模型实验室</h2>
+            <p class="mt-1 text-[10px] leading-relaxed text-zinc-500">对话、理解图片，或将想法变成画面。</p>
             <label for="mode">工作模式</label><select id="mode"><option value="chat">多轮聊天</option><option value="image">图片生成</option></select>
             <label for="model">模型</label><input id="model" list="models" placeholder="选择或输入模型 ID" autocomplete="off"><datalist id="models"></datalist>
             <button id="reload" type="button" class="subtle">刷新模型列表</button>
@@ -21,19 +52,19 @@
             <div id="image-options" hidden>
                 <label for="size">图片尺寸</label><select id="size"><option>512</option><option selected>1K</option><option>2K</option><option>4K</option></select>
                 <label for="ratio">宽高比</label><select id="ratio"><option>1:1</option><option>1:4</option><option>4:1</option><option>1:8</option><option>8:1</option><option>2:3</option><option>3:2</option><option>3:4</option><option>4:3</option><option>4:5</option><option>5:4</option><option>9:16</option><option>16:9</option><option>21:9</option></select>
-                <p class="muted">图片模型使用上游模型 ID，例如 gemini-3.1-flash-image。可上传参考图进行修改、合成或风格转换；尺寸、比例、思考强度及参考图数量以模型支持情况为准。</p>
+                <p class="muted mt-3">图片模型使用上游模型 ID，例如 gemini-3.1-flash-image。可上传参考图进行修改、合成或风格转换；尺寸、比例、思考强度及参考图数量以模型支持情况为准。</p>
             </div>
-            <button id="clear" type="button">新建会话</button><p class="muted">会话仅保留在当前页面，刷新即清空。</p>
+            <button id="clear" type="button" class="mt-6 w-full">新建会话</button><p class="muted mt-2">会话仅保留在当前页面，刷新即清空。</p>
         </aside>
-        <section class="workspace" aria-label="聊天与生成结果">
-            <div class="workspace-heading"><strong id="heading">多轮聊天</strong><span id="status" role="status">就绪</span></div>
+        <section class="workspace flex flex-col flex-1 min-h-0 min-w-0 bg-zinc-50 dark:bg-black" aria-label="聊天与生成结果">
+            <div class="workspace-heading"><strong id="heading" class="uppercase tracking-wider">多轮聊天</strong><span id="status" role="status">就绪</span></div>
             <div id="messages" role="log" aria-label="会话记录"><div id="empty"><span class="spark">✦</span><h2>从一个想法开始</h2><p>选择模型，输入问题或上传图片与文本文件。</p></div></div>
             <form id="composer">
                 <div id="attachments" aria-label="待发送附件"></div>
                 <label class="sr-only" for="prompt">消息或图片描述</label><textarea id="prompt" rows="3" placeholder="输入消息… Enter 发送，Shift + Enter 换行"></textarea>
                 <p id="error" role="alert" hidden></p>
                 <div class="actions"><button id="upload" type="button">＋ 添加附件</button><input id="files" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql"><span class="spacer"></span><button id="stop" type="button" hidden>停止</button><button id="send" class="primary" type="submit">发送</button></div>
-                <p id="file-hint" class="muted">支持 PNG / JPEG / WebP / GIF 和 UTF-8 文本、代码文件；最多 8 个，总计 10 MB。文本文件会作为消息正文发送，图片理解取决于模型能力。</p>
+                <p id="file-hint" class="muted mt-2">支持 PNG / JPEG / WebP / GIF 和 UTF-8 文本、代码文件；最多 8 个，总计 10 MB。文本文件会作为消息正文发送，图片理解取决于模型能力。</p>
             </form>
         </section>
     </main>

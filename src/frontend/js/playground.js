@@ -5,13 +5,25 @@ let session = crypto.randomUUID();
 const selections = { chat: '', image: 'gemini-3.1-flash-image' };
 let mode = 'chat';
 function error(message = '') { $('error').textContent = message; $('error').hidden = !message; }
-function theme() {
-    let preference = 'system';
-    try { preference = localStorage.getItem('theme') || 'system'; } catch {}
-    document.documentElement.classList.toggle('dark', preference === 'dark' || (preference === 'system' && matchMedia('(prefers-color-scheme: dark)').matches));
+function themePreference() {
+    try { return localStorage.theme || 'system'; } catch { return 'system'; }
 }
-$('theme').onclick = () => { const dark = !document.documentElement.classList.contains('dark'); document.documentElement.classList.toggle('dark', dark); try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch {} };
-theme();
+function applyTheme() {
+    const preference = themePreference();
+    document.documentElement.classList.toggle('dark', preference === 'dark' || (preference === 'system' && matchMedia('(prefers-color-scheme: dark)').matches));
+    $('icon-sun').classList.toggle('hidden', preference !== 'light');
+    $('icon-moon').classList.toggle('hidden', preference !== 'dark');
+    $('icon-system').classList.toggle('hidden', preference !== 'system');
+    $('theme').title = `切换主题（当前：${{ system: '跟随系统', light: '浅色', dark: '深色' }[preference]}）`;
+}
+$('theme').onclick = () => {
+    const next = { system: 'light', light: 'dark', dark: 'system' }[themePreference()];
+    try { if (next === 'system') localStorage.removeItem('theme'); else localStorage.theme = next; } catch {}
+    applyTheme();
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+window.addEventListener('storage', event => { if (event.key === 'theme') applyTheme(); });
+applyTheme();
 function busy() {
     const active = !!controller;
     for (const id of ['mode', 'model', 'effort', 'instructions', 'size', 'ratio', 'clear', 'reload', 'prompt']) $(id).disabled = active || reading;
