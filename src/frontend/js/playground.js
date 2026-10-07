@@ -1,7 +1,15 @@
 import { readAttachment, userContent, outputText, consumeEvents } from './playground-api.js';
 const $ = id => document.getElementById(id);
 let models = [], attachments = [], history = [], controller = null, reading = false;
-let session = crypto.randomUUID();
+function newSessionId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    if (globalThis.crypto?.getRandomValues) {
+        const bytes = new Uint8Array(16); globalThis.crypto.getRandomValues(bytes);
+        return `session-${Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')}`;
+    }
+    return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+let session = newSessionId();
 const selections = { chat: '', image: 'gemini-3.1-flash-image' };
 const imageModels = [
     { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image' },
@@ -84,7 +92,7 @@ async function loadModels() {
     finally { $('reload').disabled = !!controller; }
 }
 $('reload').onclick = loadModels;
-function reset() { history = []; session = crypto.randomUUID(); $('messages').replaceChildren(); error(); $('status').textContent = '就绪'; }
+function reset() { history = []; session = newSessionId(); $('messages').replaceChildren(); error(); $('status').textContent = '就绪'; }
 $('clear').onclick = () => { reset(); attachments = []; $('prompt').value = ''; renderAttachments(); };
 $('mode').onchange = () => {
     selections[mode] = currentModel(); mode = $('mode').value;
