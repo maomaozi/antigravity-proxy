@@ -11,6 +11,7 @@ import { type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
 import { validateCompletionRequestForGoogle } from "./utils/transform";
 import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionResult } from "./api/openai/chat";
+import { handleImageGeneration } from "./api/openai/images";
 import { adaptResponsesRequest, createResponsesStreamEncoder, encodeResponsesResult, validateResponsesRequest } from "./api/openai/responses";
 import { executeCompletion } from "./api/completion-executor";
 import { OAUTH_CONFIG } from "./utils/headers";
@@ -171,6 +172,10 @@ Bun.serve({
             object: "list",
             data: [...models, ...codexModels]
         });
+    }
+
+    if (cleanPath === "/v1/images/generations" && req.method === "POST") {
+      return handleImageGeneration(req);
     }
 
     if (cleanPath === "/v1/chat/completions" && req.method === "POST") {

@@ -10,6 +10,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 
 - **OpenAI API Compatibility**: Full support for `v1/chat/completions` with streaming (SSE).
 - **Structured JSON Outputs**: Supports OpenAI-compatible `json_object` and `json_schema` response formats for Gemini and Claude models.
+- **Image Generation**: `/v1/images/generations` forwards arbitrary upstream model IDs, supports 512/1K/2K/4K output and aspect ratios, and randomly selects a Google OAuth account for each request.
 - **Multi-Agent Support**: Specifically designed to work with **Claude Code**, **OpenCode**, and other agentic frameworks.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
@@ -46,6 +47,80 @@ Responses (`/v1/responses`) request/stream formats. Codex OAuth accounts can
 also use native Responses forwarding and context compaction
 (`/v1/responses/compact`). If the server is running on a different port,
 replace `3000` in the examples below.
+
+### Image Generation
+
+`POST /v1/images/generations` accepts any upstream model ID verbatim. It does
+not restrict IDs to `/v1/models` or rewrite them to a different model. The
+upstream service determines whether the selected account can use that model.
+
+```bash
+curl http://127.0.0.1:3000/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gemini-3.1-flash-image",
+    "prompt": "An orange cat astronaut holding a banana on the Moon",
+    "image_size": "2K",
+    "aspect_ratio": "16:9",
+    "response_format": "b64_json"
+  }' -o image-response.json
+```
+
+| Parameter | Required | Values / default |
+| --- | --- | --- |
+| `model` | Yes | Any non-empty upstream model ID; passed unchanged |
+| `prompt` | Yes | Non-empty image description |
+| `image_size` | No | `512`, `1K` (default), `2K`, `4K` |
+| `aspect_ratio` | No | `1:1` (default), `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9` |
+| `size` | No | Alias for `image_size`; also accepts square `512x512`, `1024x1024`, `2048x2048`, `4096x4096`. Square pixel sizes require `aspect_ratio: "1:1"` |
+| `thinking_level` | No | `minimal`, `low`, `medium`, `high`; omitted by default, supported levels depend on the upstream model |
+| `n` | No | `1` only |
+| `response_format` | No | `b64_json` only (default) |
+
+`image_size` and `size` must agree when both are supplied. Resolution and
+thinking support depend on the model: for example, the current
+`gemini-3.1-flash-image` accepts `512` and rejects `medium` thinking. See the
+[Google image generation documentation](https://ai.google.dev/gemini-api/docs/generate-content/image-generation).
+Use `image_size` plus `aspect_ratio` for non-square images; the model decides
+the exact pixel dimensions for that combination.
+
+Each request uniformly chooses a random Google OAuth account, excluding
+accounts with an active authentication challenge. Expired tokens are refreshed
+before use; accounts that cannot be prepared are skipped. Chat session
+affinity and health-based account ranking do not affect image selection.
+Endpoint fallback and a single 401 OAuth refresh stay on the selected account.
+The generation timeout uses `models.timeouts.image`, falling back to
+`models.timeouts.stream` (900 seconds by default).
+
+The response uses the OpenAI Images `created` / `data[].b64_json` structure,
+with `mime_type` identifying the actual image format:
+
+```json
+{
+  "created": 1791390000,
+  "model": "gemini-3.1-flash-image",
+  "model_version": "gemini-3.1-flash-image",
+  "data": [{ "b64_json": "<base64 image bytes>", "mime_type": "image/jpeg" }]
+}
+```
+
+Decode and save the image without assuming it is PNG:
+
+```bash
+python3 - <<'PY'
+import base64, json
+from pathlib import Path
+image = json.loads(Path("image-response.json").read_text())["data"][0]
+extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[image["mime_type"]]
+Path(f"generated.{extension}").write_bytes(base64.b64decode(image["b64_json"]))
+PY
+```
+
+The endpoint returns one image and does not stream or host image URLs.
+Unknown or unavailable model IDs produce an upstream error; they are never
+silently replaced with the working image model. `model_version`, when present,
+is the upstream-reported label. Responses include `X-Antigravity-Attempts`;
+the selected account is logged on the server, and OAuth tokens stay server-side.
 
 ### Basic Chat Completion
 
