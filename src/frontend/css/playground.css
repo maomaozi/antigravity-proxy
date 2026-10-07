@@ -4,9 +4,13 @@ aside label{display:block;margin:20px 0 7px;font-size:10px;font-weight:700;lette
 aside input,aside select,aside textarea,#composer textarea{display:block;width:100%;padding:10px 11px;border:1px solid var(--playground-border);border-radius:4px;background:var(--playground-field);color:var(--playground-text);font:11px/1.65 'JetBrains Mono',monospace;outline:none}
 aside input:focus,aside select:focus,aside textarea:focus,#composer textarea:focus{border-color:var(--playground-accent)}
 aside textarea,#composer textarea{resize:vertical}
-aside button,#composer button{padding:8px 12px;border:1px solid var(--playground-border);border-radius:4px;background:var(--playground-surface);color:var(--playground-text);font-size:10px;font-weight:700;letter-spacing:.03em;transition:border-color .15s,color .15s}
-aside button:hover,#composer button:hover{border-color:var(--playground-accent);color:var(--playground-accent)}
-aside button:disabled,#composer button:disabled{opacity:.5;cursor:not-allowed}
+aside button,#composer button,#composer .upload-button{padding:8px 12px;border:1px solid var(--playground-border);border-radius:4px;background:var(--playground-surface);color:var(--playground-text);font-size:10px;font-weight:700;letter-spacing:.03em;transition:border-color .15s,color .15s}
+aside button:hover,#composer button:hover,#composer .upload-button:hover{border-color:var(--playground-accent);color:var(--playground-accent)}
+aside button:disabled,#composer button:disabled,#composer .upload-button[aria-disabled=true]{opacity:.5;cursor:not-allowed}
+#composer .upload-button{display:inline-flex;align-items:center;cursor:pointer;white-space:nowrap}
+#composer .upload-button:focus-visible{outline:2px solid var(--playground-accent);outline-offset:2px}
+#composer .upload-button[aria-disabled=true]{pointer-events:none}
+.file-input{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 aside .subtle{margin-top:8px;padding:2px 0;border:0;background:transparent;color:var(--playground-accent)}
 .muted{color:var(--playground-muted);font-size:10px;line-height:1.7}
 .workspace-heading{display:flex;justify-content:space-between;gap:16px;padding:15px 24px;border-bottom:1px solid var(--playground-border);background:var(--playground-surface);font-size:10px}

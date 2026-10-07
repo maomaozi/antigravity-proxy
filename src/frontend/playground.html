@@ -44,7 +44,8 @@
             <h2 class="mt-2 text-lg font-bold text-zinc-900 dark:text-white">模型实验室</h2>
             <p class="mt-1 text-[10px] leading-relaxed text-zinc-500">对话、理解图片，或将想法变成画面。</p>
             <label for="mode">工作模式</label><select id="mode"><option value="chat">多轮聊天</option><option value="image">图片生成</option></select>
-            <label for="model">模型</label><input id="model" list="models" placeholder="选择或输入模型 ID" autocomplete="off"><datalist id="models"></datalist>
+            <label for="model-select">模型</label><select id="model-select" aria-label="选择模型"><option value="">正在加载模型…</option></select>
+            <div id="model-custom" hidden><label for="model">自定义模型 ID</label><input id="model" placeholder="输入上游模型 ID" autocomplete="off"></div>
             <button id="reload" type="button" class="subtle">刷新模型列表</button>
             <p id="model-status" class="muted" role="status"></p>
             <label for="effort">思考强度</label><select id="effort"><option value="">模型默认</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
@@ -63,7 +64,7 @@
                 <div id="attachments" aria-label="待发送附件"></div>
                 <label class="sr-only" for="prompt">消息或图片描述</label><textarea id="prompt" rows="3" placeholder="输入消息… Enter 发送，Shift + Enter 换行"></textarea>
                 <p id="error" role="alert" hidden></p>
-                <div class="actions"><button id="upload" type="button">＋ 添加附件</button><input id="files" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql"><span class="spacer"></span><button id="stop" type="button" hidden>停止</button><button id="send" class="primary" type="submit">发送</button></div>
+                <div class="actions"><label id="upload" for="files" class="upload-button" tabindex="0">＋ 添加附件</label><input id="files" class="file-input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql"><span class="spacer"></span><button id="stop" type="button" hidden>停止</button><button id="send" class="primary" type="submit">发送</button></div>
                 <p id="file-hint" class="muted mt-2">支持 PNG / JPEG / WebP / GIF 和 UTF-8 文本、代码文件；最多 8 个，总计 10 MB。文本文件会作为消息正文发送，图片理解取决于模型能力。</p>
             </form>
         </section>

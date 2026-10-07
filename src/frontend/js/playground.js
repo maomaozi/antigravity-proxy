@@ -3,7 +3,14 @@ const $ = id => document.getElementById(id);
 let models = [], attachments = [], history = [], controller = null, reading = false;
 let session = crypto.randomUUID();
 const selections = { chat: '', image: 'gemini-3.1-flash-image' };
+const imageModels = [
+    { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image' },
+    { id: 'gemini-3.1-flash-lite-image', name: 'Gemini 3.1 Flash Lite Image' },
+    { id: 'gemini-3-pro-image', name: 'Gemini 3 Pro Image' },
+    { id: 'gemini-2.5-flash-image', name: 'Gemini 2.5 Flash Image' },
+];
 let mode = 'chat';
+function currentModel() { return $('model-select').value === '__custom__' ? $('model').value.trim() : $('model-select').value; }
 function error(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 function themePreference() {
     try { return localStorage.theme || 'system'; } catch { return 'system'; }
@@ -26,19 +33,45 @@ window.addEventListener('storage', event => { if (event.key === 'theme') applyTh
 applyTheme();
 function busy() {
     const active = !!controller;
-    for (const id of ['mode', 'model', 'effort', 'instructions', 'size', 'ratio', 'clear', 'reload', 'prompt']) $(id).disabled = active || reading;
+    for (const id of ['mode', 'model-select', 'model', 'effort', 'instructions', 'size', 'ratio', 'clear', 'reload', 'prompt']) $(id).disabled = active || reading;
     $('send').disabled = active || reading;
-    $('upload').disabled = active || reading;
+    $('files').disabled = active || reading;
+    $('upload').setAttribute('aria-disabled', String(active || reading));
+    $('upload').tabIndex = active || reading ? -1 : 0;
     $('stop').hidden = !active;
     renderAttachments();
 }
-function populate() {
-    $('models').replaceChildren();
-    const options = mode === 'image' ? [{ id: 'gemini-3.1-flash-image', name: '图片生成 · 示例上游 ID' }] : models;
-    for (const model of options) {
-        const option = document.createElement('option'); option.value = model.id; option.label = `${model.name || model.id} · ${model.owned_by || 'image'}`; $('models').append(option);
+function populate(preferred = currentModel()) {
+    const select = $('model-select'); select.replaceChildren();
+    const options = mode === 'image' ? imageModels : models;
+    const groups = mode === 'image' ? [{ name: '图片生成', items: options }] : [
+        { name: 'Google / Antigravity', items: options.filter(item => item.owned_by !== 'codex') },
+        { name: 'Codex', items: options.filter(item => item.owned_by === 'codex') },
+    ];
+    for (const group of groups) {
+        if (!group.items.length) continue;
+        const container = document.createElement('optgroup'); container.label = group.name;
+        for (const model of group.items) {
+            const option = document.createElement('option'); option.value = model.id;
+            option.textContent = `${model.name || model.id} · ${model.id}`;
+            container.append(option);
+        }
+        select.append(container);
     }
+    const custom = document.createElement('option'); custom.value = '__custom__'; custom.textContent = '自定义模型 ID…'; select.append(custom);
+    const found = preferred && options.some(item => item.id === preferred);
+    select.value = found ? preferred : preferred ? '__custom__' : options[0]?.id || '__custom__';
+    $('model-custom').hidden = select.value !== '__custom__';
+    $('model').value = select.value === '__custom__' ? preferred : '';
+    $('model-status').textContent = mode === 'image'
+        ? `可选择 ${imageModels.length} 个图片模型；账号可用性以实际请求为准。`
+        : `已加载 ${models.length} 个聊天模型，也可输入自定义 ID。`;
 }
+$('model-select').onchange = () => {
+    $('model-custom').hidden = $('model-select').value !== '__custom__';
+    $('model').value = '';
+    if (!$('model-custom').hidden) $('model').focus();
+};
 async function loadModels() {
     $('reload').disabled = true; $('model-status').textContent = '正在加载模型…';
     try {
@@ -46,18 +79,15 @@ async function loadModels() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const result = await response.json();
         if (!Array.isArray(result.data)) throw new Error('模型列表格式错误');
-        models = result.data; populate();
-        if (mode === 'chat' && !$('model').value) $('model').value = models[0]?.id || '';
-        $('model-status').textContent = `已加载 ${models.length} 个聊天模型，也可输入模型 ID。`;
-    } catch (e) { $('model-status').textContent = `模型加载失败：${e.message}。可重试或手动输入 ID。`; }
+        models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim()); populate();
+    } catch (e) { populate(); $('model-status').textContent = `模型加载失败：${e.message}。可重试或手动输入 ID。`; }
     finally { $('reload').disabled = !!controller; }
 }
 $('reload').onclick = loadModels;
 function reset() { history = []; session = crypto.randomUUID(); $('messages').replaceChildren(); error(); $('status').textContent = '就绪'; }
 $('clear').onclick = () => { reset(); attachments = []; $('prompt').value = ''; renderAttachments(); };
 $('mode').onchange = () => {
-    selections[mode] = $('model').value; mode = $('mode').value;
-    $('model').value = selections[mode] || models[0]?.id || '';
+    selections[mode] = currentModel(); mode = $('mode').value;
     const image = mode === 'image';
     $('chat-options').hidden = image; $('image-options').hidden = !image;
     $('upload').textContent = image ? '＋ 添加参考图' : '＋ 添加附件';
@@ -67,7 +97,7 @@ $('mode').onchange = () => {
     $('files').accept = image ? 'image/png,image/jpeg,image/webp,image/gif' : 'image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql';
     $('heading').textContent = image ? '图片生成' : '多轮聊天'; $('send').textContent = image ? '生成图片' : '发送';
     $('prompt').placeholder = image ? '描述你想生成的画面…' : '输入消息… Enter 发送，Shift + Enter 换行';
-    attachments = []; renderAttachments(); populate(); reset();
+    attachments = []; renderAttachments(); populate(selections[mode]); reset();
 };
 function renderAttachments() {
     $('attachments').replaceChildren();
@@ -94,7 +124,11 @@ async function addFiles(files) {
     } catch (e) { error(e.message); }
     finally { reading = false; $('files').value = ''; busy(); }
 }
-$('upload').onclick = () => $('files').click();
+$('upload').onkeydown = event => {
+    if ((event.key === 'Enter' || event.key === ' ') && !$('files').disabled) {
+        event.preventDefault(); $('files').click();
+    }
+};
 $('files').onchange = () => addFiles($('files').files);
 $('composer').ondragover = event => { event.preventDefault(); };
 $('composer').ondrop = event => { event.preventDefault(); addFiles(event.dataTransfer.files); };
@@ -104,7 +138,7 @@ $('stop').onclick = () => controller?.abort();
 function message(role, text, files = []) {
     $('empty')?.remove();
     const element = document.createElement('article'); element.className = `message ${role}`;
-    const label = document.createElement('div'); label.className = 'message-label'; label.textContent = role === 'user' ? '你' : $('model').value;
+    const label = document.createElement('div'); label.className = 'message-label'; label.textContent = role === 'user' ? '你' : currentModel();
     const body = document.createElement('div'); body.className = 'message-body'; body.textContent = text; element.append(label, body);
     for (const file of files) {
         if (file.url) { const img = document.createElement('img'); img.src = file.url; img.alt = file.name; element.append(img); }
@@ -116,7 +150,7 @@ function message(role, text, files = []) {
 function note(element, text, className = 'usage') { const node = document.createElement('div'); node.className = className; node.textContent = text; element.append(node); }
 $('composer').onsubmit = async event => {
     event.preventDefault(); if (controller || reading) return;
-    const prompt = $('prompt').value.trim(), model = $('model').value.trim(), files = [...attachments];
+    const prompt = $('prompt').value.trim(), model = currentModel(), files = [...attachments];
     if (!model) return error('请先选择或输入模型 ID。');
     if (!prompt && (mode === 'image' || !files.length)) return error(mode === 'image' ? '请输入图片修改要求。' : '请输入消息或添加附件。');
     error(); controller = new AbortController(); busy(); $('status').textContent = mode === 'image' ? '正在生成图片…' : '正在回复…';
