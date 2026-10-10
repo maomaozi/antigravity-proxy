@@ -4,6 +4,7 @@ import {
   flagAccountChallenge,
   flagModelUnsupported,
   getAccounts,
+  getAccountSelectionFailure,
   getBestAccount,
   getEarliestReset,
   getFamilyName,
@@ -94,6 +95,55 @@ function jsonError(status: number, body: any, attempts: number): CompletionExecu
   };
 }
 
+export interface CompletionAttempt {
+  email: string;
+  status: number;
+  reason: string;
+}
+
+export function buildCompletionFailure(
+  model: string,
+  pool: "cli" | "sandbox",
+  attempts: number,
+  attemptLogs: CompletionAttempt[],
+): CompletionExecution {
+  // An upstream failure is stronger evidence than the resulting account cooldown.
+  const lastFailure = attemptLogs.at(-1);
+  const reason = lastFailure?.reason || getAccountSelectionFailure(pool, model);
+  let status = 503;
+  let type = "server_error";
+  let code = reason;
+  let message = `No available accounts for model '${model}'. Check account authentication and availability.`;
+  if (reason === "model_not_found") {
+    status = 404;
+    type = "invalid_request_error";
+    message = `Model '${model}' is unavailable for the configured accounts. Select another model.`;
+  } else if (reason === "no_accounts") {
+    message = "No accounts with credentials are configured. Add or authenticate an account.";
+  } else if (["account_verification_required", "validation_required", "subscription_required"].includes(reason)) {
+    status = 403;
+    type = "access_denied";
+    code = "account_verification_required";
+    message = `Accounts for model '${model}' require verification or a subscription. Check the account dashboard.`;
+  } else if (reason === "insufficient_quota" || reason === "quota_exhausted") {
+    status = 429;
+    type = "insufficient_quota";
+    code = "insufficient_quota";
+    const resetTime = getEarliestReset(pool);
+    message = `Quota exhausted for model '${model}'.${resetTime ? ` Next reset in ${resetTime}.` : ""} Try another model or wait for quota reset.`;
+  } else if (reason === "rate_limit_exceeded" || lastFailure?.status === 429) {
+    status = 429;
+    type = "rate_limit_error";
+    code = "rate_limit_exceeded";
+    message = `Accounts for model '${model}' are temporarily rate limited or cooling down. Retry later.`;
+  } else if (lastFailure) {
+    status = lastFailure.status >= 500 ? lastFailure.status : 502;
+    code = "upstream_error";
+    message = `Upstream request failed for model '${model}' (HTTP ${lastFailure.status}: ${reason}). Retry later.`;
+  }
+  return jsonError(status, { error: { message, type, code, attempts: attemptLogs } }, attempts);
+}
+
 export function isExplicitAntigravityModel(model: string): boolean {
   return /(?:^|\/)antigravity(?:-|\/)/i.test(model);
 }
@@ -136,7 +186,7 @@ export async function executeCompletion({
   const availableAccountsCount = getAccounts().length;
   const maxAttempts = Math.max(config.retry.maxAttempts, availableAccountsCount);
   const triedEmails: string[] = [];
-  const attemptLogs: Array<{ email: string; status: number; reason: string }> = [];
+  const attemptLogs: CompletionAttempt[] = [];
   let systemicErrorCount = 0;
 
   // Explicit Antigravity models, GPT models, and Claude models use the sandbox pool only.
@@ -211,11 +261,7 @@ export async function executeCompletion({
     }
 
     if (!account || !account.accessToken) {
-      if (attempts < maxAttempts) {
-        console.log("[Switch] Exhausted all accounts in both pools, retrying...");
-        triedEmails.length = 0;
-        continue;
-      }
+      // Selection already tried alternate pools and rescue. Preserve why it failed.
       break;
     }
 
@@ -358,6 +404,8 @@ export async function executeCompletion({
           if (parsedError.isModelUnsupported) {
             console.log(`[Model] Unsupported model ${request.model} for ${account.email}, marking capability.`);
             flagModelUnsupported(account.email, request.model);
+            await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox", status);
+            return buildCompletionFailure(request.model, useCliPool ? "cli" : "sandbox", attempts, attemptLogs);
           }
           await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox", status);
           return jsonError(status, {
@@ -514,6 +562,7 @@ export async function executeCompletion({
 
       if (!result.text && result.toolCalls.length === 0 && result.finishReason !== "length") {
         console.warn(`[Empty] Account ${account.email} returned empty response for ${request.model}, retrying with another account...`);
+        attemptLogs.push({ email: account.email, status: 502, reason: "empty_response" });
         markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(request.model), "30s");
         continue;
       }
@@ -576,14 +625,5 @@ export async function executeCompletion({
     }
   }
 
-  const resetTime = getEarliestReset(useCliPool ? "cli" : "sandbox");
-  const resetMsg = resetTime ? ` Next reset in ${resetTime}.` : "";
-  return jsonError(429, {
-    error: {
-      message: `Quota Exhausted: All accounts failed or are exhausted for this model.${resetMsg} Try a different model or wait for quota reset.`,
-      type: "insufficient_quota",
-      code: "insufficient_quota",
-      attempts: attemptLogs,
-    },
-  }, attempts);
+  return buildCompletionFailure(request.model, useCliPool ? "cli" : "sandbox", attempts, attemptLogs);
 }

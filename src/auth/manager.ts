@@ -147,6 +147,32 @@ function getPidOffset(): number {
   return process.pid % Math.max(accounts.length, 1);
 }
 
+export type AccountSelectionFailure =
+  | "no_accounts"
+  | "model_not_found"
+  | "account_verification_required"
+  | "insufficient_quota"
+  | "rate_limit_exceeded"
+  | "no_available_accounts";
+
+/** Explain failed selection using the same capability, quota and cooldown state. */
+export function getAccountSelectionFailure(pool: "cli" | "sandbox", model: string): AccountSelectionFailure {
+  const configured = accounts.filter(account => account.refreshToken);
+  if (configured.length === 0) return "no_accounts";
+  const supported = configured.filter(account => account.capabilities?.[model] !== false);
+  if (supported.length === 0) return "model_not_found";
+  const usable = supported.filter(account => !account.challenge);
+  if (usable.length === 0) return "account_verification_required";
+  if (usable.every(account => isAccountQuotaExhausted(account, model))) return "insufficient_quota";
+  const now = Date.now();
+  const family = getFamilyName(model);
+  if (usable.every(account => isAccountQuotaExhausted(account, model)
+    || (cooldownMap.get(`${account.email}|${pool}|${family}`) || 0) > now)) {
+    return "rate_limit_exceeded";
+  }
+  return "no_available_accounts";
+}
+
 export async function getBestAccount(
   pool?: 'cli' | 'sandbox',
   model?: string,

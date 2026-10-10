@@ -138,6 +138,27 @@ the selected account is logged on the server, and OAuth tokens stay server-side.
 
 ### Basic Chat Completion
 
+`GET /v1/models` lists the proxy's configured model IDs. It is a static catalog,
+not a live availability check; upstream model IDs and account access can change.
+
+Chat and Responses failures preserve their cause in `error.code`:
+
+| HTTP | `error.code` | Meaning |
+| --- | --- | --- |
+| 404 | `model_not_found` | The upstream rejected the model, or all configured accounts have cached that rejection. Select another model. |
+| 403 | `account_verification_required` | Supporting accounts need verification or a subscription. |
+| 429 | `insufficient_quota` | Upstream quota exhaustion or the configured quota threshold was reached. |
+| 429 | `rate_limit_exceeded` | Accounts are temporarily rate limited or cooling down. Retry later. |
+| 503 | `no_accounts` | No accounts with credentials are configured. |
+| 503 | `no_available_accounts` | Account preparation failed. Check authentication and account availability. |
+| 5xx | `upstream_error` | Upstream requests failed, including empty responses; upstream HTTP status is retained when available. |
+
+Cached model rejections retain the same 404 response on later requests rather
+than becoming quota errors. `error.message` identifies the model and next action;
+`error.attempts` retains the account, upstream HTTP status and reason for attempts
+made during the request. No new upstream call is made when selection finds no
+eligible account after pool fallback and rescue.
+
 ```bash
 curl http://127.0.0.1:3000/v1/chat/completions \
   -H 'Content-Type: application/json' \
