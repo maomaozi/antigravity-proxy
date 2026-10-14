@@ -84,7 +84,7 @@ export async function activateGoogleGeminiWindow(
     const configured = getProxyConfig().endpoints.sandbox;
     const endpoint = (Array.isArray(configured) ? configured : [configured])[0];
     if (!endpoint) return null;
-    const model = "gemini-3.7-flash-tiered";
+    const model = "gemini-3.8-flash-tiered";
     return fetchImpl(endpoint, {
       method: "POST",
       headers: getImpersonationHeaders(ready.accessToken, ready.fingerprint, model),

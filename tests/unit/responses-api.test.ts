@@ -15,7 +15,7 @@ beforeAll(async () => {
 describe("Responses API request adapter", () => {
   test("maps supported Responses fields into the canonical completion request", () => {
     const body = {
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       instructions: "Be concise.",
       input: [{
         role: "user",
@@ -59,7 +59,7 @@ describe("Responses API request adapter", () => {
     expect(validateResponsesRequest(body)).toBeUndefined();
     const request = adaptResponsesRequest(body);
     expect(request).toEqual({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "system", content: "Be concise." },
         {
@@ -102,7 +102,7 @@ describe("Responses API request adapter", () => {
 
   test("accepts the Codex CLI Responses request extensions used for stateless sessions", () => {
     const body = {
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       instructions: "Act as a coding agent.",
       input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }],
       tools: [{
@@ -132,7 +132,7 @@ describe("Responses API request adapter", () => {
 
   test("accepts Codex namespace, custom, web_search, and local_shell tool declarations", () => {
     const body = {
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       input: "Use the available tools when useful.",
       tools: [
         {
@@ -183,7 +183,7 @@ describe("Responses API request adapter", () => {
 
   test("maps standalone Responses web_search to Gemini native Google Search", () => {
     const request = adaptResponsesRequest({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       input: "Search for current information",
       tools: [{ type: "web_search", external_web_access: true }],
     });
@@ -195,7 +195,7 @@ describe("Responses API request adapter", () => {
 
   test("groups reasoning, parallel function calls, and their outputs into canonical turns", () => {
     const body = {
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       input: [
         { role: "user", content: "Look up both" },
         {
@@ -265,7 +265,7 @@ describe("Responses API request adapter", () => {
   test("preserves Codex view_image output as a Gemini multimodal function response", () => {
     const imageUrl = "data:image/png;base64,aGVsbG8=";
     const body = {
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       input: [
         { role: "user", content: "Inspect the local image" },
         {
@@ -323,7 +323,7 @@ describe("Responses API final response encoder", () => {
       responseId: "resp_test",
       createdAt: 1700000000,
       requestBody: {
-        model: "antigravity-gemini-3.7-flash",
+        model: "antigravity-gemini-3.8-flash",
         instructions: "Be useful",
         tools: [{ type: "function", name: "lookup", parameters: {}, strict: false }],
         reasoning: { effort: "high" },
@@ -380,7 +380,7 @@ describe("Responses API final response encoder", () => {
 
   test("restores namespace and custom tool calls in Responses output", () => {
     const requestBody = {
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       input: "Use tools",
       tools: [
         {
@@ -456,9 +456,9 @@ describe("Responses API streaming encoder", () => {
     });
     const text = await new Response(source.pipeThrough(createResponsesStreamEncoder({
       responseId: "resp_stream",
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       createdAt: 1700000000,
-      requestBody: { model: "antigravity-gemini-3.7-flash", stream: true },
+      requestBody: { model: "antigravity-gemini-3.8-flash", stream: true },
     }))).text();
     return text.trim().split("\n\n").map(block => JSON.parse(block.split("\n").find(line => line.startsWith("data: "))!.slice(6)));
   };
@@ -491,7 +491,7 @@ describe("Responses API streaming encoder", () => {
 
   test("streams a custom tool call using Responses custom_tool_call wire shape", async () => {
     const adapted = adaptResponsesRequest({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       input: "Patch",
       tools: [{
         type: "custom",

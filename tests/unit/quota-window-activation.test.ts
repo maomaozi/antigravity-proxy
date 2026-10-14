@@ -79,7 +79,7 @@ describe("quota window activation", () => {
 
     expect(requestedUrl).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
     const headers = new Headers(requestedHeaders);
-    expect(headers.get("user-agent")).toContain("Antigravity/2.9.1");
+    expect(headers.get("user-agent")).toMatch(/^antigravity\/hub\/2\.23\.0 darwin\/(arm64|x64)$/);
     expect(headers.get("user-agent")).not.toBe("antigravity");
 
     const unused = quota?.find(item => item.groupName === "Gemini Unused");

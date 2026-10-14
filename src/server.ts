@@ -17,7 +17,7 @@ import { executeCompletion } from "./api/completion-executor";
 import { OAUTH_CONFIG } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { createWindowActivationRuntime, startQuotaWindowActivationScheduler } from "./api/window-activation";
-import { SUPPORTED_MODELS } from "./models";
+import { ANTIGRAVITY_MODEL_CATALOG, SUPPORTED_MODELS } from "./models";
 import { resolveCodexAffinityIdentity, resolveSessionIdentity } from "./session/identity";
 import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings } from "./session/store";
 import { CodexAccountManager } from "./codex/account-manager";
@@ -170,7 +170,8 @@ Bun.serve({
 
         return json({
             object: "list",
-            data: [...models, ...codexModels]
+            data: [...models, ...codexModels],
+            antigravity: ANTIGRAVITY_MODEL_CATALOG,
         });
     }
 
@@ -379,6 +380,7 @@ Bun.serve({
                     version: APP_VERSION,
                     accounts: getAccounts(),
                     supportedModels: getSupportedModelIds(),
+                    antigravity: ANTIGRAVITY_MODEL_CATALOG,
                     codexModels: getCodexModelIds(),
                     cooldowns: getCooldowns(),
                     logs: logBuffer
@@ -506,6 +508,7 @@ Bun.serve({
             accounts: getAccounts(),
             codexAccounts: codexAccountManager.listPublic(),
             supportedModels: getSupportedModelIds(),
+            antigravity: ANTIGRAVITY_MODEL_CATALOG,
             codexModels: getCodexModelIds()
         });
     }

@@ -11,11 +11,8 @@ function newSessionId() {
 }
 let session = newSessionId();
 const selections = { chat: '', image: 'gemini-3.1-flash-image' };
-const imageModels = [
-    { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image' },
-    { id: 'gemini-3.1-flash-lite-image', name: 'Gemini 3.1 Flash Lite Image' },
-    { id: 'gemini-3-pro-image', name: 'Gemini 3 Pro Image' },
-    { id: 'gemini-2.5-flash-image', name: 'Gemini 2.5 Flash Image' },
+let imageModels = [
+    { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image (Nano Banana 2)' },
 ];
 let mode = 'chat';
 function currentModel() { return $('model-select').value === '__custom__' ? $('model').value.trim() : $('model-select').value; }
@@ -47,6 +44,7 @@ function busy() {
     $('upload').setAttribute('aria-disabled', String(active || reading));
     $('upload').tabIndex = active || reading ? -1 : 0;
     $('stop').hidden = !active;
+    syncThinkingLevels();
     renderAttachments();
 }
 function populate(preferred = currentModel()) {
@@ -74,20 +72,51 @@ function populate(preferred = currentModel()) {
     $('model-status').textContent = mode === 'image'
         ? `可选择 ${imageModels.length} 个图片模型；账号可用性以实际请求为准。`
         : `已加载 ${models.length} 个聊天模型，也可输入自定义 ID。`;
+    syncThinkingLevels();
+}
+function syncThinkingLevels() {
+    const model = models.find(item => item.id === currentModel());
+    const levels = mode === 'chat' && model?.thinking_levels;
+    const select = $('effort');
+    const previous = select.value;
+    select.replaceChildren();
+    const fixed = Array.isArray(levels) && levels.length === 1;
+    const defaultOption = document.createElement('option'); defaultOption.value = '';
+    defaultOption.textContent = model?.default_thinking_level && mode === 'chat'
+        ? `${fixed ? '固定' : '模型默认'} (${model.default_thinking_level})` : '模型默认';
+    select.append(defaultOption);
+    for (const level of fixed ? [] : Array.isArray(levels) ? levels : ['low', 'medium', 'high']) {
+        const option = document.createElement('option'); option.value = level; option.textContent = level;
+        select.append(option);
+    }
+    select.value = !fixed && (!levels || levels.includes(previous)) ? previous : '';
+    if (select.selectedIndex < 0) select.value = '';
+    select.disabled = !!controller || reading || fixed;
 }
 $('model-select').onchange = () => {
     $('model-custom').hidden = $('model-select').value !== '__custom__';
     $('model').value = '';
     if (!$('model-custom').hidden) $('model').focus();
+    syncThinkingLevels();
 };
+$('model').oninput = syncThinkingLevels;
 async function loadModels() {
     $('reload').disabled = true; $('model-status').textContent = '正在加载模型…';
     try {
-        const response = await fetch('/v1/models');
+        const response = await fetch('/v1/models', { cache: 'no-store' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const result = await response.json();
         if (!Array.isArray(result.data)) throw new Error('模型列表格式错误');
-        models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim()); populate();
+        const preferred = currentModel();
+        const wasListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
+        models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && !item.disabled);
+        if (Array.isArray(result.antigravity?.imageModels)) imageModels = result.antigravity.imageModels;
+        const catalog = result.antigravity;
+        $('model-catalog-status').hidden = !catalog;
+        $('model-catalog-status').textContent = catalog
+            ? `Antigravity Hub ${catalog.clientVersion} · 目录核对于 ${catalog.verifiedAt}。${catalog.notice}` : '';
+        const stillListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
+        populate(wasListed && !stillListed ? '' : preferred);
     } catch (e) { populate(); $('model-status').textContent = `模型加载失败：${e.message}。可重试或手动输入 ID。`; }
     finally { $('reload').disabled = !!controller; }
 }

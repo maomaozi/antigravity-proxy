@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 const BASE_URL = process.env.ANTIGRAVITY_LIVE_BASE_URL;
-const MODEL = process.env.ANTIGRAVITY_LIVE_MODEL || "antigravity-gemini-3.7-flash";
+const MODEL = process.env.ANTIGRAVITY_LIVE_MODEL || "antigravity-gemini-3.8-flash";
 const liveDescribe = BASE_URL ? describe : describe.skip;
 
 async function post(body: any, affinity: string): Promise<{ response: Response; data: any }> {

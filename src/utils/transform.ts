@@ -1,6 +1,7 @@
 import { getSignature, cacheSignature } from "./cache";
 import { cleanJSONSchemaForAntigravity } from "./schema";
 import { getProxyConfig } from "../config/manager";
+import { getUnavailableModelError } from "../models";
 import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
 import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionChunk } from "../api/openai/chat";
 
@@ -82,6 +83,8 @@ export function getOriginalToolName(sanitizedName: string): string | undefined {
 export function validateCompletionRequestForGoogle(request: CompletionRequest): string | undefined {
   if (!request || typeof request !== "object") return "Request body must be a JSON object.";
   if (typeof request.model !== "string" || !request.model.trim()) return "model is required.";
+  const modelError = getUnavailableModelError(request.model);
+  if (modelError) return modelError;
   if (!Array.isArray(request.messages) || request.messages.length === 0) return "messages must be a non-empty array.";
 
   const messages = request.messages.filter(message => message?.role !== "system");
@@ -182,6 +185,8 @@ export function transformCompletionToGoogleBody(
   sessionId?: string, 
   aggressive: boolean = false
 ): any {
+  const modelError = getUnavailableModelError(request.model);
+  if (modelError) throw new Error(modelError);
   const proxyConfig = getProxyConfig();
   const rawModel = (request.model || "").toLowerCase();
   const resolvedModel = resolveModelId(request.model);
@@ -208,19 +213,11 @@ export function transformCompletionToGoogleBody(
     hasCurrentModelRoute = true;
   };
 
-  const gemini38Match = resolvedModel.match(/^gemini-3\.8-flash(?:-(low|medium|high))?$/);
-  const gemini37Match = resolvedModel.match(/^gemini-3\.7-flash(?:-(low|medium|high))?$/);
-  const gemini36Match = resolvedModel.match(/^gemini-3\.6-flash(?:-(low|medium|high))?$/);
+  const gemini38Match = resolvedModel.match(/^gemini-3\.8-flash(?:-(low|medium|high|tiered))?$/);
   const gemini35Match = resolvedModel.match(/^gemini-3\.5-flash(?:-(low|medium|high))?$/);
-  const gemini31ProMatch = resolvedModel.match(/^gemini-3\.1-pro(?:-(low|high))?$/);
 
   if (gemini38Match) {
-    routeCurrentModel("gemini-3.8-flash-tiered", gemini38Match[1] || "medium");
-  } else if (gemini37Match) {
-    routeCurrentModel("gemini-3.7-flash-tiered", gemini37Match[1] || "medium");
-  } else if (gemini36Match) {
-    const tier = gemini36Match[1] || "medium";
-    routeCurrentModel(`gemini-3.6-flash-${tier}`, tier);
+    routeCurrentModel("gemini-3.8-flash-tiered", gemini38Match[1] === "tiered" ? "high" : gemini38Match[1] || "high");
   } else if (gemini35Match) {
     const tier = gemini35Match[1] || "medium";
     const runtimeByTier: Record<string, string> = {
@@ -229,9 +226,6 @@ export function transformCompletionToGoogleBody(
       high: "gemini-3-flash-agent"
     };
     routeCurrentModel(runtimeByTier[tier], tier);
-  } else if (gemini31ProMatch) {
-    const tier = gemini31ProMatch[1] || "high";
-    routeCurrentModel(tier === "low" ? "gemini-3.1-pro-low" : "gemini-pro-agent", tier);
   } else if (resolvedModel === "claude-sonnet-4-6-thinking") {
     routeCurrentModel("claude-sonnet-4-6");
   } else if (resolvedModel === "claude-opus-4-6-thinking") {
@@ -267,14 +261,7 @@ export function transformCompletionToGoogleBody(
       "claude-opus-4-6-thinking",
       "gpt-oss-120b-medium",
       "gemini-3.8-flash-tiered",
-      "gemini-3.7-flash-tiered",
-      "gemini-3.6-flash-medium",
       "gemini-3.5-flash-low",
-      "gemini-pro-agent",
-      "gemini-3.1-pro-high",
-      "gemini-3.1-pro-low",
-      "gemini-3.1-pro",
-      "gemini-3.1-pro-preview",
       "gemini-3-flash",
       "gemini-3-pro-high", 
       "gemini-3-pro-low",
@@ -316,9 +303,7 @@ export function transformCompletionToGoogleBody(
        }
        
        if (isNative) {
-           if (baseModel.includes("gemini-3.1-pro")) {
-               googleModel = `gemini-3.1-pro-${extractedTier || "high"}`;
-           } else if (baseModel.includes("gemini-3-pro")) {
+           if (baseModel.includes("gemini-3-pro")) {
                // Respect extracted tier for Gemini 3 Pro, fallback to high
                googleModel = `gemini-3-pro-${extractedTier || "high"}`;
            } else if (baseModel.includes("gemini-3-flash")) {
@@ -477,10 +462,7 @@ export function transformCompletionToGoogleBody(
 
   const isThinkingModel = rawModel.includes("-thinking") ||
                           rawModel.includes("gemini-3.8-flash") ||
-                          rawModel.includes("gemini-3.7-flash") ||
-                          rawModel.includes("gemini-3.6-flash") ||
-                          rawModel.includes("gemini-3.5-flash") ||
-                          rawModel.includes("gemini-3.1-pro");
+                          rawModel.includes("gemini-3.5-flash");
   const isGemini3ProtocolModel = rawModel.includes("gemini-3");
   let thinkingBudget = request.thinkingBudget;
 

@@ -14,7 +14,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Multi-Agent Support**: Specifically designed to work with **Claude Code**, **OpenCode**, and other agentic frameworks.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
-- **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for inactive Gemini or Codex 5-hour windows. Each inactive account receives one minimal request to start its window; Gemini activation uses 3.7 Flash with an output limit of 100 tokens. The first check runs 10 minutes after server startup.
+- **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for inactive Gemini or Codex 5-hour windows. Each inactive account receives one minimal request to start its window; Gemini activation uses 3.8 Flash with an output limit of 100 tokens. The first check runs 10 minutes after server startup.
 - **Dual-Pool Routing**:
   - **CLI Pool**: Routes to production Gemini endpoints.
   - **Sandbox Pool**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models.
@@ -361,7 +361,7 @@ The proxy supports OpenAI-compatible `response_format` with the following curren
 | Model | `json_object` | `json_schema` |
 | --- | --- | --- |
 | Claude Opus/Sonnet | Supported via an unconstrained upstream object schema | Supported |
-| Gemini 3.8 / 3.7 Flash / 3.1 Pro | Not reliably enforced without an explicit schema | Supported for the upstream schema subset |
+| Gemini 3.8 / 3.5 Flash | Not reliably enforced without an explicit schema | Supported for the upstream schema subset |
 | GPT-OSS | Not supported by the current upstream path | Not supported by the current upstream path |
 
 For Claude, structured-output requests are mapped at the protocol level without modifying the user prompt. Claude thinking is disabled for these requests because the upstream API cannot combine thinking with schema-forced output.
@@ -403,26 +403,6 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
                     "high": { "reasoningEffort": "high" }
                 }
             },
-            "antigravity-gemini-3.7-flash": {
-                "name": "Gemini 3.7 Flash (Antigravity)",
-                "limit": { "context": 1048576, "output": 65536 },
-                "reasoning": true,
-                "variants": {
-                    "low": { "reasoningEffort": "low" },
-                    "medium": { "reasoningEffort": "medium" },
-                    "high": { "reasoningEffort": "high" }
-                }
-            },
-            "antigravity-gemini-3.6-flash": {
-                "name": "Gemini 3.6 Flash (Antigravity)",
-                "limit": { "context": 1048576, "output": 65536 },
-                "reasoning": true,
-                "variants": {
-                    "low": { "reasoningEffort": "low" },
-                    "medium": { "reasoningEffort": "medium" },
-                    "high": { "reasoningEffort": "high" }
-                }
-            },
             "antigravity-gemini-3.5-flash": {
                 "name": "Gemini 3.5 Flash (Antigravity)",
                 "limit": { "context": 1048576, "output": 65536 },
@@ -430,15 +410,6 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
                 "variants": {
                     "low": { "reasoningEffort": "low" },
                     "medium": { "reasoningEffort": "medium" },
-                    "high": { "reasoningEffort": "high" }
-                }
-            },
-            "antigravity-gemini-3.1-pro": {
-                "name": "Gemini 3.1 Pro (Antigravity)",
-                "limit": { "context": 1048576, "output": 65535 },
-                "reasoning": true,
-                "variants": {
-                    "low": { "reasoningEffort": "low" },
                     "high": { "reasoningEffort": "high" }
                 }
             },
@@ -459,6 +430,21 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
 }
 ```
 
+### Current Antigravity Catalog
+
+The account catalog was verified on **2026-10-14** using Antigravity Hub
+**2.23.0**. `/v1/models`, the dashboard, and Playground share the updated
+catalog. Gemini 3.8 Flash defaults to **High**; Gemini 3.5 Flash remains
+available as a compatibility model. Playground also lists the verified image
+model, `gemini-3.1-flash-image` (Nano Banana 2).
+
+Gemini 3.6 Flash, 3.7 Flash, and 3.1 Pro are absent from the verified accounts;
+their old IDs return HTTP 400 with a replacement suggestion. Gemini 4 Argon
+is marked disabled upstream and is shown as unavailable rather than offered
+for selection. Availability can differ by account and subscription tier.
+The `antigravity` metadata in `/v1/models` records the verification date,
+client version, image models, and availability notice; it is a dated snapshot.
+
 ### Thinking Levels
 
 In OpenCode, use `Ctrl+T` (the `variant_cycle` keybind) to switch between the
@@ -471,17 +457,14 @@ thinking level to the model ID:
 
 | Model | Levels | Default |
 | --- | --- | --- |
-| `antigravity-gemini-3.8-flash` | `low`, `medium`, `high` | `medium` |
-| `antigravity-gemini-3.7-flash` | `low`, `medium`, `high` | `medium` |
-| `antigravity-gemini-3.6-flash` | `low`, `medium`, `high` | `medium` |
+| `antigravity-gemini-3.8-flash` | `low`, `medium`, `high` | `high` |
 | `antigravity-gemini-3.5-flash` | `low`, `medium`, `high` | `medium` |
-| `antigravity-gemini-3.1-pro` | `low`, `high` | `high` |
 | `antigravity-claude-sonnet-4-6-thinking` | Fixed thinking | Thinking |
 | `antigravity-claude-opus-4-6-thinking` | Fixed thinking | Thinking |
 | `antigravity-gpt-oss-120b` | Fixed | `medium` |
 
 For example, use `antigravity-gemini-3.8-flash-high` or
-`antigravity-gemini-3.1-pro-low`. The base model ID selects the default shown
+`antigravity-gemini-3.8-flash-low`. The base model ID selects the default shown
 above.
 
 ## How It Works

@@ -1,4 +1,5 @@
 import { type DeviceFingerprint } from "../auth/types";
+import { ANTIGRAVITY_CLIENT_VERSION } from "../models";
 
 export const OAUTH_CONFIG = {
   clientId: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
@@ -14,9 +15,6 @@ export const OAUTH_CONFIG = {
   ],
   redirectUri: process.env.OAUTH_REDIRECT_URI || `http://localhost:${process.env.PORT || "3000"}/oauth-callback`
 };
-
-// Current Gemini Flash models are gated by the Antigravity client generation.
-const ANTIGRAVITY_VERSION = "2.9.1";
 
 const PLATFORMS = ["darwin/x64", "darwin/arm64"] as const;
 
@@ -92,7 +90,7 @@ export function generateFingerprint(email?: string): DeviceFingerprint {
   const sqmId = crypto.randomUUID();
 
   return {
-    userAgent: `antigravity/${ANTIGRAVITY_VERSION} ${platform}`,
+    userAgent: `antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} ${platform}`,
     quotaUser: email ? generateStableQuotaUser(email) : generateQuotaUser(),
     deviceId: email ? generateStableQuotaUser(email).replace('device-', '') : generateDeviceId(),
     platform: platform,
@@ -119,7 +117,7 @@ export function getImpersonationHeaders(accessToken: string, fingerprint?: Devic
   const headers: Record<string, string> = {
     "Authorization": `Bearer ${accessToken}`,
     "Content-Type": "application/json",
-    "User-Agent": `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Antigravity/${ANTIGRAVITY_VERSION} Chrome/138.0.7204.235 Electron/37.3.1 Safari/537.36`,
+    "User-Agent": `antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} ${fp.platform === "darwin/x64" ? "darwin/x64" : "darwin/arm64"}`,
     "X-Goog-Api-Client": fp.apiClient,
     "X-Goog-QuotaUser": fp.quotaUser,
     "X-Client-Device-Id": fp.deviceId,

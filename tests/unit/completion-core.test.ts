@@ -21,7 +21,7 @@ beforeAll(async () => {
 describe("canonical completion core", () => {
   test("Chat adapter preserves the existing complex Google request contract", () => {
     const body = {
-      model: "antigravity-gemini-3.7-flash-high",
+      model: "antigravity-gemini-3.8-flash-high",
       messages: [
         { role: "system", content: "Be precise." },
         {
@@ -123,7 +123,7 @@ describe("canonical completion core", () => {
         thoughtsTokenCount: 11,
         totalTokenCount: 118,
       },
-    }, "antigravity-gemini-3.7-flash", "chatcmpl-test", false);
+    }, "antigravity-gemini-3.8-flash", "chatcmpl-test", false);
 
     expect(chunk).not.toBeNull();
     expect(chunk?.reasoningDelta).toBe("thinking");
@@ -353,7 +353,7 @@ import { validateCompletionRequestForGoogle } from "../../src/utils/transform";
 describe("canonical completion validation", () => {
   test("validates tool call/result ordering after Chat adaptation", () => {
     const valid = adaptChatCompletionRequest({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "run both" },
         { role: "assistant", tool_calls: [
@@ -368,7 +368,7 @@ describe("canonical completion validation", () => {
     expect(validateCompletionRequestForGoogle(valid)).toBeUndefined();
 
     const invalid = adaptChatCompletionRequest({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "run both" },
         { role: "assistant", tool_calls: [

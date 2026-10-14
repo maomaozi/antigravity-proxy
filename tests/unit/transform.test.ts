@@ -51,13 +51,13 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("uses OpenAI reasoning_effort for the thinking level", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
-      reasoning_effort: "high",
+      model: "antigravity-gemini-3.8-flash",
+      reasoning_effort: "medium",
       messages: [{ role: "user", content: "Hi" }]
     }, "p", false, "us-central1");
 
-    expect(result.model).toBe("gemini-3.7-flash-tiered");
-    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("high");
+    expect(result.model).toBe("gemini-3.8-flash-tiered");
+    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("medium");
     expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
     expect(result.request.generationConfig.temperature).toBeUndefined();
     expect(result.request.generationConfig.topP).toBeUndefined();
@@ -135,7 +135,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("Gemini JSON object response format does not modify the prompt", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Return JSON" }],
       response_format: { type: "json_object" }
     }, "p", false, "us-central1");
@@ -163,7 +163,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("JSON schema response format", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Return JSON" }],
       response_format: {
         type: "json_schema",
@@ -235,7 +235,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("Text response format leaves generation config unchanged", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Return text" }],
       response_format: { type: "text" }
     }, "p", false, "us-central1");
@@ -246,7 +246,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("caps Gemini 3 output tokens at the model protocol limit", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash-high",
+      model: "antigravity-gemini-3.8-flash-high",
       max_tokens: 999999,
       messages: [{ role: "user", content: "Hi" }]
     }, "p", false, "us-central1");
@@ -277,25 +277,15 @@ describe("Unit Tests: transformToGoogleBody", () => {
   });
 
   test.each([
-    ["antigravity-gemini-3.8-flash", "gemini-3.8-flash-tiered", "medium"],
+    ["antigravity-gemini-3.8-flash", "gemini-3.8-flash-tiered", "high"],
+    ["gemini-3.8-flash-tiered", "gemini-3.8-flash-tiered", "high"],
     ["antigravity-gemini-3.8-flash-low", "gemini-3.8-flash-tiered", "low"],
     ["antigravity-gemini-3.8-flash-medium", "gemini-3.8-flash-tiered", "medium"],
     ["antigravity-gemini-3.8-flash-high", "gemini-3.8-flash-tiered", "high"],
-    ["antigravity-gemini-3.7-flash", "gemini-3.7-flash-tiered", "medium"],
-    ["antigravity-gemini-3.7-flash-low", "gemini-3.7-flash-tiered", "low"],
-    ["antigravity-gemini-3.7-flash-medium", "gemini-3.7-flash-tiered", "medium"],
-    ["antigravity-gemini-3.7-flash-high", "gemini-3.7-flash-tiered", "high"],
-    ["antigravity-gemini-3.6-flash", "gemini-3.6-flash-medium", "medium"],
-    ["antigravity-gemini-3.6-flash-low", "gemini-3.6-flash-low", "low"],
-    ["antigravity-gemini-3.6-flash-medium", "gemini-3.6-flash-medium", "medium"],
-    ["antigravity-gemini-3.6-flash-high", "gemini-3.6-flash-high", "high"],
     ["antigravity-gemini-3.5-flash", "gemini-3.5-flash-low", "medium"],
     ["antigravity-gemini-3.5-flash-low", "gemini-3.5-flash-extra-low", "low"],
     ["antigravity-gemini-3.5-flash-medium", "gemini-3.5-flash-low", "medium"],
-    ["antigravity-gemini-3.5-flash-high", "gemini-3-flash-agent", "high"],
-    ["antigravity-gemini-3.1-pro", "gemini-pro-agent", "high"],
-    ["antigravity-gemini-3.1-pro-low", "gemini-3.1-pro-low", "low"],
-    ["antigravity-gemini-3.1-pro-high", "gemini-pro-agent", "high"]
+    ["antigravity-gemini-3.5-flash-high", "gemini-3-flash-agent", "high"]
   ])("maps current Gemini model %s", (model, runtimeModel, thinkingLevel) => {
     const result = transformToGoogleBody({
       model,
@@ -304,6 +294,20 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
     expect(result.model).toBe(runtimeModel);
     expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe(thinkingLevel);
+  });
+
+  test.each([
+    "antigravity-gemini-3.7-flash-high",
+    "openai/antigravity-gemini-3.6-flash",
+    "antigravity/gemini-3.1-pro-low",
+    "gemini-3.1-pro-preview",
+    "gemini-pro-agent",
+    "GEMINI-4-ARGON-DISABLED",
+    "antigravity-gemini-4-argon",
+  ])("rejects unavailable model %s before calling upstream", (model) => {
+    const body = { model, messages: [{ role: "user", content: "Hi" }] };
+    expect(validateOpenAIRequestForGoogle(body)).toContain("/v1/models");
+    expect(() => transformToGoogleBody(body, "p", false, "us-central1")).toThrow("/v1/models");
   });
 
   test.each([
@@ -375,7 +379,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
   test("restores original Gemini tool IDs and thought signatures", () => {
     const syntheticId = "sig:c2lnbmF0dXJl:call_abc:123";
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "Run the tool" },
         {
@@ -405,7 +409,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("prefers an explicit Gemini thought signature", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [{
         role: "assistant",
         content: null,
@@ -426,7 +430,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
   test("groups parallel function responses and preserves call IDs and names", () => {
     const firstId = "sig:first-signature:call_first";
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.1-pro",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "Look up both" },
         {
@@ -442,7 +446,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       ]
     }, "p", false, "us-central1");
 
-    expect(result.model).toBe("gemini-pro-agent");
+    expect(result.model).toBe("gemini-3.8-flash-tiered");
     expect(result.request.contents).toHaveLength(3);
     const calls = result.request.contents[1].parts;
     expect(calls[0].functionCall.id).toBe("call_first");
@@ -457,7 +461,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("keeps sequential function response turns separate", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "Run in sequence" },
         { role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "first", arguments: "{}" } }] },
@@ -477,7 +481,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
   test("sanitizes colliding and overlong function names deterministically", () => {
     const longName = `9.${"x".repeat(140)}`;
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Use a tool" }],
       tools: ["same.name", "same:name", longName].map(name => ({
         type: "function",
@@ -493,7 +497,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
 
   test("keeps supported Schema constraints and resolves local JSON Schema refs", () => {
     const result = transformToGoogleBody({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Use a tool" }],
       tools: [{
         type: "function",
@@ -533,7 +537,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     config.features.googleSearchGrounding = true;
     try {
       const result = transformToGoogleBody({
-        model: "antigravity-gemini-3.7-flash",
+        model: "antigravity-gemini-3.8-flash",
         messages: [{ role: "user", content: "Search" }]
       }, "p", false, "us-central1");
       expect(result.request.tools).toContainEqual({ googleSearch: {} });
@@ -591,7 +595,7 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
           }]
         }
       }]
-    }, "gemini-3.7-flash");
+    }, "gemini-3.8-flash");
 
     const toolCall = result.choices[0].delta.tool_calls[0];
     expect(toolCall.id).toBe("sig:signature-value:call_abc123");
@@ -608,7 +612,7 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
           ]
         }
       }]
-    }, "gemini-3.7-flash");
+    }, "gemini-3.8-flash");
 
     expect(result.choices[0].delta.tool_calls[0].id).toBe("sig:signature-a:call_a");
     expect(result.choices[0].delta.tool_calls[1].id).toBe("call_b");
@@ -631,7 +635,7 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
         thoughtsTokenCount: 20,
         totalTokenCount: 1032,
       }
-    }, "gemini-3.7-flash", "req-usage");
+    }, "gemini-3.8-flash", "req-usage");
 
     expect(result.usage).toEqual({
       prompt_tokens: 1000,
@@ -685,7 +689,7 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
     });
 
     await new Response(source.pipeThrough(
-      createOpenAIStreamTransformer("gemini-3.7-flash", "req-stream", false, sessionId)
+      createOpenAIStreamTransformer("gemini-3.8-flash", "req-stream", false, sessionId)
     )).text();
     expect(getSignature(sessionId, "reasoning")).toBe("late-signature");
   });
@@ -704,7 +708,7 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
     });
 
     const output = await new Response(source.pipeThrough(
-      createOpenAIStreamTransformer("gemini-3.7-flash", "req-indexes", false)
+      createOpenAIStreamTransformer("gemini-3.8-flash", "req-indexes", false)
     )).text();
     const rawEvents = output.trim().split("\n\n");
     expect(rawEvents.at(-1)).toBe("data: [DONE]");
@@ -716,7 +720,7 @@ describe("Unit Tests: transformGoogleEventToOpenAI", () => {
 describe("Unit Tests: Google request validation", () => {
   test("rejects assistant prefill before contacting Google", () => {
     expect(validateOpenAIRequestForGoogle({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Hi" }, { role: "assistant", content: "prefix" }]
     })).toContain("cannot end");
   });
@@ -730,7 +734,7 @@ describe("Unit Tests: Google request validation", () => {
 
   test("accepts name-less parallel responses that match pending call IDs", () => {
     expect(validateOpenAIRequestForGoogle({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "Run both" },
         { role: "assistant", tool_calls: [
@@ -745,7 +749,7 @@ describe("Unit Tests: Google request validation", () => {
 
   test("rejects missing parallel responses and malformed arguments", () => {
     expect(validateOpenAIRequestForGoogle({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "Run both" },
         { role: "assistant", tool_calls: [
@@ -758,7 +762,7 @@ describe("Unit Tests: Google request validation", () => {
     })).toContain("call_b");
 
     expect(validateOpenAIRequestForGoogle({
-      model: "antigravity-gemini-3.7-flash",
+      model: "antigravity-gemini-3.8-flash",
       messages: [
         { role: "user", content: "Run" },
         { role: "assistant", tool_calls: [
