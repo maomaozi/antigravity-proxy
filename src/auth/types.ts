@@ -7,8 +7,6 @@ export interface DeviceFingerprint {
   ideType: string;
   platformName: string;
   sessionToken: string;
-  cliUserAgent: string;
-  cliApiClient: string;
   clientMetadata?: {
     ideType: string;
     platform: string;

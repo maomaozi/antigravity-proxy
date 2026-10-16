@@ -175,7 +175,7 @@ describe("Responses API request adapter", () => {
     expect(request.webSearch).toBe(true);
     expect(request.tools).toHaveLength(3);
 
-    const google = transformCompletionToGoogleBody(request, "project", false, "", "session");
+    const google = transformCompletionToGoogleBody(request, "project", "", "session");
     const declarations = google.request.tools.find((tool: any) => tool.functionDeclarations)?.functionDeclarations ?? [];
     expect(declarations).toHaveLength(3);
     expect(google.request.tools.some((tool: any) => tool.googleSearch)).toBe(false);
@@ -189,7 +189,7 @@ describe("Responses API request adapter", () => {
     });
     expect(request.tools).toBeUndefined();
     expect(request.webSearch).toBe(true);
-    const google = transformCompletionToGoogleBody(request, "project", false, "", "session");
+    const google = transformCompletionToGoogleBody(request, "project", "", "session");
     expect(google.request.tools).toEqual([{ googleSearch: {} }]);
   });
 
@@ -252,7 +252,7 @@ describe("Responses API request adapter", () => {
       { role: "user", content: "Summarize" },
     ]);
 
-    const google = transformCompletionToGoogleBody(request, "project", false, "", "session");
+    const google = transformCompletionToGoogleBody(request, "project", "", "session");
     const calls = google.request.contents[1].parts.filter((part: any) => part.functionCall);
     const outputs = google.request.contents[2].parts.filter((part: any) => part.functionResponse);
     expect(calls[0].functionCall.id).toBe("call_a");
@@ -290,7 +290,7 @@ describe("Responses API request adapter", () => {
       toolCallId: "call_view_image",
     });
 
-    const google = transformCompletionToGoogleBody(request, "project", false, "", "session");
+    const google = transformCompletionToGoogleBody(request, "project", "", "session");
     expect(google.request.contents[2].parts).toEqual([{
       functionResponse: {
         id: "call_view_image",

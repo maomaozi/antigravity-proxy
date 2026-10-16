@@ -180,7 +180,6 @@ function resolveModelId(modelId: string): string {
 export function transformCompletionToGoogleBody(
   request: CompletionRequest,
   projectId: string, 
-  isCli: boolean, 
   location: string, 
   sessionId?: string, 
   aggressive: boolean = false
@@ -276,28 +275,7 @@ export function transformCompletionToGoogleBody(
   
   const isNative = (nativelySupported.includes(googleModel) || nativelySupported.includes(baseModel));
 
-  if (!hasCurrentModelRoute && isCli) {
-      if (!googleModel.includes("claude")) {
-          // Standardize Gemini 3 CLI models to use -preview suffix
-          if (googleModel.includes("gemini-3")) {
-              googleModel = baseModel; // Strip tiers
-              if (!googleModel.endsWith("-preview")) {
-                  googleModel = `${googleModel}-preview`;
-              }
-          } else if (googleModel.includes("gpt")) {
-              if (googleModel.includes("thinking")) {
-                   googleModel = "gemini-2.0-flash-thinking-exp";
-              } else {
-                   googleModel = "gemini-2.0-pro-exp";
-              }
-          } else {
-               googleModel = baseModel;
-          }
-       } else {
-           googleModel = baseModel;
-           if (googleModel === "claude-sonnet-4-5") googleModel = "claude-sonnet-4-5-thinking";
-       }
-   } else if (!hasCurrentModelRoute) {
+  if (!hasCurrentModelRoute) {
        if (googleModel.endsWith("-preview")) {
            googleModel = googleModel.replace("-preview", "");
        }
@@ -621,7 +599,6 @@ export function transformCompletionToGoogleBody(
 export function transformToGoogleBody(
   openaiBody: any,
   projectId: string,
-  isCli: boolean,
   location: string,
   sessionId?: string,
   aggressive: boolean = false,
@@ -629,7 +606,6 @@ export function transformToGoogleBody(
   return transformCompletionToGoogleBody(
     adaptChatCompletionRequest(openaiBody),
     projectId,
-    isCli,
     location,
     sessionId,
     aggressive,

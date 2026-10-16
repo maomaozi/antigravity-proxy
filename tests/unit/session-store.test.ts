@@ -46,14 +46,14 @@ describe("session binding store", () => {
       accountEmail: "fallback@example.com",
       model: "claude-sonnet-4-6",
       modelFamily: "Claude Sonnet 4.6",
-      pool: "cli",
+      pool: "sandbox",
       projectId: "project-2",
       endpoint: "https://two.example.test/rpc",
     });
     expect(updated.id).toBe(first.id);
     expect(updated.requestCount).toBe(2);
     expect(updated.accountEmail).toBe("fallback@example.com");
-    expect(updated.pool).toBe("cli");
+    expect(updated.pool).toBe("sandbox");
   });
 
   test("keeps separate model bindings and supports search and deletion", () => {
@@ -70,7 +70,7 @@ describe("session binding store", () => {
       accountEmail: "account@example.com",
       model: "model-b",
       modelFamily: "Family B",
-      pool: "cli",
+      pool: "sandbox",
     });
 
     expect(store.list().total).toBe(2);
@@ -171,7 +171,7 @@ describe("session binding store", () => {
       accountEmail: "second@example.com",
       model: "model-b",
       modelFamily: "Family B",
-      pool: "cli",
+      pool: "sandbox",
       streamed: true,
       inputTokens: 200,
       outputTokens: 20,
@@ -280,7 +280,7 @@ describe("Codex session statistics compatibility", () => {
     expect(store.listRequestTokenUsage({ sessionKey: identity.key }).records[0].requestId).toBe("compact-1");
   });
 
-  test("migrates legacy cli/sandbox CHECK constraints without losing historical rows", async () => {
+  test("migrates legacy pool CHECK constraints without losing historical rows", async () => {
     const { Database } = await import("bun:sqlite");
     const directory = mkdtempSync(join(tmpdir(), "antigravity-codex-migration-test-"));
     tempDirectories.push(directory);
@@ -296,7 +296,7 @@ describe("Codex session statistics compatibility", () => {
         account_email TEXT NOT NULL,
         model TEXT NOT NULL,
         model_family TEXT NOT NULL,
-        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox')),
+        pool TEXT NOT NULL CHECK (pool IN ('sandbox')),
         project_id TEXT,
         endpoint TEXT,
         created_at INTEGER NOT NULL,
@@ -316,7 +316,7 @@ describe("Codex session statistics compatibility", () => {
         model TEXT NOT NULL,
         model_family TEXT NOT NULL,
         upstream_model TEXT,
-        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox')),
+        pool TEXT NOT NULL CHECK (pool IN ('sandbox')),
         endpoint TEXT,
         streamed INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,

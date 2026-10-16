@@ -17,7 +17,7 @@ import { collectCompletionStream } from "../core/completion";
 import type { SessionIdentity } from "../session/identity";
 import { getSessionBinding, recordRequestTokenUsage, recordSessionBinding } from "../session/store";
 import { parseGoogleError } from "../utils/errors";
-import { getGeminiCliHeaders, getImpersonationHeaders } from "../utils/headers";
+import { getImpersonationHeaders } from "../utils/headers";
 import {
   createCompletionStreamTransformer,
   transformCompletionToGoogleBody,
@@ -103,7 +103,7 @@ export interface CompletionAttempt {
 
 export function buildCompletionFailure(
   model: string,
-  pool: "cli" | "sandbox",
+  pool: "sandbox",
   attempts: number,
   attemptLogs: CompletionAttempt[],
 ): CompletionExecution {
@@ -144,10 +144,6 @@ export function buildCompletionFailure(
   return jsonError(status, { error: { message, type, code, attempts: attemptLogs } }, attempts);
 }
 
-export function isExplicitAntigravityModel(model: string): boolean {
-  return /(?:^|\/)antigravity(?:-|\/)/i.test(model);
-}
-
 export async function executeCompletion({
   request,
   sessionIdentity,
@@ -157,29 +153,6 @@ export async function executeCompletion({
 }: CompletionExecutionInput): Promise<CompletionExecution> {
   const modelLower = request.model.toLowerCase();
   const isClaudeModel = modelLower.includes("claude");
-  const isGptModel = modelLower.includes("gpt");
-
-  let useCliPool: boolean;
-  if (isClaudeModel || isGptModel) {
-    useCliPool = false;
-  } else {
-    const isAntigravityThinking = modelLower.includes("antigravity")
-      && (modelLower.includes("thinking-high")
-        || modelLower.includes("thinking-medium")
-        || modelLower.includes("thinking-low"));
-    const isExplicitAntigravity = isExplicitAntigravityModel(modelLower);
-    const isExplicitSandboxModel = isAntigravityThinking
-      || isExplicitAntigravity
-      || modelLower.includes("image");
-
-    useCliPool = !isExplicitSandboxModel && (
-      modelLower.includes("-preview")
-      || modelLower.includes("gemini-2.0")
-      || modelLower.includes("gemini-2.5")
-      || (modelLower.includes("gemini-3") && !modelLower.includes("flash"))
-    );
-  }
-
   let attempts = 0;
   let aggressive = false;
   const config = getProxyConfig();
@@ -189,19 +162,9 @@ export async function executeCompletion({
   const attemptLogs: CompletionAttempt[] = [];
   let systemicErrorCount = 0;
 
-  // Explicit Antigravity models, GPT models, and Claude models use the sandbox pool only.
-  const rawModel = modelLower.replace(/^antigravity-/, "");
-  const isSandboxOnlyModel = isExplicitAntigravityModel(modelLower)
-    || rawModel.includes("gpt")
-    || rawModel.includes("claude");
-  const isCliOnlyModel = false;
-
   const sessionId = sessionIdentity.key;
   const routingKey = sessionIdentity.source === "thread-id" ? sessionIdentity.id : undefined;
   const existingBinding = getSessionBinding(sessionIdentity.key, request.model);
-  if (existingBinding && !isSandboxOnlyModel && !isCliOnlyModel) {
-    useCliPool = existingBinding.pool === "cli";
-  }
   console.log(
     `[Session] ${sessionIdentity.source} ${sessionIdentity.id.slice(0, 24)}`
       + `${sessionIdentity.id.length > 24 ? "..." : ""}`
@@ -219,17 +182,10 @@ export async function executeCompletion({
     if (attempts > 1) {
       const delayMs = Math.min(500 * attempts, 3000);
       await new Promise(resolve => setTimeout(resolve, delayMs));
-
-      if (!isSandboxOnlyModel && !isCliOnlyModel && lastStatus !== 503) {
-        useCliPool = !useCliPool;
-        console.log(`[Switch] Switching to ${useCliPool ? "CLI" : "Sandbox"} pool for attempt ${attempts}`);
-      } else {
-        console.log(`[Switch] Skipping pool switch for ${isCliOnlyModel ? "CLI-only" : "sandbox-only"} model (attempt ${attempts})`);
-      }
     }
 
     let account = await getBestAccount(
-      useCliPool ? "cli" : "sandbox",
+      "sandbox",
       request.model,
       sessionIdentity.key,
       triedEmails,
@@ -238,19 +194,9 @@ export async function executeCompletion({
       signal,
     );
 
-    if (!account && !isSandboxOnlyModel && !isCliOnlyModel) {
-      console.log(`[Manager] No READY accounts in ${useCliPool ? "CLI" : "Sandbox"} pool, trying the other pool first...`);
-      const otherPool = useCliPool ? "sandbox" : "cli";
-      account = await getBestAccount(otherPool, request.model, sessionIdentity.key, triedEmails, true, routingKey, signal);
-      if (account) {
-        useCliPool = !useCliPool;
-        console.log(`[Switch] Found ready account in ${useCliPool ? "CLI" : "Sandbox"} pool.`);
-      }
-    }
-
     if (!account) {
       account = await getBestAccount(
-        useCliPool ? "cli" : "sandbox",
+        "sandbox",
         request.model,
         sessionIdentity.key,
         triedEmails,
@@ -261,29 +207,21 @@ export async function executeCompletion({
     }
 
     if (!account || !account.accessToken) {
-      // Selection already tried alternate pools and rescue. Preserve why it failed.
+      // Selection already tried ready accounts and rescue. Preserve why it failed.
       break;
     }
 
     const sandboxEndpoints = Array.isArray(config.endpoints.sandbox)
       ? config.endpoints.sandbox
       : [config.endpoints.sandbox];
-    const cliEndpoints = Array.isArray(config.endpoints.cli)
-      ? config.endpoints.cli
-      : [config.endpoints.cli];
 
     let googleUrl: string;
     const boundEndpointIsUsable = attempts === 1
-      && existingBinding?.pool === (useCliPool ? "cli" : "sandbox")
+      && existingBinding?.pool === "sandbox"
       && !!existingBinding.endpoint
-      && (useCliPool ? cliEndpoints : sandboxEndpoints).includes(existingBinding.endpoint);
+      && sandboxEndpoints.includes(existingBinding.endpoint);
     if (boundEndpointIsUsable) {
       googleUrl = existingBinding.endpoint!;
-    } else if (useCliPool) {
-      const cliEndpointIndex = isClaudeModel
-        ? cliEndpoints.length - 1
-        : Math.min(attempts - 1, cliEndpoints.length - 1);
-      googleUrl = cliEndpoints[cliEndpointIndex];
     } else {
       const sandboxEndpointIndex = Math.min(attempts - 1, sandboxEndpoints.length - 1);
       googleUrl = sandboxEndpoints[sandboxEndpointIndex];
@@ -304,20 +242,16 @@ export async function executeCompletion({
     const googleBody = transformCompletionToGoogleBody(
       request,
       effectiveProjectId,
-      useCliPool,
       "",
       sessionId,
       aggressive,
     );
 
-    const isClaudeModelTarget = googleBody.model.toLowerCase().includes("claude");
-    const headers = (useCliPool && !isClaudeModelTarget)
-      ? getGeminiCliHeaders(account.accessToken!, account.fingerprint!)
-      : getImpersonationHeaders(account.accessToken!, account.fingerprint!, googleBody.model);
+    const headers = getImpersonationHeaders(account.accessToken!, account.fingerprint!, googleBody.model);
 
     console.log(
       `[Request] Model: ${request.model} | Account: ${account.email} | Project: ${effectiveProjectId}`
-        + ` | Attempt: ${attempts}/${maxAttempts} | Pool: ${useCliPool ? "CLI" : "Sandbox"}`
+        + ` | Attempt: ${attempts}/${maxAttempts} | Pool: Sandbox`
         + ` | Endpoint: ${googleUrl.split("/")[2]} | Target Model: ${googleBody.model}`,
     );
 
@@ -392,8 +326,8 @@ export async function executeCompletion({
 
         if (status === 403 || status === 404) {
           if (parsedError.isChallengeRequired) {
-            console.log(`[Auth] ${parsedError.reason} for ${account.email}, flagging pool ${useCliPool ? "cli" : "sandbox"} for family ${getFamilyName(request.model)}.`);
-            flagAccountChallenge(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(request.model), {
+            console.log(`[Auth] ${parsedError.reason} for ${account.email}, flagging pool sandbox for family ${getFamilyName(request.model)}.`);
+            flagAccountChallenge(account.email, "sandbox", getFamilyName(request.model), {
               type: "CAPTCHA",
               url: parsedError.validationUrl || "https://cloud.google.com/gemini/docs/codeassist/request-license",
               reason: parsedError.reason,
@@ -404,10 +338,10 @@ export async function executeCompletion({
           if (parsedError.isModelUnsupported) {
             console.log(`[Model] Unsupported model ${request.model} for ${account.email}, marking capability.`);
             flagModelUnsupported(account.email, request.model);
-            await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox", status);
-            return buildCompletionFailure(request.model, useCliPool ? "cli" : "sandbox", attempts, attemptLogs);
+            await updateAccountUsage(account.email, false, request.model, "sandbox", status);
+            return buildCompletionFailure(request.model, "sandbox", attempts, attemptLogs);
           }
-          await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox", status);
+          await updateAccountUsage(account.email, false, request.model, "sandbox", status);
           return jsonError(status, {
             error: { message: `Access denied: ${parsedError.reason}`, type: "access_denied", code: status.toString() },
           }, attempts);
@@ -439,7 +373,7 @@ export async function executeCompletion({
           console.log(`[Skip] Account ${account.email} transiently limited (${resetSeconds}s), rotating...`);
           account.consecutiveFailures = (account.consecutiveFailures || 0) + 1;
           if (account.consecutiveFailures >= 2) {
-            await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox", 429);
+            await updateAccountUsage(account.email, false, request.model, "sandbox", 429);
           }
           triedEmails.push(account.email);
           continue;
@@ -470,10 +404,10 @@ export async function executeCompletion({
         }
         aggressive = false;
 
-        await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox", status);
+        await updateAccountUsage(account.email, false, request.model, "sandbox", status);
         if (status === 429) {
           const cooldownDuration = parsedError.resetSeconds ? `${Math.ceil(parsedError.resetSeconds)}s` : undefined;
-          markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(request.model), cooldownDuration);
+          markCooldown(account.email, "sandbox", getFamilyName(request.model), cooldownDuration);
         }
         continue;
       }
@@ -500,7 +434,7 @@ export async function executeCompletion({
             model: request.model,
             modelFamily: getFamilyName(request.model),
             upstreamModel: googleBody.model,
-            pool: useCliPool ? "cli" : "sandbox",
+            pool: "sandbox",
             endpoint: googleUrl,
             streamed: true,
             inputTokens: usage.inputTokens,
@@ -537,11 +471,11 @@ export async function executeCompletion({
           accountEmail: account.email,
           model: request.model,
           modelFamily: getFamilyName(request.model),
-          pool: useCliPool ? "cli" : "sandbox",
+          pool: "sandbox",
           projectId: effectiveProjectId,
           endpoint: googleUrl,
         });
-        await updateAccountUsage(account.email, true, request.model, useCliPool ? "cli" : "sandbox");
+        await updateAccountUsage(account.email, true, request.model, "sandbox");
         return { kind: "stream", stream, attempts };
       }
 
@@ -563,7 +497,7 @@ export async function executeCompletion({
       if (!result.text && result.toolCalls.length === 0 && result.finishReason !== "length") {
         console.warn(`[Empty] Account ${account.email} returned empty response for ${request.model}, retrying with another account...`);
         attemptLogs.push({ email: account.email, status: 502, reason: "empty_response" });
-        markCooldown(account.email, useCliPool ? "cli" : "sandbox", getFamilyName(request.model), "30s");
+        markCooldown(account.email, "sandbox", getFamilyName(request.model), "30s");
         continue;
       }
 
@@ -572,7 +506,7 @@ export async function executeCompletion({
         accountEmail: account.email,
         model: request.model,
         modelFamily: getFamilyName(request.model),
-        pool: useCliPool ? "cli" : "sandbox",
+        pool: "sandbox",
         projectId: effectiveProjectId,
         endpoint: googleUrl,
       });
@@ -584,7 +518,7 @@ export async function executeCompletion({
           model: request.model,
           modelFamily: getFamilyName(request.model),
           upstreamModel: googleBody.model,
-          pool: useCliPool ? "cli" : "sandbox",
+          pool: "sandbox",
           endpoint: googleUrl,
           streamed: false,
           inputTokens: finalTokenUsage.inputTokens,
@@ -597,7 +531,7 @@ export async function executeCompletion({
           createdAt: requestStartedAt,
         });
       }
-      await updateAccountUsage(account.email, true, request.model, useCliPool ? "cli" : "sandbox");
+      await updateAccountUsage(account.email, true, request.model, "sandbox");
       return { kind: "result", result, attempts };
     } catch (error: any) {
       clearTimers();
@@ -618,12 +552,12 @@ export async function executeCompletion({
       } else {
         console.error(`Proxy error for ${account.email}:`, error);
       }
-      await updateAccountUsage(account.email, false, request.model, useCliPool ? "cli" : "sandbox");
+      await updateAccountUsage(account.email, false, request.model, "sandbox");
       attemptLogs.push({ email: account.email || "unknown", status: 500, reason: error.message });
       if (attempts < maxAttempts) continue;
       return jsonError(500, { error: { message: `Proxy exception: ${error.message}` } }, attempts);
     }
   }
 
-  return buildCompletionFailure(request.model, useCliPool ? "cli" : "sandbox", attempts, attemptLogs);
+  return buildCompletionFailure(request.model, "sandbox", attempts, attemptLogs);
 }

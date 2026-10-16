@@ -118,7 +118,7 @@ liveDescribe("Live Chat refactor compatibility", () => {
     expect(first.data.choices[0].finish_reason).toBe("tool_calls");
     const calls = first.data.choices[0].message.tool_calls;
     expect(calls).toHaveLength(2);
-    expect(calls.map((call: any) => call.index)).toEqual([0, 1]);
+    expect(new Set(calls.map((call: any) => call.id)).size).toBe(2);
     expect(calls[0].id.startsWith("sig:")).toBe(true);
     expect(typeof calls[0].extra_content?.google?.thought_signature).toBe("string");
     expect(calls[1].extra_content).toBeUndefined();

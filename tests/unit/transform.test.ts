@@ -18,7 +18,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       temperature: 0.5
     };
 
-    const result = transformToGoogleBody(openaiBody, "test-project", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "test-project", "us-central1");
 
     expect(result.project).toBe("test-project");
     expect(result.model).toBe("gpt-4o"); // It passes through if no antigravity prefix
@@ -34,19 +34,8 @@ describe("Unit Tests: transformToGoogleBody", () => {
       messages: [{ role: "user", content: "Hi" }]
     };
 
-    const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "p", "us-central1");
     expect(result.model).toBe("gemini-2.0-flash");
-  });
-
-  test("Thinking level extraction for CLI", () => {
-    const openaiBody = {
-      model: "gemini-3-flash-thinking-medium",
-      messages: [{ role: "user", content: "Hi" }]
-    };
-
-    const result = transformToGoogleBody(openaiBody, "p", true, "us-central1"); // isCli = true
-    expect(result.model).toBe("gemini-3-flash-preview");
-    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("medium");
   });
 
   test("uses OpenAI reasoning_effort for the thinking level", () => {
@@ -54,7 +43,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       model: "antigravity-gemini-3.8-flash",
       reasoning_effort: "medium",
       messages: [{ role: "user", content: "Hi" }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.model).toBe("gemini-3.8-flash-tiered");
     expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("medium");
@@ -74,7 +63,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       ]
     };
 
-    const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "p", "us-central1");
     expect(result.request.contents).toHaveLength(3);
     expect(result.request.contents[0].role).toBe("user");
     expect(result.request.contents[1].role).toBe("model"); // OpenAI assistant -> Google model
@@ -88,7 +77,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
         { role: "system", content: "You are concise. Return only what the user asks for." },
         { role: "user", content: "Say hello" }
       ]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.systemInstruction).toEqual({
       parts: [{ text: "You are concise. Return only what the user asks for." }]
@@ -99,7 +88,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     const result = transformToGoogleBody({
       model: "antigravity-claude-opus-4-6-thinking",
       messages: [{ role: "user", content: "Say hello" }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.systemInstruction).toBeUndefined();
   });
@@ -126,7 +115,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       ]
     };
 
-    const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "p", "us-central1");
     expect(result.request.tools).toBeDefined();
     expect(result.request.tools[0].functionDeclarations).toHaveLength(1);
     expect(result.request.tools[0].functionDeclarations[0].name).toBe("get_weather");
@@ -138,7 +127,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Return JSON" }],
       response_format: { type: "json_object" }
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.generationConfig.responseMimeType).toBe("application/json");
     expect(result.request.generationConfig.responseSchema).toBeUndefined();
@@ -150,7 +139,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       model: "antigravity-claude-opus-4-6-thinking",
       messages: [{ role: "user", content: "Explain TCP briefly" }],
       response_format: { type: "json_object" }
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.generationConfig.responseMimeType).toBe("application/json");
     expect(result.request.generationConfig.responseSchema).toEqual({
@@ -181,7 +170,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
           }
         }
       }
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.generationConfig.responseMimeType).toBe("application/json");
     expect(result.request.generationConfig.responseSchema).toEqual({
@@ -210,7 +199,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
           }
         }
       }
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.generationConfig.responseSchema.title).toBe("forced_result");
     expect(result.request.generationConfig.thinkingConfig).toBeUndefined();
@@ -227,7 +216,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
           schema: { type: "object" }
         }
       }
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.generationConfig.responseMimeType).toBeUndefined();
     expect(result.request.generationConfig.responseSchema).toBeUndefined();
@@ -238,7 +227,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       model: "antigravity-gemini-3.8-flash",
       messages: [{ role: "user", content: "Return text" }],
       response_format: { type: "text" }
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.generationConfig.responseMimeType).toBeUndefined();
     expect(result.request.generationConfig.responseSchema).toBeUndefined();
@@ -249,7 +238,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       model: "antigravity-gemini-3.8-flash-high",
       max_tokens: 999999,
       messages: [{ role: "user", content: "Hi" }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.generationConfig.maxOutputTokens).toBe(65536);
   });
@@ -260,7 +249,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       messages: [{ role: "user", content: "Hi" }]
     };
 
-    const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "p", "us-central1");
     expect(result.model).toBe("claude-opus-4-6-thinking");
     expect(result.request.generationConfig.thinkingConfig.includeThoughts).toBe(true);
     expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBe(32768);
@@ -272,7 +261,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       messages: [{ role: "user", content: "Hi" }]
     };
 
-    const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "p", "us-central1");
     expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBe(8192);
   });
 
@@ -290,7 +279,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     const result = transformToGoogleBody({
       model,
       messages: [{ role: "user", content: "Hi" }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.model).toBe(runtimeModel);
     expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe(thinkingLevel);
@@ -307,7 +296,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
   ])("rejects unavailable model %s before calling upstream", (model) => {
     const body = { model, messages: [{ role: "user", content: "Hi" }] };
     expect(validateOpenAIRequestForGoogle(body)).toContain("/v1/models");
-    expect(() => transformToGoogleBody(body, "p", false, "us-central1")).toThrow("/v1/models");
+    expect(() => transformToGoogleBody(body, "p", "us-central1")).toThrow("/v1/models");
   });
 
   test.each([
@@ -317,7 +306,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     const result = transformToGoogleBody({
       model,
       messages: [{ role: "user", content: "Hi" }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.model).toBe(runtimeModel);
     expect(result.request.generationConfig.thinkingConfig.includeThoughts).toBe(true);
@@ -327,7 +316,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     const result = transformToGoogleBody({
       model: "antigravity-gpt-oss-120b",
       messages: [{ role: "user", content: "Hi" }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.model).toBe("gpt-oss-120b-medium");
     expect(result.request.generationConfig.thinkingConfig).toBeUndefined();
@@ -351,7 +340,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       ]
     };
 
-    const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "p", "us-central1");
     const funcCallPart = result.request.contents[0].parts.find((p: any) => p.functionCall);
     expect(funcCallPart).toBeDefined();
     expect(funcCallPart.functionCall.id).toBe("call_abc123");
@@ -370,7 +359,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       ]
     };
 
-    const result = transformToGoogleBody(openaiBody, "p", false, "us-central1");
+    const result = transformToGoogleBody(openaiBody, "p", "us-central1");
     const funcRespPart = result.request.contents[0].parts.find((p: any) => p.functionResponse);
     expect(funcRespPart).toBeDefined();
     expect(funcRespPart.functionResponse.id).toBe("call_abc123");
@@ -397,7 +386,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
           content: '{"result":"ok"}'
         }
       ]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     const funcCallPart = result.request.contents[1].parts.find((p: any) => p.functionCall);
     const funcRespPart = result.request.contents[2].parts.find((p: any) => p.functionResponse);
@@ -420,7 +409,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
           function: { name: "test_tool", arguments: "{}" }
         }]
       }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     const funcCallPart = result.request.contents[0].parts.find((p: any) => p.functionCall);
     expect(funcCallPart.functionCall.id).toBe("call_abc123");
@@ -444,7 +433,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
         { role: "tool", tool_call_id: firstId, content: '{"value":"a"}' },
         { role: "tool", tool_call_id: "call_second", content: '{"value":"b"}' }
       ]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.model).toBe("gemini-3.8-flash-tiered");
     expect(result.request.contents).toHaveLength(3);
@@ -469,7 +458,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
         { role: "assistant", tool_calls: [{ id: "call_2", type: "function", function: { name: "second", arguments: "{}" } }] },
         { role: "tool", tool_call_id: "call_2", content: "two" }
       ]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     expect(result.request.contents.map((content: any) => content.role)).toEqual([
       "user", "model", "user", "model", "user"
@@ -487,7 +476,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
         type: "function",
         function: { name, parameters: { type: "object", properties: {} } }
       }))
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     const names = result.request.tools[0].functionDeclarations.map((declaration: any) => declaration.name);
     expect(new Set(names).size).toBe(3);
@@ -517,7 +506,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
           }
         }
       }]
-    }, "p", false, "us-central1");
+    }, "p", "us-central1");
 
     const schema = result.request.tools[0].functionDeclarations[0].parameters;
     expect(schema.additionalProperties).toBeUndefined();
@@ -539,7 +528,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
       const result = transformToGoogleBody({
         model: "antigravity-gemini-3.8-flash",
         messages: [{ role: "user", content: "Search" }]
-      }, "p", false, "us-central1");
+      }, "p", "us-central1");
       expect(result.request.tools).toContainEqual({ googleSearch: {} });
       expect(result.request.tools.some((tool: any) => tool.googleSearchRetrieval)).toBe(false);
     } finally {

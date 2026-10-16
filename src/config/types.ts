@@ -44,7 +44,6 @@ export interface ModelsConfig {
   blacklist: string[];
   routing: {
     sandboxKeywords: string[];
-    cliKeywords: string[];
     forceToSandbox: string[];
   };
   timeouts: Record<string, number>;
@@ -66,7 +65,6 @@ export interface QuotaConfig {
 
 export interface EndpointsConfig {
   sandbox: string[];
-  cli: string | string[];
 }
 
 export interface LoggingConfig {

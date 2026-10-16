@@ -33,21 +33,6 @@ const SDK_CLIENTS = [
   "google-cloud-sdk vscode/1.95.0",
 ] as const;
 
-const GEMINI_CLI_USER_AGENTS = [
-  "google-api-nodejs-client/9.15.1",
-  "google-api-nodejs-client/9.14.0",
-  "google-api-nodejs-client/9.13.0",
-  "google-api-nodejs-client/10.3.0",
-] as const;
-
-const GEMINI_CLI_API_CLIENTS = [
-  "gl-node/22.17.0",
-  "gl-node/22.12.0",
-  "gl-node/20.18.0",
-  "gl-node/21.7.0",
-  "gl-node/22.18.0",
-] as const;
-
 function randomFrom<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -98,8 +83,6 @@ export function generateFingerprint(email?: string): DeviceFingerprint {
     ideType: ideType,
     platformName: platformName,
     sessionToken: generateSessionToken(),
-    cliUserAgent: randomFrom(GEMINI_CLI_USER_AGENTS),
-    cliApiClient: randomFrom(GEMINI_CLI_API_CLIENTS),
     clientMetadata: {
       ideType: ideType,
       platform: platformName,
@@ -136,28 +119,5 @@ export function getImpersonationHeaders(accessToken: string, fingerprint?: Devic
     headers["anthropic-beta"] = "interleaved-thinking-2025-05-14";
   }
   
-  return headers;
-}
-
-export function getGeminiCliHeaders(accessToken: string, fingerprint?: DeviceFingerprint): Record<string, string> {
-  const fp = fingerprint || generateFingerprint();
-  const headers: Record<string, string> = {
-    "Authorization": `Bearer ${accessToken}`,
-    "User-Agent": fp.cliUserAgent,
-    "X-Goog-Api-Client": fp.cliApiClient,
-    "X-Goog-QuotaUser": fp.quotaUser,
-    "X-Client-Device-Id": fp.deviceId,
-    "Content-Type": "application/json; charset=utf-8",
-  };
-
-  if (fp.clientMetadata) {
-    headers["Client-Metadata"] = Object.entries(fp.clientMetadata)
-      .filter(([_, v]) => v !== undefined)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(",");
-  } else {
-     headers["Client-Metadata"] = "ideType=VSCODE,platform=MACOS,pluginType=GEMINI,osVersion=14.5,arch=arm64";
-  }
-
   return headers;
 }

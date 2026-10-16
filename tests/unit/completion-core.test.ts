@@ -96,9 +96,9 @@ describe("canonical completion core", () => {
       prompt_cache_key: "session-1",
     };
 
-    const legacy = transformToGoogleBody(body, "project", false, "", "session", false);
+    const legacy = transformToGoogleBody(body, "project", "", "session", false);
     const canonical = adaptChatCompletionRequest(body);
-    const refactored = transformCompletionToGoogleBody(canonical, "project", false, "", "session", false);
+    const refactored = transformCompletionToGoogleBody(canonical, "project", "", "session", false);
 
     // requestId is intentionally generated per transformation; everything else is the contract.
     expect({ ...refactored, requestId: "<generated>" }).toEqual({ ...legacy, requestId: "<generated>" });

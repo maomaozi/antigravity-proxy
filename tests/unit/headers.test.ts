@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
-import { generateFingerprint, getGeminiCliHeaders, getImpersonationHeaders } from "../../src/utils/headers";
+import { generateFingerprint, getImpersonationHeaders } from "../../src/utils/headers";
 
 describe("Antigravity Hub request headers", () => {
   test.each(["darwin/arm64", "darwin/x64"])("updates persisted client versions while preserving device identity on %s", platform => {
@@ -15,6 +15,5 @@ describe("Antigravity Hub request headers", () => {
     expect(headers["X-Client-Device-Id"]).toBe(fingerprint.deviceId);
     expect(headers["X-Goog-QuotaUser"]).toBe(fingerprint.quotaUser);
     expect(headers["anthropic-beta"]).toBe("interleaved-thinking-2025-05-14");
-    expect(getGeminiCliHeaders("test-token", fingerprint)["User-Agent"]).toBe(fingerprint.cliUserAgent);
   });
 });

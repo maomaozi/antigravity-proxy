@@ -598,8 +598,7 @@ Bun.serve({
         const email = cleanPath.split("/")[3];
         try {
             const body = await req.json() as any;
-            const pool = body.pool || 'cli';
-            markCooldown(email, pool as any, "3600s");
+            markCooldown(email, "sandbox", body.modelFamily || "Other", "3600s");
             return new Response("OK", { status: 200, headers: CORS_HEADERS });
         } catch {
             return new Response("Bad Request", { status: 400, headers: CORS_HEADERS });

@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SessionIdentity } from "./identity";
 
-export type SessionPool = "cli" | "sandbox" | "codex";
+export type SessionPool = "sandbox" | "codex";
 
 export interface SessionBinding {
   id: number;
@@ -242,7 +242,7 @@ export class SessionBindingStore {
         account_email TEXT NOT NULL,
         model TEXT NOT NULL,
         model_family TEXT NOT NULL,
-        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
+        pool TEXT NOT NULL CHECK (pool IN ('sandbox', 'codex')),
         project_id TEXT,
         endpoint TEXT,
         upstream_session_id TEXT,
@@ -268,7 +268,7 @@ export class SessionBindingStore {
         model TEXT NOT NULL,
         model_family TEXT NOT NULL,
         upstream_model TEXT,
-        pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
+        pool TEXT NOT NULL CHECK (pool IN ('sandbox', 'codex')),
         endpoint TEXT,
         streamed INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -322,6 +322,7 @@ export class SessionBindingStore {
     const migrateUsage = usageSql.includes("CHECK") && !usageSql.includes("'codex'");
     if (!migrateBindings && !migrateUsage) return;
 
+    // Keep historical pool values during migration; new writes use SessionPool.
     this.db.exec("BEGIN IMMEDIATE;");
     try {
       if (migrateBindings) {
@@ -338,7 +339,7 @@ export class SessionBindingStore {
             account_email TEXT NOT NULL,
             model TEXT NOT NULL,
             model_family TEXT NOT NULL,
-            pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
+            pool TEXT NOT NULL,
             project_id TEXT,
             endpoint TEXT,
             upstream_session_id TEXT,
@@ -381,7 +382,7 @@ export class SessionBindingStore {
             model TEXT NOT NULL,
             model_family TEXT NOT NULL,
             upstream_model TEXT,
-            pool TEXT NOT NULL CHECK (pool IN ('cli', 'sandbox', 'codex')),
+            pool TEXT NOT NULL,
             endpoint TEXT,
             streamed INTEGER NOT NULL DEFAULT 0,
             input_tokens INTEGER NOT NULL DEFAULT 0,

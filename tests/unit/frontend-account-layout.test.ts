@@ -142,7 +142,6 @@ describe("dashboard account provider layout", () => {
   });
 
   test("uses family-aware Google cooldown keys in dashboard status", () => {
-    expect(app).toContain('`${email}|cli|${category}`');
     expect(app).toContain('`${email}|sandbox|${category}`');
   });
 

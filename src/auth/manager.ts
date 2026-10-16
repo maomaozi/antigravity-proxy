@@ -51,7 +51,7 @@ export function getCooldowns(): Record<string, number> {
   return Object.fromEntries(cooldownMap);
 }
 
-export function markCooldown(email: string, pool: 'cli' | 'sandbox', modelFamily: string, resetTimeStr?: string) {
+export function markCooldown(email: string, pool: 'sandbox', modelFamily: string, resetTimeStr?: string) {
   const config = getProxyConfig();
   const account = accounts.find(a => a.email === email);
   const key = `${email}|${pool}|${modelFamily}`;
@@ -99,7 +99,7 @@ export function resetAllCooldowns() {
   saveAccountsInBackground();
 }
 
-export function flagAccountChallenge(email: string, pool: 'cli' | 'sandbox', modelFamily: string, challenge: any) {
+export function flagAccountChallenge(email: string, pool: 'sandbox', modelFamily: string, challenge: any) {
   const account = accounts.find(a => a.email === email);
   if (account) {
     const expiry = Date.now() + 3600000;
@@ -160,7 +160,7 @@ export type AccountSelectionFailure =
   | "no_available_accounts";
 
 /** Explain failed selection using the same capability, quota and cooldown state. */
-export function getAccountSelectionFailure(pool: "cli" | "sandbox", model: string): AccountSelectionFailure {
+export function getAccountSelectionFailure(pool: "sandbox", model: string): AccountSelectionFailure {
   const configured = accounts.filter(account => account.refreshToken);
   if (configured.length === 0) return "no_accounts";
   const supported = configured.filter(account => account.capabilities?.[model] !== false);
@@ -178,7 +178,7 @@ export function getAccountSelectionFailure(pool: "cli" | "sandbox", model: strin
 }
 
 export async function getBestAccount(
-  pool?: 'cli' | 'sandbox',
+  pool?: 'sandbox',
   model?: string,
   sessionKey?: string,
   excludeEmails: string[] = [],
@@ -404,7 +404,7 @@ export async function updateAccountProject(email: string, projectId: string) {
     }
 }
 
-export function getEarliestReset(pool: 'cli' | 'sandbox'): string | null {
+export function getEarliestReset(pool: 'sandbox'): string | null {
   const usable = accounts.filter(a => a.refreshToken && a.quota);
   if (usable.length === 0) return null;
   let resetTimes: number[] = [];

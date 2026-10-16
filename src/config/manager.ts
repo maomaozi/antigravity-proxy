@@ -38,7 +38,6 @@ const DEFAULT_CONFIG: ProxyConfig = {
     blacklist: [],
     routing: {
       sandboxKeywords: ['gpt', 'antigravity', 'image'],
-      cliKeywords: ['claude', 'gemini-2.0', 'gemini-2.5', '-preview'],
       forceToSandbox: ['gpt']
     },
     timeouts: {
@@ -68,11 +67,6 @@ const DEFAULT_CONFIG: ProxyConfig = {
         'https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse',
         'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse',
         'https://autopush-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse'
-      ],
-      cli: [
-        'https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse',
-        'https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse',
-        'https://autopush-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse'
       ]
     },
   logging: {

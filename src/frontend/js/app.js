@@ -23,23 +23,8 @@ function escapeHtml(value) {
 }
 
 function getCategoryCooldown(email, category, quotas) {
-     const now = Date.now();
-     const cliExpiry = globalCooldowns[`${email}|cli|${category}`];
-     const sandboxExpiry = globalCooldowns[`${email}|sandbox|${category}`];
-     
-     const isCliDown = cliExpiry && cliExpiry > now;
-     const isSandboxDown = sandboxExpiry && sandboxExpiry > now;
-     
-     if (!isCliDown && !isSandboxDown) return null;
-
-     if (Object.hasOwn(MODEL_FAMILIES, category)) {
-         return isSandboxDown ? sandboxExpiry : null;
-     }
-     
-     if (isCliDown) return cliExpiry;
-     if (isSandboxDown) return sandboxExpiry;
-     
-     return null;
+    const expiry = globalCooldowns[`${email}|sandbox|${category}`];
+    return expiry > Date.now() ? expiry : null;
 }
 
 function isCodexProviderEnabled() {
@@ -52,9 +37,8 @@ function isGoogleAccountActive(account) {
     if (!families.length) return true;
     const now = Date.now();
     return families.some(family => {
-        const cliExpiry = Number(globalCooldowns[`${account.email}|cli|${family}`] || 0);
         const sandboxExpiry = Number(globalCooldowns[`${account.email}|sandbox|${family}`] || 0);
-        return cliExpiry <= now || sandboxExpiry <= now;
+        return sandboxExpiry <= now;
     });
 }
 
@@ -531,8 +515,7 @@ function renderFamilyGrid(stats) {
             ? stat.total > 0 && stat.healthy === 0
             : accountsWithFamily.length > 0 && accountsWithFamily.every(acc => {
                 const sboxExp = globalCooldowns[`${acc.email}|sandbox|${stat.name}`];
-                const cliExp = globalCooldowns[`${acc.email}|cli|${stat.name}`];
-                return (sboxExp && sboxExp > Date.now()) && (cliExp && cliExp > Date.now());
+                return sboxExp && sboxExp > Date.now();
             });
 
         let indicatorColor = allAccountsDownForFamily ? 'text-rose-500' : (stat.availability > 50 ? 'text-emerald-500' : (stat.availability < 20 ? 'text-rose-500' : 'text-zinc-400 dark:text-zinc-300'));
@@ -719,8 +702,7 @@ function renderAccountsTable(accounts) {
                         ${familiesWithData.map(({cat, quotas, familyHealth}) => {
                             const best = Math.round(Math.max(...quotas.map(q => q.remainingFraction * 100)));
                             const isSandboxDown = (globalCooldowns[`${acc.email}|sandbox|${cat}`] || 0) > now;
-                            const isCliDown = (globalCooldowns[`${acc.email}|cli|${cat}`] || 0) > now;
-                            const isAllDown = isSandboxDown && isCliDown;
+                            const isAllDown = isSandboxDown;
                             
                             let textColor = isAllDown ? 'text-rose-500' : (best > 50 ? 'text-emerald-500' : (best < 20 ? 'text-rose-500' : 'text-zinc-400 dark:text-zinc-300'));
                             let barColor = isAllDown ? 'bg-rose-500' : (best > 50 ? 'bg-emerald-500' : (best < 20 ? 'bg-rose-500' : 'bg-zinc-300 dark:bg-zinc-600'));
@@ -748,10 +730,6 @@ function renderAccountsTable(accounts) {
                                         <div class="flex items-center gap-1.5 px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900" title="Sandbox Pool Status">
                                             <span class="text-[8px] font-bold text-zinc-500">SBX</span>
                                             <span class="w-1.2 h-1.2 rounded-full ${isSandboxDown ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}"></span>
-                                        </div>
-                                        <div class="flex items-center gap-1.5 px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900" title="CLI Pool Status">
-                                            <span class="text-[8px] font-bold text-zinc-500">CLI</span>
-                                            <span class="w-1.2 h-1.2 rounded-full ${isCliDown ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}"></span>
                                         </div>
                                     </div>
                                 </div>

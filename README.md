@@ -15,9 +15,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
 - **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for inactive Gemini or Codex 5-hour windows. Each inactive account receives one minimal request to start its window; Gemini activation uses 3.8 Flash with an output limit of 100 tokens. The first check runs 10 minutes after server startup.
-- **Dual-Pool Routing**:
-  - **CLI Pool**: Routes to production Gemini endpoints.
-  - **Sandbox Pool**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models.
+- **Antigravity Routing**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models through the Sandbox Pool.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
 - **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account, pool, and endpoint in SQLite.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
@@ -157,7 +155,7 @@ Cached model rejections retain the same 404 response on later requests rather
 than becoming quota errors. `error.message` identifies the model and next action;
 `error.attempts` retains the account, upstream HTTP status and reason for attempts
 made during the request. No new upstream call is made when selection finds no
-eligible account after pool fallback and rescue.
+eligible account after selection and rescue.
 
 ```bash
 curl http://127.0.0.1:3000/v1/chat/completions \

@@ -1,22 +1,12 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { buildCompletionFailure, executeCompletion, isExplicitAntigravityModel, resolveTimeouts } from "../../src/api/completion-executor";
+import { buildCompletionFailure, executeCompletion, resolveTimeouts } from "../../src/api/completion-executor";
 import { getAccounts, getAccountSelectionFailure, markCooldown, clearCooldown } from "../../src/auth/manager";
+import { collectCompletionStream } from "../../src/core/completion";
+import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
+import { deleteSessionBindingsForAccount, getSessionBinding } from "../../src/session/store";
 import type { AntigravityAccount } from "../../src/auth/types";
 import * as storage from "../../src/auth/storage";
 import { getProxyConfig } from "../../src/config/manager";
-
-describe("completion executor pool routing", () => {
-  test("recognizes explicit Antigravity model IDs as sandbox-only candidates", () => {
-    expect(isExplicitAntigravityModel("antigravity-gemini-3.8-flash")).toBe(true);
-    expect(isExplicitAntigravityModel("antigravity/gemini-3.8-flash")).toBe(true);
-    expect(isExplicitAntigravityModel("openai/antigravity-gemini-3.8-flash")).toBe(true);
-  });
-
-  test("does not classify unprefixed Gemini models as explicit Antigravity models", () => {
-    expect(isExplicitAntigravityModel("gemini-3.8-flash")).toBe(false);
-    expect(isExplicitAntigravityModel("gemini-3.1-pro-preview")).toBe(false);
-  });
-});
 
 describe("completion executor timeouts resolution", () => {
   test("defaults to 120s for first byte and 900s for stream when no config provided", () => {
@@ -85,6 +75,7 @@ describe("completion failure classification", () => {
 
   afterEach(() => {
     clearCooldown("failure-test@example.com", "sandbox", "Gemini Models");
+    deleteSessionBindingsForAccount("failure-test@example.com");
     getAccounts().splice(0, getAccounts().length, ...originalAccounts);
     getProxyConfig().retry.maxAttempts = originalMaxAttempts;
     getProxyConfig().features.jitterEnabled = originalJitter;
@@ -102,6 +93,43 @@ describe("completion failure classification", () => {
     if (result.kind !== "error") throw new Error("Expected completion failure");
     return { status: result.response.status, body: await result.response.json() as any };
   }
+
+  test.each([
+    ["antigravity-gemini-3.8-flash", "gemini-3.8-flash-tiered"],
+    ["antigravity-gemini-3.5-flash", "gemini-3.5-flash-low"],
+    ["antigravity-claude-sonnet-4-6-thinking", "claude-sonnet-4-6"],
+    ["antigravity-claude-opus-4-6-thinking", "claude-opus-4-6-thinking"],
+    ["antigravity-gpt-oss-120b", "gpt-oss-120b-medium"],
+    ["gemini-2.5-flash", "gemini-2.5-flash"],
+  ])("preserves Antigravity requests and session affinity for %s", async (model, upstreamModel) => {
+    fetchSpy = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network request"));
+    for (const stream of [false, true]) {
+      fetchSpy.mockResolvedValueOnce(new Response(
+        `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+      const execution = await executeCompletion({
+        request: { model, messages: [{ role: "user", content: "OK" }], stream },
+        sessionIdentity: { key: "routing-regression", id: "routing-regression", source: "test", inferred: false },
+        requestId: "routing-test", requestStartedAt: Date.now(),
+      });
+      const result = execution.kind === "stream" ? await collectCompletionStream(execution.stream)
+        : execution.kind === "result" ? execution.result : null;
+      expect(result?.text).toBe("OK");
+      expect(getSessionBinding("routing-regression", model)).toMatchObject({
+        pool: "sandbox", accountEmail: "failure-test@example.com", projectId: "project",
+      });
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchSpy.mock.calls) {
+      expect(url).toBe(getProxyConfig().endpoints.sandbox[0]!);
+      expect(JSON.parse(String(init?.body))).toMatchObject({ project: "project", model: upstreamModel });
+      const headers = new Headers(init?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer access");
+      expect(headers.get("User-Agent")).toStartWith(`antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} `);
+      expect(headers.get("anthropic-beta")).toBe(model.includes("claude") ? "interleaved-thinking-2025-05-14" : null);
+    }
+  });
 
   test("cached model rejection returns 404 without making a Google request", async () => {
     getAccounts()[0].capabilities = { [model]: false };
