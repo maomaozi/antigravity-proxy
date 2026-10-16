@@ -16,6 +16,25 @@ function tempFile() {
 }
 
 describe("CodexAccountManager", () => {
+  test("recovers damaged credentials from backup during startup", async () => {
+    const path = tempFile();
+    const manager = new CodexAccountManager({ storagePath: path });
+    await manager.init();
+    await manager.upsertCredentials({ email: "recover@example.com", accountId: "acct", accessToken: "access", refreshToken: "refresh", expiresAt: Date.now() + 3600_000 });
+    await Bun.write(path, Buffer.alloc(1024));
+    const reloaded = new CodexAccountManager({ storagePath: path });
+    await reloaded.init();
+    expect(reloaded.listPublic().map(account => account.email)).toEqual(["recover@example.com"]);
+  });
+
+  test("does not start with empty accounts when all credential copies are corrupt", async () => {
+    const path = tempFile();
+    await Bun.write(path, "{}");
+    const manager = new CodexAccountManager({ storagePath: path });
+    await expect(manager.init()).rejects.toThrow("refusing to overwrite");
+    expect(await Bun.file(path).text()).toBe("{}");
+  });
+
   test("persists credentials separately and exposes token-free public account state", async () => {
     const path = tempFile();
     const manager = new CodexAccountManager({ storagePath: path });

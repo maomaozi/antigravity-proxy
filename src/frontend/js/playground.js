@@ -111,10 +111,6 @@ async function loadModels() {
         const wasListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
         models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && !item.disabled);
         if (Array.isArray(result.antigravity?.imageModels)) imageModels = result.antigravity.imageModels;
-        const catalog = result.antigravity;
-        $('model-catalog-status').hidden = !catalog;
-        $('model-catalog-status').textContent = catalog
-            ? `Antigravity Hub ${catalog.clientVersion} · 目录核对于 ${catalog.verifiedAt}。${catalog.notice}` : '';
         const stillListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
         populate(wasListed && !stillListed ? '' : preferred);
     } catch (e) { populate(); $('model-status').textContent = `模型加载失败：${e.message}。可重试或手动输入 ID。`; }

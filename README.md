@@ -478,6 +478,30 @@ rotation strategy. A previously successful `session + model` binding is reused
 first. When there is no binding or the bound account must fail over, eligible
 accounts are ranked by health and idle time before a new binding is persisted.
 
+## Account storage and power-loss recovery
+
+Google login credentials remain in `antigravity-accounts.json` (or
+`ACCOUNTS_FILE`). Frequently changing usage, health, cooldown, and quota data
+are stored alongside it in `<accounts-file>.state.json`. Existing combined
+account files are migrated automatically at startup. Ordinary usage updates
+leave the credential file untouched; login, token refresh, and other credential
+changes still persist immediately.
+
+Google accounts, Codex accounts, and `config.json` use serialized saves with
+unique temporary files, file `fsync`, atomic replacement, and parent-directory
+`fsync`. Each file keeps `.bak` and `.bak.1` generations. Startup validates the
+primary file and falls back to a valid backup if needed, preserving a damaged
+primary as `.corrupt-<timestamp>-<id>`. Existing files receive a backup during
+startup, even if their contents have not changed.
+
+If credentials or configuration and all available backups are invalid, startup
+fails explicitly rather than replacing them with empty accounts or defaults.
+Unrecoverable Google runtime metrics can reset while credentials remain usable.
+All generated files use owner-only permissions. Keep backups and corrupt copies
+private, and include credential files and their backups in external backups.
+These writes rely on the storage device honoring flush requests; they do not
+replace independent backups or reliable power.
+
 ## Security Notes
 - **Safety Filters**: Controlled via `SAFETY_THRESHOLD` (default: `BLOCK_NONE`).
 - **Antigravity credentials**: OAuth tokens are stored locally in `antigravity-accounts.json`. Do not share or commit this file.

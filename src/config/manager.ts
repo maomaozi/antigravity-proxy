@@ -1,5 +1,6 @@
 import { type ProxyConfig } from './types';
 import { EventEmitter } from 'node:events';
+import { readDurableJson, writeDurableJson } from '../utils/durable-json';
 
 const CONFIG_PATH = 'config.json';
 export const configEventBus = new EventEmitter();
@@ -102,37 +103,39 @@ const DEFAULT_CONFIG: ProxyConfig = {
   }
 };
 
+function decodeConfig(value: unknown): Partial<ProxyConfig> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid proxy configuration');
+  return value as Partial<ProxyConfig>;
+}
+
 export async function loadProxyConfig(): Promise<ProxyConfig> {
   try {
-    const file = Bun.file(CONFIG_PATH);
-    const exists = await file.exists();
+    const loadedConfig = await readDurableJson(CONFIG_PATH, decodeConfig);
     
-    if (!exists) {
+    if (!loadedConfig) {
       console.log('[Config] config.json not found, creating with defaults...');
       await saveProxyConfig(DEFAULT_CONFIG);
       config = DEFAULT_CONFIG;
       return config;
     }
     
-    const text = await file.text();
-    const loadedConfig = JSON.parse(text);
     config = deepMerge(DEFAULT_CONFIG, loadedConfig) as ProxyConfig;
     // Ignore legacy strategy/mode fields. Session affinity with cache-first failover is fixed.
     delete (config.rotation as ProxyConfig['rotation'] & { strategy?: unknown }).strategy;
     delete (config.scheduling as ProxyConfig['scheduling'] & { mode?: unknown }).mode;
     delete (config.scheduling as ProxyConfig['scheduling'] & { maxRateLimitWaitSeconds?: unknown }).maxRateLimitWaitSeconds;
+    await writeDurableJson(CONFIG_PATH, loadedConfig, decodeConfig);
     console.log('[Config] Loaded configuration.');
     return config;
   } catch (e) {
-    console.error('[Config] Failed to load config.json, using defaults:', e);
-    config = DEFAULT_CONFIG;
-    return config;
+    console.error('[Config] Failed to load config.json:', e);
+    throw e;
   }
 }
 
 export async function saveProxyConfig(newConfig: ProxyConfig): Promise<void> {
   try {
-    await Bun.write(CONFIG_PATH, JSON.stringify(newConfig, null, 2));
+    await writeDurableJson(CONFIG_PATH, newConfig, decodeConfig);
     config = newConfig;
     configEventBus.emit('update', config);
     console.log('[Config] Configuration saved successfully');

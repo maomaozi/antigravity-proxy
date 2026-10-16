@@ -1,7 +1,9 @@
 node_modules
 .DS_Store
 antigravity-accounts.json
+antigravity-accounts.json.*
 /config.json
+/config.json.*
 .env
 dist
 AGENTS.md

@@ -43,6 +43,10 @@ export async function saveAccounts(newAccounts: AntigravityAccount[]) {
   eventBus.emit('update', { accounts });
 }
 
+function saveAccountsInBackground() {
+  void saveAccounts(accounts).catch(error => console.error("[Storage] Failed to save Google accounts:", error));
+}
+
 export function getCooldowns(): Record<string, number> {
   return Object.fromEntries(cooldownMap);
 }
@@ -67,7 +71,7 @@ export function markCooldown(email: string, pool: 'cli' | 'sandbox', modelFamily
     if (!account.cooldowns) account.cooldowns = {};
     account.cooldowns[`${pool}|${modelFamily}`] = expiry;
     account.consecutiveFailures = (account.consecutiveFailures || 0) + 1;
-    saveAccounts(accounts);
+    saveAccountsInBackground();
   }
   eventBus.emit('cooldown', { cooldowns: Object.fromEntries(cooldownMap) });
 }
@@ -80,7 +84,7 @@ export function clearCooldown(email: string, pool: string, modelFamily: string) 
     if (account && account.cooldowns) {
       delete account.cooldowns[`${pool}|${modelFamily}`];
       account.consecutiveFailures = 0;
-      saveAccounts(accounts);
+      saveAccountsInBackground();
     }
     eventBus.emit('cooldown', { cooldowns: Object.fromEntries(cooldownMap) });
   }
@@ -92,7 +96,7 @@ export function resetAllCooldowns() {
     account.cooldowns = {};
     account.consecutiveFailures = 0;
   }
-  saveAccounts(accounts);
+  saveAccountsInBackground();
 }
 
 export function flagAccountChallenge(email: string, pool: 'cli' | 'sandbox', modelFamily: string, challenge: any) {
@@ -104,7 +108,7 @@ export function flagAccountChallenge(email: string, pool: 'cli' | 'sandbox', mod
     if (!account.cooldowns) account.cooldowns = {};
     account.cooldowns[`${pool}|${modelFamily}`] = expiry;
     account.challenge = { ...challenge, detectedAt: Date.now() };
-    saveAccounts(accounts);
+    saveAccountsInBackground();
     eventBus.emit('cooldown', { cooldowns: Object.fromEntries(cooldownMap) });
   }
 }
@@ -369,7 +373,7 @@ export function flagModelUnsupported(email: string, model: string) {
     if (account) {
         if (!account.capabilities) account.capabilities = {};
         account.capabilities[model] = false;
-        saveAccounts(accounts);
+        saveAccountsInBackground();
     }
 }
 
@@ -437,7 +441,7 @@ export function emitAccountFlash(email: string, status: 'success' | 'error' = 's
 export function ensureFingerprint(account: AntigravityAccount): void {
   if (!account.fingerprint || !account.fingerprint.clientMetadata?.sqmId) {
     account.fingerprint = generateFingerprint(account.email);
-    saveAccounts(accounts);
+    saveAccountsInBackground();
   }
 }
 
@@ -445,6 +449,6 @@ export function regenerateFingerprint(email: string): void {
   const account = accounts.find(a => a.email === email);
   if (account) {
     account.fingerprint = generateFingerprint(email);
-    saveAccounts(accounts);
+    saveAccountsInBackground();
   }
 }

@@ -850,11 +850,6 @@ function updateUI(data) {
         if (data.cooldowns) globalCooldowns = data.cooldowns;
         if (data.supportedModels) globalSupportedModels = data.supportedModels;
         if (data.codexModels) globalCodexModels = data.codexModels;
-        if (data.antigravity && $('model-catalog-status')) {
-            const catalog = data.antigravity;
-            $('model-catalog-status').textContent = `Antigravity Hub ${catalog.clientVersion} · 目录核对于 ${catalog.verifiedAt}。${catalog.notice}`;
-            $('model-catalog-status').hidden = false;
-        }
         if (data.version && $('app-version')) $('app-version').textContent = 'v' + data.version;
     }
     

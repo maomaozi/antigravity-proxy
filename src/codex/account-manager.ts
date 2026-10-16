@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readDurableJson, writeDurableJson } from "../utils/durable-json";
 import type { CodexCredentials } from "./device-auth";
 import { CODEX_AUTH_ISSUER, CODEX_AUTH_SCOPE, CODEX_CLIENT_ID } from "./device-auth";
 import { rendezvousScore } from "../utils/hash";
@@ -101,6 +100,14 @@ interface StoredCodexAccounts {
   accounts: CodexAccount[];
 }
 
+function decodeStoredAccounts(value: unknown): StoredCodexAccounts {
+  const accounts = (value as StoredCodexAccounts | null)?.accounts;
+  if (!Array.isArray(accounts) || !accounts.every(account => account && typeof account.email === "string" && typeof account.refreshToken === "string" && account.refreshToken)) {
+    throw new Error("Invalid Codex account storage");
+  }
+  return { accounts };
+}
+
 interface CodexQuotaState {
   blocked: boolean;
   blockedUntil: number | null;
@@ -139,17 +146,13 @@ export class CodexAccountManager {
       this.accounts = [];
       return;
     }
-    try {
-      const parsed = JSON.parse(await readFile(this.storagePath, "utf8")) as StoredCodexAccounts;
-      this.accounts = Array.isArray(parsed?.accounts) ? parsed.accounts.map(account => ({
-        ...account,
-        lastUsed: Number(account.lastUsed) || 0,
-        cooldownUntil: Number(account.cooldownUntil) || 0,
-      })) : [];
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
-      this.accounts = [];
-    }
+    const parsed = await readDurableJson(this.storagePath, decodeStoredAccounts);
+    this.accounts = parsed ? parsed.accounts.map(account => ({
+      ...account,
+      lastUsed: Number(account.lastUsed) || 0,
+      cooldownUntil: Number(account.cooldownUntil) || 0,
+    })) : [];
+    if (parsed) await this.persist();
   }
 
   listPublic(): CodexPublicAccount[] {
@@ -380,9 +383,6 @@ export class CodexAccountManager {
 
   private async persist(): Promise<void> {
     if (this.storagePath === ":memory:") return;
-    await mkdir(dirname(this.storagePath), { recursive: true });
-    const temp = `${this.storagePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(temp, JSON.stringify({ accounts: this.accounts }, null, 2), { mode: 0o600 });
-    await rename(temp, this.storagePath);
+    await writeDurableJson(this.storagePath, { accounts: this.accounts }, decodeStoredAccounts);
   }
 }
