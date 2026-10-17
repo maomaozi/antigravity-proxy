@@ -3,7 +3,7 @@ import { SUPPORTED_MODELS, getUnavailableModelError } from "../../src/models";
 
 describe("supported model catalog", () => {
   test("exposes the current Antigravity model list", () => {
-    expect(SUPPORTED_MODELS.map(({ description, recommended, ...model }) => model)).toEqual([
+    expect(SUPPORTED_MODELS.map(({ recommended, ...model }) => model)).toEqual([
       { id: "antigravity-gemini-3.8-flash", name: "Gemini 3.8 Flash", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "high" },
       { id: "antigravity-gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "low" },
       { id: "antigravity-gemini-3.1-flash-lite", name: "Gemini 3.1 Flash Lite", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "low" },

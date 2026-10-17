@@ -14,7 +14,7 @@ const selections = { chat: '', image: 'gemini-3.1-flash-image' };
 let imageModels = [
     { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image (Nano Banana 2)' },
 ];
-let mode = 'chat', catalog = null;
+let mode = 'chat';
 function currentModel() { return $('model-select').value === '__custom__' ? $('model').value.trim() : $('model-select').value; }
 function error(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 function themePreference() {
@@ -70,13 +70,12 @@ function populate(preferred = currentModel()) {
     $('model-custom').hidden = select.value !== '__custom__';
     $('model').value = select.value === '__custom__' ? preferred : '';
     $('model-status').textContent = mode === 'image'
-        ? `可选择 ${imageModels.length} 个图片模型；账号可用性以实际请求为准。`
+        ? `可选择 ${imageModels.length} 个图片模型。`
         : `已加载 ${models.length} 个聊天模型，也可输入自定义 ID。`;
     syncThinkingLevels();
 }
 function syncThinkingLevels() {
     const model = (mode === 'image' ? imageModels : models).find(item => item.id === currentModel());
-    $('model-description').textContent = mode === 'image' ? '图片模型支持文字生图与参考图编辑。' : model?.description || '';
     const levels = mode === 'chat' && model?.thinking_levels;
     const select = $('effort');
     const previous = select.value;
@@ -110,10 +109,6 @@ async function loadModels() {
         if (!Array.isArray(result.data)) throw new Error('模型列表格式错误');
         const preferred = currentModel();
         const wasListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
-        catalog = result.antigravity || null;
-        $('model-catalog').hidden = !catalog;
-        $('model-verification').textContent = catalog ? `${catalog.verifiedAt} 核对 · ${catalog.verifiedAccountCount} 个账号` : '';
-        $('model-catalog-notice').textContent = catalog ? [catalog.notice, ...(catalog.disabledModels || []).map(model => `${model.name}：${model.reason}`), ...(catalog.capacityLimitedModels || []).map(model => `${model.name}：${model.reason}`)].join(' ') : '';
         models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && !item.disabled);
         if (Array.isArray(result.antigravity?.imageModels)) imageModels = result.antigravity.imageModels;
         const stillListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);

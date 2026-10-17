@@ -430,10 +430,7 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
 
 ### Current Antigravity Catalog
 
-The catalog was verified on **2026-10-17** using Antigravity Hub **2.24.0**.
-All five configured Google accounts returned the same directory. Real generation
-probes also checked each model and the Low / Medium / High thinking levels;
-a directory entry or HTTP 200 alone does not establish availability.
+The proxy exposes the following Gemini models through `/v1/models` and Playground.
 
 | Gemini model | Proxy ID | Status |
 | --- | --- | --- |
@@ -456,11 +453,8 @@ Gemini 2.5 Pro returned HTTP 503 capacity exhaustion, so it is not offered in th
 selector; this transient failure is not treated as retirement. Gemini 4 Argon is
 marked disabled. Gemini 3.6 Flash, 3.7 Flash, and 3.1 Pro remain absent.
 
-`/v1/models`, the dashboard directory, and Playground share this catalog.
-The dashboard separates usable chat/image models from retired, disabled,
-capacity-limited models, and aliases. Playground displays the recommended model,
-thinking levels, verification date, and catalog changes. Availability still
-depends on account access and upstream capacity; this is a dated snapshot.
+Playground's existing model selector lists chat models and their thinking levels.
+Choose image models in image generation mode.
 
 ### Thinking Levels
 
