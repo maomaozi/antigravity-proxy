@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
 import { fetchQuota } from "../../src/api/quota";
 import {
   isCodexFiveHourWindowInactive,
@@ -79,7 +80,7 @@ describe("quota window activation", () => {
 
     expect(requestedUrl).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
     const headers = new Headers(requestedHeaders);
-    expect(headers.get("user-agent")).toMatch(/^antigravity\/hub\/2\.23\.0 darwin\/(arm64|x64)$/);
+    expect(headers.get("user-agent")).toStartWith(`antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} darwin/`);
     expect(headers.get("user-agent")).not.toBe("antigravity");
 
     const unused = quota?.find(item => item.groupName === "Gemini Unused");

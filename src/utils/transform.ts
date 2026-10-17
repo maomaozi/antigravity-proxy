@@ -213,18 +213,12 @@ export function transformCompletionToGoogleBody(
   };
 
   const gemini38Match = resolvedModel.match(/^gemini-3\.8-flash(?:-(low|medium|high|tiered))?$/);
-  const gemini35Match = resolvedModel.match(/^gemini-3\.5-flash(?:-(low|medium|high))?$/);
+  const geminiLiteMatch = resolvedModel.match(/^gemini-(3\.5|3\.1)-flash-lite(?:-(low|medium|high))?$/);
 
   if (gemini38Match) {
     routeCurrentModel("gemini-3.8-flash-tiered", gemini38Match[1] === "tiered" ? "high" : gemini38Match[1] || "high");
-  } else if (gemini35Match) {
-    const tier = gemini35Match[1] || "medium";
-    const runtimeByTier: Record<string, string> = {
-      low: "gemini-3.5-flash-extra-low",
-      medium: "gemini-3.5-flash-low",
-      high: "gemini-3-flash-agent"
-    };
-    routeCurrentModel(runtimeByTier[tier], tier);
+  } else if (geminiLiteMatch) {
+    routeCurrentModel(`gemini-${geminiLiteMatch[1]}-flash-lite`, geminiLiteMatch[2] || "low");
   } else if (resolvedModel === "claude-sonnet-4-6-thinking") {
     routeCurrentModel("claude-sonnet-4-6");
   } else if (resolvedModel === "claude-opus-4-6-thinking") {
@@ -260,7 +254,6 @@ export function transformCompletionToGoogleBody(
       "claude-opus-4-6-thinking",
       "gpt-oss-120b-medium",
       "gemini-3.8-flash-tiered",
-      "gemini-3.5-flash-low",
       "gemini-3-flash",
       "gemini-3-pro-high", 
       "gemini-3-pro-low",
@@ -461,7 +454,7 @@ export function transformCompletionToGoogleBody(
     ? Math.trunc(requestedMaxTokens)
     : defaultMaxOutputTokens;
   const modelOutputLimit = isGemini3ProtocolModel
-    ? 65536
+    ? (googleModel.includes("flash-lite") ? 65535 : 65536)
     : (googleModel.includes("claude") ? 64000 : (googleModel.includes("gpt-oss") ? 32768 : undefined));
   const maxOutputTokens = modelOutputLimit
     ? Math.min(normalizedMaxOutputTokens, modelOutputLimit)

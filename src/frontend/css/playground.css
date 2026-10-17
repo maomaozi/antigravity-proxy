@@ -43,3 +43,8 @@ aside .subtle{margin-top:8px;padding:2px 0;border:0;background:transparent;color
 [hidden]{display:none!important}
 @media(max-width:1023px){#messages{min-height:300px;max-height:65vh}.workspace{min-height:70vh}}
 @media(max-width:639px){#messages{padding:16px}.workspace-heading,#composer{padding:14px 16px}#empty{padding:40px 0}}
+
+.catalog-note{margin-top:12px;padding:10px 12px;border:1px solid var(--playground-border);border-radius:4px;background:var(--playground-field)}
+.catalog-note p+p{margin-top:6px}
+.catalog-note details{margin-top:8px;font-size:10px;color:var(--playground-muted)}
+.catalog-note summary{cursor:pointer}

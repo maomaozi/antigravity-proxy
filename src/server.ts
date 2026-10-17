@@ -157,6 +157,8 @@ Bun.serve({
             created: Math.floor(Date.now() / 1000),
             owned_by: "antigravity",
             name: model.name,
+            description: model.description,
+            recommended: model.recommended,
             thinking_levels: model.thinkingLevels,
             default_thinking_level: model.defaultThinkingLevel
         }));

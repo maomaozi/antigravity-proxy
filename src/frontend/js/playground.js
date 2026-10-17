@@ -14,7 +14,7 @@ const selections = { chat: '', image: 'gemini-3.1-flash-image' };
 let imageModels = [
     { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image (Nano Banana 2)' },
 ];
-let mode = 'chat';
+let mode = 'chat', catalog = null;
 function currentModel() { return $('model-select').value === '__custom__' ? $('model').value.trim() : $('model-select').value; }
 function error(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 function themePreference() {
@@ -59,7 +59,7 @@ function populate(preferred = currentModel()) {
         const container = document.createElement('optgroup'); container.label = group.name;
         for (const model of group.items) {
             const option = document.createElement('option'); option.value = model.id;
-            option.textContent = `${model.name || model.id} · ${model.id}`;
+            option.textContent = `${model.recommended ? '推荐 · ' : ''}${model.name || model.id} · ${model.id}`;
             container.append(option);
         }
         select.append(container);
@@ -75,7 +75,8 @@ function populate(preferred = currentModel()) {
     syncThinkingLevels();
 }
 function syncThinkingLevels() {
-    const model = models.find(item => item.id === currentModel());
+    const model = (mode === 'image' ? imageModels : models).find(item => item.id === currentModel());
+    $('model-description').textContent = mode === 'image' ? '图片模型支持文字生图与参考图编辑。' : model?.description || '';
     const levels = mode === 'chat' && model?.thinking_levels;
     const select = $('effort');
     const previous = select.value;
@@ -109,6 +110,10 @@ async function loadModels() {
         if (!Array.isArray(result.data)) throw new Error('模型列表格式错误');
         const preferred = currentModel();
         const wasListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
+        catalog = result.antigravity || null;
+        $('model-catalog').hidden = !catalog;
+        $('model-verification').textContent = catalog ? `${catalog.verifiedAt} 核对 · ${catalog.verifiedAccountCount} 个账号` : '';
+        $('model-catalog-notice').textContent = catalog ? [catalog.notice, ...(catalog.disabledModels || []).map(model => `${model.name}：${model.reason}`), ...(catalog.capacityLimitedModels || []).map(model => `${model.name}：${model.reason}`)].join(' ') : '';
         models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && !item.disabled);
         if (Array.isArray(result.antigravity?.imageModels)) imageModels = result.antigravity.imageModels;
         const stillListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);

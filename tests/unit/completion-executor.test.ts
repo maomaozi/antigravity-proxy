@@ -96,7 +96,9 @@ describe("completion failure classification", () => {
 
   test.each([
     ["antigravity-gemini-3.8-flash", "gemini-3.8-flash-tiered"],
-    ["antigravity-gemini-3.5-flash", "gemini-3.5-flash-low"],
+    ["antigravity-gemini-3.5-flash-lite", "gemini-3.5-flash-lite"],
+    ["antigravity-gemini-3.1-flash-lite", "gemini-3.1-flash-lite"],
+    ["antigravity-gemini-3-flash", "gemini-3-flash"],
     ["antigravity-claude-sonnet-4-6-thinking", "claude-sonnet-4-6"],
     ["antigravity-claude-opus-4-6-thinking", "claude-opus-4-6-thinking"],
     ["antigravity-gpt-oss-120b", "gpt-oss-120b-medium"],

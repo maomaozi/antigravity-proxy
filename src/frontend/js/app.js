@@ -1,6 +1,7 @@
 let globalAccounts = [];
 let globalCooldowns = {};
 let globalSupportedModels = [];
+let globalGeminiCatalog = null;
 let globalCodexModels = [];
 let expandedAccounts = new Set();
 let expandedCodexAccounts = new Set();
@@ -528,6 +529,10 @@ function renderFamilyGrid(stats) {
             .sort()
             .join(', ');
 
+        const modelSummary = stat.name === 'Gemini Models' && Array.isArray(globalGeminiCatalog?.chatModels)
+            ? `${globalGeminiCatalog.chatModels.length} 个聊天模型 · 推荐 ${globalGeminiCatalog.chatModels.find(model => model.recommended)?.name || 'Gemini'}`
+            : modelsInFamily;
+
         const quotaWindowSummary = stat.provider === 'codex' && stat.windowStats?.length
             ? `<div class="shrink-0 w-[132px] space-y-1.5" title="Codex quota windows">
                 ${stat.windowStats.map(window => `<div>
@@ -560,7 +565,7 @@ function renderFamilyGrid(stats) {
                 </div>
 
                 <div class="flex items-center justify-between gap-4 mt-auto">
-                     <div class="min-w-0 flex-1 h-12 overflow-hidden text-[10px] text-zinc-500 dark:text-zinc-600 leading-tight" title="${modelsInFamily}">${modelsInFamily}</div>
+                     <div class="min-w-0 flex-1 h-12 overflow-hidden text-[10px] text-zinc-500 dark:text-zinc-600 leading-tight" title="${escapeHtml(modelsInFamily)}">${escapeHtml(modelSummary)}</div>
                      ${quotaWindowSummary}
                 </div>
             </div>
@@ -820,6 +825,56 @@ function renderAccountsTable(accounts) {
     }).join('');
 }
 
+function renderGeminiCatalog(catalog) {
+    const grid = $('gemini-model-grid');
+    if (!grid || !catalog) return;
+    globalGeminiCatalog = catalog;
+    const chatModels = catalog.chatModels || [];
+    const imageModels = catalog.imageModels || [];
+    $('gemini-catalog-verification').textContent = `${catalog.verifiedAt} 核对 · ${catalog.verifiedAccountCount} 个账号 · ${chatModels.length} 个聊天模型 / ${imageModels.length} 个图片模型`;
+    grid.innerHTML = [...chatModels.map(model => ({ ...model, kind: 'chat' })), ...imageModels.map(model => ({ ...model, kind: 'image' }))].map(model => {
+        const image = model.kind === 'image';
+        const badge = image ? '图片生成' : model.recommended ? '推荐' : model.name.includes('Lite') ? '轻量' : '兼容';
+        const detail = image ? '文字生图与参考图编辑，请在图片生成模式使用。' : model.description;
+        const levels = image ? '独立图片生成模式' : `思考：${(model.thinkingLevels || []).join(' / ')} · 默认 ${model.defaultThinkingLevel}`;
+        return `<article class="min-w-0 p-4 rounded border ${model.recommended ? 'border-emerald-300 dark:border-emerald-900' : 'border-zinc-200 dark:border-zinc-800'} bg-white dark:bg-[#0a0a0a]">
+            <div class="flex items-start justify-between gap-2"><h3 class="text-xs font-bold text-zinc-900 dark:text-white">${escapeHtml(model.name)}</h3><span class="shrink-0 text-[9px] text-emerald-600 dark:text-emerald-400">${badge}</span></div>
+            <p class="mt-2 min-h-[32px] text-[10px] leading-relaxed text-zinc-500">${escapeHtml(detail)}</p>
+            <code class="block mt-3 text-[10px] break-all select-all text-zinc-700 dark:text-zinc-300">${escapeHtml(model.id)}</code>
+            <div class="flex items-end justify-between gap-2 mt-3"><span class="text-[9px] leading-relaxed text-zinc-500">${escapeHtml(levels)}</span><button type="button" onclick="copyGeminiModel(this)" data-model-id="${escapeHtml(model.id)}" class="shrink-0 text-[9px] text-emerald-600 dark:text-emerald-400 hover:underline" aria-label="复制 ${escapeHtml(model.name)} 模型 ID">复制 ID</button></div>
+        </article>`;
+    }).join('');
+    $('gemini-catalog-notice').textContent = catalog.verification || '';
+    const unavailable = [
+        ...(catalog.retiredModels || []).map(model => ({ ...model, status: '已停用' })),
+        ...(catalog.disabledModels || []).map(model => ({ ...model, status: '不可用' })),
+        ...(catalog.capacityLimitedModels || []).map(model => ({ ...model, status: '容量不足' })),
+    ];
+    $('gemini-catalog-history').innerHTML = unavailable.map(model => `<div><span class="text-amber-600 dark:text-amber-400">${model.status}</span> · <strong>${escapeHtml(model.name)}</strong><p>${escapeHtml(model.reason)}${model.replacement ? ` 推荐使用 ${escapeHtml(model.replacement)}。` : ''}</p></div>`).join('')
+        + `<div><strong>目录中已移除</strong><p class="break-words">${(catalog.removedModels || []).map(escapeHtml).join(' / ')}</p></div>`
+        + (catalog.aliases || []).map(alias => `<div><strong>旧别名 · ${escapeHtml(alias.name)}</strong><p class="break-words">${alias.ids.map(escapeHtml).join(' / ')}</p><p>建议使用 ${escapeHtml(alias.replacement)}，不作为独立模型重复展示。</p></div>`).join('');
+}
+
+async function copyGeminiModel(button) {
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(button.dataset.modelId);
+        } else {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(button.closest('article').querySelector('code'));
+            selection.removeAllRanges();
+            selection.addRange(range);
+            if (!document.execCommand('copy')) throw new Error('Copy unavailable');
+            selection.removeAllRanges();
+        }
+        button.textContent = '已复制';
+    } catch {
+        button.textContent = '请手动复制';
+    }
+    setTimeout(() => { button.textContent = '复制 ID'; }, 2000);
+}
+
 function updateUI(data) {
     if (Array.isArray(data)) {
         globalAccounts = data;
@@ -827,6 +882,7 @@ function updateUI(data) {
         if (data.accounts) globalAccounts = data.accounts;
         if (data.cooldowns) globalCooldowns = data.cooldowns;
         if (data.supportedModels) globalSupportedModels = data.supportedModels;
+        if (data.antigravity) renderGeminiCatalog(data.antigravity);
         if (data.codexModels) globalCodexModels = data.codexModels;
         if (data.version && $('app-version')) $('app-version').textContent = 'v' + data.version;
     }

@@ -271,10 +271,13 @@ describe("Unit Tests: transformToGoogleBody", () => {
     ["antigravity-gemini-3.8-flash-low", "gemini-3.8-flash-tiered", "low"],
     ["antigravity-gemini-3.8-flash-medium", "gemini-3.8-flash-tiered", "medium"],
     ["antigravity-gemini-3.8-flash-high", "gemini-3.8-flash-tiered", "high"],
-    ["antigravity-gemini-3.5-flash", "gemini-3.5-flash-low", "medium"],
-    ["antigravity-gemini-3.5-flash-low", "gemini-3.5-flash-extra-low", "low"],
-    ["antigravity-gemini-3.5-flash-medium", "gemini-3.5-flash-low", "medium"],
-    ["antigravity-gemini-3.5-flash-high", "gemini-3-flash-agent", "high"]
+    ["antigravity-gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "low"],
+    ["antigravity-gemini-3.5-flash-lite-medium", "gemini-3.5-flash-lite", "medium"],
+    ["antigravity-gemini-3.5-flash-lite-high", "gemini-3.5-flash-lite", "high"],
+    ["antigravity-gemini-3.1-flash-lite", "gemini-3.1-flash-lite", "low"],
+    ["antigravity-gemini-3.1-flash-lite-high", "gemini-3.1-flash-lite", "high"],
+    ["antigravity-gemini-3-flash", "gemini-3-flash", "low"],
+    ["antigravity-gemini-3-flash-high", "gemini-3-flash", "high"]
   ])("maps current Gemini model %s", (model, runtimeModel, thinkingLevel) => {
     const result = transformToGoogleBody({
       model,
@@ -286,6 +289,9 @@ describe("Unit Tests: transformToGoogleBody", () => {
   });
 
   test.each([
+    "antigravity-gemini-3.5-flash",
+    "antigravity-gemini-3.5-flash-high",
+    "gemini-3-flash-agent",
     "antigravity-gemini-3.7-flash-high",
     "openai/antigravity-gemini-3.6-flash",
     "antigravity/gemini-3.1-pro-low",
@@ -297,6 +303,11 @@ describe("Unit Tests: transformToGoogleBody", () => {
     const body = { model, messages: [{ role: "user", content: "Hi" }] };
     expect(validateOpenAIRequestForGoogle(body)).toContain("/v1/models");
     expect(() => transformToGoogleBody(body, "p", "us-central1")).toThrow("/v1/models");
+  });
+
+  test("caps Lite output tokens at the verified upstream limit", () => {
+    const result = transformToGoogleBody({ model: "antigravity-gemini-3.5-flash-lite-high", max_tokens: 999999, messages: [{ role: "user", content: "Hi" }] }, "p", "");
+    expect(result.request.generationConfig.maxOutputTokens).toBe(65535);
   });
 
   test.each([

@@ -359,7 +359,7 @@ The proxy supports OpenAI-compatible `response_format` with the following curren
 | Model | `json_object` | `json_schema` |
 | --- | --- | --- |
 | Claude Opus/Sonnet | Supported via an unconstrained upstream object schema | Supported |
-| Gemini 3.8 / 3.5 Flash | Not reliably enforced without an explicit schema | Supported for the upstream schema subset |
+| Gemini 3.8 Flash / Flash Lite | Not reliably enforced without an explicit schema | Supported for the upstream schema subset |
 | GPT-OSS | Not supported by the current upstream path | Not supported by the current upstream path |
 
 For Claude, structured-output requests are mapped at the protocol level without modifying the user prompt. Claude thinking is disabled for these requests because the upstream API cannot combine thinking with schema-forced output.
@@ -401,9 +401,9 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
                     "high": { "reasoningEffort": "high" }
                 }
             },
-            "antigravity-gemini-3.5-flash": {
-                "name": "Gemini 3.5 Flash (Antigravity)",
-                "limit": { "context": 1048576, "output": 65536 },
+            "antigravity-gemini-3.5-flash-lite": {
+                "name": "Gemini 3.5 Flash Lite (Antigravity)",
+                "limit": { "context": 1048576, "output": 65535 },
                 "reasoning": true,
                 "variants": {
                     "low": { "reasoningEffort": "low" },
@@ -430,18 +430,37 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
 
 ### Current Antigravity Catalog
 
-The account catalog was verified on **2026-10-14** using Antigravity Hub
-**2.23.0**. `/v1/models`, the dashboard, and Playground share the updated
-catalog. Gemini 3.8 Flash defaults to **High**; Gemini 3.5 Flash remains
-available as a compatibility model. Playground also lists the verified image
-model, `gemini-3.1-flash-image` (Nano Banana 2).
+The catalog was verified on **2026-10-17** using Antigravity Hub **2.24.0**.
+All five configured Google accounts returned the same directory. Real generation
+probes also checked each model and the Low / Medium / High thinking levels;
+a directory entry or HTTP 200 alone does not establish availability.
 
-Gemini 3.6 Flash, 3.7 Flash, and 3.1 Pro are absent from the verified accounts;
-their old IDs return HTTP 400 with a replacement suggestion. Gemini 4 Argon
-is marked disabled upstream and is shown as unavailable rather than offered
-for selection. Availability can differ by account and subscription tier.
-The `antigravity` metadata in `/v1/models` records the verification date,
-client version, image models, and availability notice; it is a dated snapshot.
+| Gemini model | Proxy ID | Status |
+| --- | --- | --- |
+| Gemini 3.8 Flash | `antigravity-gemini-3.8-flash` | Recommended; default High |
+| Gemini 3.5 Flash Lite | `antigravity-gemini-3.5-flash-lite` | Available; default Low |
+| Gemini 3.1 Flash Lite | `antigravity-gemini-3.1-flash-lite` | Available; default Low |
+| Gemini 3 Flash | `antigravity-gemini-3-flash` | Available for compatibility; default Low |
+| Gemini 3.1 Flash Image (Nano Banana 2) | `gemini-3.1-flash-image` | Image generation and reference-image editing |
+
+**Gemini 3.5 Flash is retired; Gemini 3.5 Flash Lite remains available.** The
+former model's Low / Medium / High backends return a retirement notice with HTTP
+200. Old 3.5 Flash IDs now return HTTP 400 with working replacement suggestions.
+The upstream notice suggests 3.7, but 3.7 is absent from the verified directory;
+use 3.8 Flash instead.
+
+The old `gemini-2.5-flash`, `gemini-2.5-flash-lite`, and
+`gemini-2.5-flash-thinking` IDs are labeled **Gemini 3.5 Flash Lite** upstream.
+They remain accepted as upstream aliases and are not listed as separate models.
+Gemini 2.5 Pro returned HTTP 503 capacity exhaustion, so it is not offered in the
+selector; this transient failure is not treated as retirement. Gemini 4 Argon is
+marked disabled. Gemini 3.6 Flash, 3.7 Flash, and 3.1 Pro remain absent.
+
+`/v1/models`, the dashboard directory, and Playground share this catalog.
+The dashboard separates usable chat/image models from retired, disabled,
+capacity-limited models, and aliases. Playground displays the recommended model,
+thinking levels, verification date, and catalog changes. Availability still
+depends on account access and upstream capacity; this is a dated snapshot.
 
 ### Thinking Levels
 
@@ -456,7 +475,9 @@ thinking level to the model ID:
 | Model | Levels | Default |
 | --- | --- | --- |
 | `antigravity-gemini-3.8-flash` | `low`, `medium`, `high` | `high` |
-| `antigravity-gemini-3.5-flash` | `low`, `medium`, `high` | `medium` |
+| `antigravity-gemini-3.5-flash-lite` | `low`, `medium`, `high` | `low` |
+| `antigravity-gemini-3.1-flash-lite` | `low`, `medium`, `high` | `low` |
+| `antigravity-gemini-3-flash` | `low`, `medium`, `high` | `low` |
 | `antigravity-claude-sonnet-4-6-thinking` | Fixed thinking | Thinking |
 | `antigravity-claude-opus-4-6-thinking` | Fixed thinking | Thinking |
 | `antigravity-gpt-oss-120b` | Fixed | `medium` |
