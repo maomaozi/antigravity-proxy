@@ -8,7 +8,7 @@ describe('playground existing API compatibility', () => {
         const image = await readAttachment(new File([new Uint8Array([1, 2, 3])], 'sample.png', { type: 'image/png' }));
         expect(image.url).toBe('data:image/png;base64,AQID');
         const content = userContent('分析附件', [text, image]);
-        expect(content[1]).toEqual({ type: 'input_text', text: '附件：sample.csv\n\n你好,world' });
+        expect(content[1]).toEqual({ type: 'input_text', text: 'Attachment: sample.csv\n\n你好,world' });
         expect(validateResponsesRequest({ model: 'antigravity-gemini-3.8-flash', stream: true, store: false, input: [
             { role: 'user', content },
             { role: 'assistant', content: [{ type: 'output_text', text: '收到' }] },
@@ -16,8 +16,8 @@ describe('playground existing API compatibility', () => {
         ] })).toBeUndefined();
     });
     test('rejects unsupported, disguised binary and oversized attachments', async () => {
-        await expect(readAttachment(new File(['binary'], 'report.pdf', { type: 'application/pdf' }))).rejects.toThrow('不支持');
-        await expect(readAttachment(new File(['a\0b'], 'report.txt'))).rejects.toThrow('二进制');
+        await expect(readAttachment(new File(['binary'], 'report.pdf', { type: 'application/pdf' }))).rejects.toThrow('Unsupported file');
+        await expect(readAttachment(new File(['a\0b'], 'report.txt'))).rejects.toThrow('binary data');
         await expect(readAttachment(new File([new Uint8Array([255])], 'report.txt'))).rejects.toThrow('UTF-8');
         await expect(readAttachment(new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'large.txt'))).rejects.toThrow('10 MB');
     });

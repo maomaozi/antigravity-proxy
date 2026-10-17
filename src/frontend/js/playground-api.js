@@ -1,12 +1,12 @@
 const TEXT_EXTENSION = /\.(txt|md|csv|jsonl?|log|xml|ya?ml|html?|css|[cm]?js|tsx?|jsx|py|go|rs|java|c|cpp|h|sh|sql)$/i;
 export async function readAttachment(file) {
     const image = /^image\/(png|jpeg|webp|gif)$/.test(file.type);
-    if (!image && !TEXT_EXTENSION.test(file.name) && !file.type.startsWith('text/')) throw new Error(`不支持的文件：${file.name}。请使用图片或 UTF-8 文本文件。`);
-    if (file.size > 10 * 1024 * 1024) throw new Error('附件总大小不能超过 10 MB。');
+    if (!image && !TEXT_EXTENSION.test(file.name) && !file.type.startsWith('text/')) throw new Error(`Unsupported file: ${file.name}.`);
+    if (file.size > 10 * 1024 * 1024) throw new Error('Attachments exceed 10 MB.');
     if (!image) {
         let text;
-        try { text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()); } catch { throw new Error(`${file.name} 不是有效的 UTF-8 文本。`); }
-        if (text.includes('\0')) throw new Error(`${file.name} 包含二进制内容，无法作为文本发送。`);
+        try { text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()); } catch { throw new Error(`${file.name} is not valid UTF-8 text.`); }
+        if (text.includes('\0')) throw new Error(`${file.name} contains binary data.`);
         return { name: file.name, size: file.size, text };
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -19,14 +19,14 @@ export function userContent(prompt, attachments) {
     if (prompt) content.push({ type: 'input_text', text: prompt });
     for (const file of attachments) content.push(file.url
         ? { type: 'input_image', image_url: file.url }
-        : { type: 'input_text', text: `附件：${file.name}\n\n${file.text}` });
+        : { type: 'input_text', text: `Attachment: ${file.name}\n\n${file.text}` });
     return content;
 }
 export function outputText(response) {
     return (response.output || []).filter(item => item.type === 'message').flatMap(item => item.content || []).filter(part => part.type === 'output_text').map(part => part.text).join('');
 }
 export async function consumeEvents(response, onEvent) {
-    if (!response.body) throw new Error('响应没有内容。');
+    if (!response.body) throw new Error('Empty response.');
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';

@@ -16,9 +16,6 @@ aside .subtle{margin-top:8px;padding:2px 0;border:0;background:transparent;color
 .workspace-heading{display:flex;justify-content:space-between;gap:16px;padding:15px 24px;border-bottom:1px solid var(--playground-border);background:var(--playground-surface);font-size:10px}
 #status{color:var(--playground-muted)}
 #messages{flex:1;min-height:0;overflow-y:auto;padding:24px;scroll-behavior:smooth}
-#empty{text-align:center;color:var(--playground-muted);padding:12vh 12px;font-size:11px}
-#empty h2{margin:12px 0 6px;color:var(--playground-text);font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
-.spark{color:var(--playground-accent);font-size:34px}
 .message{max-width:950px;margin:0 auto 16px;padding:16px;border:1px solid var(--playground-border);border-radius:4px;background:var(--playground-surface);font-size:11px;line-height:1.7}
 .message.user{background:var(--playground-user)}
 .message-label{margin-bottom:9px;color:var(--playground-muted);font-size:10px;font-weight:700;overflow-wrap:anywhere}
@@ -42,4 +39,4 @@ aside .subtle{margin-top:8px;padding:2px 0;border:0;background:transparent;color
 .attachment button{border:0;padding:0 5px}
 [hidden]{display:none!important}
 @media(max-width:1023px){#messages{min-height:300px;max-height:65vh}.workspace{min-height:70vh}}
-@media(max-width:639px){#messages{padding:16px}.workspace-heading,#composer{padding:14px 16px}#empty{padding:40px 0}}
+@media(max-width:639px){#messages{padding:16px}.workspace-heading,#composer{padding:14px 16px}}

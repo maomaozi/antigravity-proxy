@@ -26,7 +26,7 @@ function applyTheme() {
     $('icon-sun').classList.toggle('hidden', preference !== 'light');
     $('icon-moon').classList.toggle('hidden', preference !== 'dark');
     $('icon-system').classList.toggle('hidden', preference !== 'system');
-    $('theme').title = `切换主题（当前：${{ system: '跟随系统', light: '浅色', dark: '深色' }[preference]}）`;
+    $('theme').title = `Theme: ${{ system: 'System', light: 'Light', dark: 'Dark' }[preference]}`;
 }
 $('theme').onclick = () => {
     const next = { system: 'light', light: 'dark', dark: 'system' }[themePreference()];
@@ -50,8 +50,8 @@ function busy() {
 function populate(preferred = currentModel()) {
     const select = $('model-select'); select.replaceChildren();
     const options = mode === 'image' ? imageModels : models;
-    const groups = mode === 'image' ? [{ name: '图片生成', items: options }] : [
-        { name: 'Google / Antigravity', items: options.filter(item => item.owned_by !== 'codex') },
+    const groups = mode === 'image' ? [{ name: 'Images', items: options }] : [
+        { name: 'Antigravity', items: options.filter(item => item.owned_by !== 'codex') },
         { name: 'Codex', items: options.filter(item => item.owned_by === 'codex') },
     ];
     for (const group of groups) {
@@ -59,19 +59,17 @@ function populate(preferred = currentModel()) {
         const container = document.createElement('optgroup'); container.label = group.name;
         for (const model of group.items) {
             const option = document.createElement('option'); option.value = model.id;
-            option.textContent = `${model.recommended ? '推荐 · ' : ''}${model.name || model.id} · ${model.id}`;
+            option.textContent = model.name || model.id;
             container.append(option);
         }
         select.append(container);
     }
-    const custom = document.createElement('option'); custom.value = '__custom__'; custom.textContent = '自定义模型 ID…'; select.append(custom);
+    const custom = document.createElement('option'); custom.value = '__custom__'; custom.textContent = 'Custom model…'; select.append(custom);
     const found = preferred && options.some(item => item.id === preferred);
     select.value = found ? preferred : preferred ? '__custom__' : options[0]?.id || '__custom__';
     $('model-custom').hidden = select.value !== '__custom__';
     $('model').value = select.value === '__custom__' ? preferred : '';
-    $('model-status').textContent = mode === 'image'
-        ? `可选择 ${imageModels.length} 个图片模型。`
-        : `已加载 ${models.length} 个聊天模型，也可输入自定义 ID。`;
+    $('model-status').textContent = ''; $('model-status').hidden = true;
     syncThinkingLevels();
 }
 function syncThinkingLevels() {
@@ -83,7 +81,7 @@ function syncThinkingLevels() {
     const fixed = Array.isArray(levels) && levels.length === 1;
     const defaultOption = document.createElement('option'); defaultOption.value = '';
     defaultOption.textContent = model?.default_thinking_level && mode === 'chat'
-        ? `${fixed ? '固定' : '模型默认'} (${model.default_thinking_level})` : '模型默认';
+        ? `${fixed ? 'Fixed' : 'Default'} (${model.default_thinking_level})` : 'Default';
     select.append(defaultOption);
     for (const level of fixed ? [] : Array.isArray(levels) ? levels : ['low', 'medium', 'high']) {
         const option = document.createElement('option'); option.value = level; option.textContent = level;
@@ -101,35 +99,33 @@ $('model-select').onchange = () => {
 };
 $('model').oninput = syncThinkingLevels;
 async function loadModels() {
-    $('reload').disabled = true; $('model-status').textContent = '正在加载模型…';
+    $('reload').disabled = true; $('model-status').textContent = 'Loading…'; $('model-status').hidden = false;
     try {
         const response = await fetch('/v1/models', { cache: 'no-store' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const result = await response.json();
-        if (!Array.isArray(result.data)) throw new Error('模型列表格式错误');
+        if (!Array.isArray(result.data)) throw new Error('Invalid model list');
         const preferred = currentModel();
         const wasListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
         models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && !item.disabled);
         if (Array.isArray(result.antigravity?.imageModels)) imageModels = result.antigravity.imageModels;
         const stillListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
         populate(wasListed && !stillListed ? '' : preferred);
-    } catch (e) { populate(); $('model-status').textContent = `模型加载失败：${e.message}。可重试或手动输入 ID。`; }
+    } catch (e) { populate(); $('model-status').textContent = `Could not load models: ${e.message}`; $('model-status').hidden = false; }
     finally { $('reload').disabled = !!controller; }
 }
 $('reload').onclick = loadModels;
-function reset() { history = []; session = newSessionId(); $('messages').replaceChildren(); error(); $('status').textContent = '就绪'; }
+function reset() { history = []; session = newSessionId(); $('messages').replaceChildren(); error(); $('status').textContent = 'Ready'; }
 $('clear').onclick = () => { reset(); attachments = []; $('prompt').value = ''; renderAttachments(); };
 $('mode').onchange = () => {
     selections[mode] = currentModel(); mode = $('mode').value;
     const image = mode === 'image';
     $('chat-options').hidden = image; $('image-options').hidden = !image;
-    $('upload').textContent = image ? '＋ 添加参考图' : '＋ 添加附件';
-    $('file-hint').textContent = image
-        ? '支持 PNG / JPEG / WebP / GIF；最多 8 张，总计 10 MB。图片会随提示词发送给生图模型。'
-        : '支持 PNG / JPEG / WebP / GIF 和 UTF-8 文本、代码文件；最多 8 个，总计 10 MB。文本文件会作为消息正文发送，图片理解取决于模型能力。';
+    $('upload').textContent = image ? '+ Add images' : '+ Attach';
     $('files').accept = image ? 'image/png,image/jpeg,image/webp,image/gif' : 'image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql';
-    $('heading').textContent = image ? '图片生成' : '多轮聊天'; $('send').textContent = image ? '生成图片' : '发送';
-    $('prompt').placeholder = image ? '描述你想生成的画面…' : '输入消息… Enter 发送，Shift + Enter 换行';
+    $('heading').textContent = image ? 'Images' : 'Chat'; $('send').textContent = image ? 'Generate' : 'Send';
+    $('clear').textContent = image ? 'Clear' : 'New chat';
+    $('prompt').placeholder = image ? 'Prompt' : 'Message';
     attachments = []; renderAttachments(); populate(selections[mode]); reset();
 };
 function renderAttachments() {
@@ -138,7 +134,7 @@ function renderAttachments() {
         const item = document.createElement('div'); item.className = 'attachment';
         if (file.url) { const image = document.createElement('img'); image.src = file.url; image.alt = file.name; item.append(image); }
         const name = document.createElement('span'); name.textContent = file.name; item.append(name);
-        const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×'; remove.setAttribute('aria-label', `移除 ${file.name}`); remove.disabled = !!controller || reading;
+        const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×'; remove.setAttribute('aria-label', `Remove ${file.name}`); remove.disabled = !!controller || reading;
         remove.onclick = () => { attachments.splice(index, 1); renderAttachments(); }; item.append(remove); $('attachments').append(item);
     });
 }
@@ -149,9 +145,9 @@ async function addFiles(files) {
     const selectedMode = mode;
     try {
         const selected = [...files];
-        if (selectedMode === 'image' && selected.some(file => !/^image\/(png|jpeg|webp|gif)$/.test(file.type))) throw new Error('图片生成仅支持 PNG、JPEG、WebP 或 GIF 参考图。');
-        if (selected.length + attachments.length > 8) throw new Error('最多添加 8 个附件。');
-        if ([...selected, ...attachments].reduce((total, file) => total + file.size, 0) > 10 * 1024 * 1024) throw new Error('附件总大小不能超过 10 MB。');
+        if (selectedMode === 'image' && selected.some(file => !/^image\/(png|jpeg|webp|gif)$/.test(file.type))) throw new Error('Choose a PNG, JPEG, WebP, or GIF image.');
+        if (selected.length + attachments.length > 8) throw new Error('Up to 8 attachments allowed.');
+        if ([...selected, ...attachments].reduce((total, file) => total + file.size, 0) > 10 * 1024 * 1024) throw new Error('Attachments exceed 10 MB.');
         const loaded = await Promise.all(selected.map(readAttachment));
         if (mode === selectedMode) attachments.push(...loaded);
     } catch (e) { error(e.message); }
@@ -169,13 +165,12 @@ $('prompt').onpaste = event => { if (event.clipboardData.files.length) { event.p
 $('prompt').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('send').disabled) $('composer').requestSubmit(); } };
 $('stop').onclick = () => controller?.abort();
 function message(role, text, files = []) {
-    $('empty')?.remove();
     const element = document.createElement('article'); element.className = `message ${role}`;
-    const label = document.createElement('div'); label.className = 'message-label'; label.textContent = role === 'user' ? '你' : currentModel();
+    const label = document.createElement('div'); label.className = 'message-label'; label.textContent = role === 'user' ? 'You' : [...models, ...imageModels].find(model => model.id === currentModel())?.name || currentModel();
     const body = document.createElement('div'); body.className = 'message-body'; body.textContent = text; element.append(label, body);
     for (const file of files) {
         if (file.url) { const img = document.createElement('img'); img.src = file.url; img.alt = file.name; element.append(img); }
-        else { const name = document.createElement('div'); name.textContent = `附件：${file.name}`; name.className = 'usage'; element.append(name); }
+        else { const name = document.createElement('div'); name.textContent = `Attachment: ${file.name}`; name.className = 'usage'; element.append(name); }
     }
     $('messages').append(element); element.scrollIntoView({ block: 'nearest' });
     return { element, body };
@@ -184,9 +179,9 @@ function note(element, text, className = 'usage') { const node = document.create
 $('composer').onsubmit = async event => {
     event.preventDefault(); if (controller || reading) return;
     const prompt = $('prompt').value.trim(), model = currentModel(), files = [...attachments];
-    if (!model) return error('请先选择或输入模型 ID。');
-    if (!prompt && (mode === 'image' || !files.length)) return error(mode === 'image' ? '请输入图片修改要求。' : '请输入消息或添加附件。');
-    error(); controller = new AbortController(); busy(); $('status').textContent = mode === 'image' ? '正在生成图片…' : '正在回复…';
+    if (!model) return error('Select a model.');
+    if (!prompt && (mode === 'image' || !files.length)) return error(mode === 'image' ? 'Enter a prompt.' : 'Enter a message or attach a file.');
+    error(); controller = new AbortController(); busy(); $('status').textContent = mode === 'image' ? 'Generating…' : 'Responding…';
     message('user', prompt, files);
     const assistant = message('assistant', '');
     const input = { role: 'user', content: userContent(prompt, files) };
@@ -197,46 +192,46 @@ $('composer').onsubmit = async event => {
             ? { model, prompt, ...(files.length ? { images: files.map(file => file.url) } : {}), image_size: $('size').value, aspect_ratio: $('ratio').value, n: 1, response_format: 'b64_json', ...(effort ? { thinking_level: effort } : {}) }
             : { model, input: [...history, input], stream: true, store: false, instructions: $('instructions').value, ...(effort ? { reasoning: { effort } } : {}) };
         const response = await fetch(mode === 'image' ? '/v1/images/generations' : '/v1/responses', { method: 'POST', headers: { 'Content-Type': 'application/json', 'session-id': session }, body: JSON.stringify(body), signal: controller.signal });
-        if (!response.ok) { const raw = await response.text(); let detail; try { detail = JSON.parse(raw).error?.message; } catch {} throw new Error(detail || `请求失败（HTTP ${response.status}）：${raw.slice(0, 300)}`); }
+        if (!response.ok) { const raw = await response.text(); let detail; try { detail = JSON.parse(raw).error?.message; } catch {} throw new Error(detail || `Request failed (HTTP ${response.status}): ${raw.slice(0, 300)}`); }
         if (mode === 'image') {
             const result = await response.json();
-            if (!result.data?.length) throw new Error('接口未返回图片。');
+            if (!result.data?.length) throw new Error('No image returned.');
             for (const [index, item] of result.data.entries()) {
                 const mime = item.mime_type || 'image/png';
-                if (!/^image\/(png|jpeg|webp|gif)$/.test(mime) || !item.b64_json) throw new Error('接口返回了不支持的图片格式。');
+                if (!/^image\/(png|jpeg|webp|gif)$/.test(mime) || !item.b64_json) throw new Error('Unsupported image format.');
                 const url = `data:${mime};base64,${item.b64_json}`;
                 const img = document.createElement('img'); img.src = url; img.alt = prompt;
-                const link = document.createElement('a'); link.href = url; link.download = `generated-${Date.now()}-${index}.${mime.split('/')[1]}`; link.textContent = '下载图片'; assistant.element.append(img, link);
+                const link = document.createElement('a'); link.href = url; link.download = `generated-${Date.now()}-${index}.${mime.split('/')[1]}`; link.textContent = 'Download'; assistant.element.append(img, link);
             }
             complete = true;
         } else {
             let reasoning = '', reasoningNode;
             const finish = result => {
-                if (result.error) throw new Error(result.error.message || '生成失败');
-                if (result.status === 'incomplete' || result.status === 'failed') throw new Error(`回复未完成：${result.incomplete_details?.reason || result.status}`);
+                if (result.error) throw new Error(result.error.message || 'Generation failed');
+                if (result.status === 'incomplete' || result.status === 'failed') throw new Error(`Response incomplete: ${result.incomplete_details?.reason || result.status}`);
                 text = outputText(result) || text; assistant.body.textContent = text; complete = true;
-                if (result.usage) note(assistant.element, `输入 ${result.usage.input_tokens ?? '—'} / 输出 ${result.usage.output_tokens ?? '—'} tokens`);
+                if (result.usage) note(assistant.element, `Input ${result.usage.input_tokens ?? '—'} · Output ${result.usage.output_tokens ?? '—'} tokens`);
             };
             if (response.headers.get('content-type')?.includes('text/event-stream')) {
                 await consumeEvents(response, event => {
-                    if (event.type === 'error' || event.type === 'response.failed') throw new Error(event.error?.message || event.response?.error?.message || event.message || '生成失败');
+                    if (event.type === 'error' || event.type === 'response.failed') throw new Error(event.error?.message || event.response?.error?.message || event.message || 'Generation failed');
                     if (event.type === 'response.output_text.delta') { text += event.delta || ''; assistant.body.textContent = text; }
                     if (['response.reasoning_text.delta', 'response.reasoning_summary_text.delta'].includes(event.type)) {
-                        if (!reasoningNode) { const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = '思考过程'; reasoningNode = document.createElement('pre'); details.append(summary, reasoningNode); assistant.element.insertBefore(details, assistant.body); }
+                        if (!reasoningNode) { const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Reasoning'; reasoningNode = document.createElement('pre'); details.append(summary, reasoningNode); assistant.element.insertBefore(details, assistant.body); }
                         reasoning += event.delta || ''; reasoningNode.textContent = reasoning;
                     }
                     if (['response.completed', 'response.incomplete'].includes(event.type)) finish(event.response);
                 });
-                if (!complete) throw new Error('连接已中断，回复未完成。');
+                if (!complete) throw new Error('Connection interrupted.');
             } else finish(await response.json());
-            if (!text) throw new Error('模型未返回文本，请调整输入后重试。');
+            if (!text) throw new Error('No text returned.');
             history.push(input, { role: 'assistant', content: [{ type: 'output_text', text }] });
         }
-        $('prompt').value = ''; attachments = []; $('status').textContent = '已完成';
+        $('prompt').value = ''; attachments = []; $('status').textContent = 'Done';
     } catch (e) {
         const stopped = controller.signal.aborted;
-        const detail = stopped ? '已停止生成。' : e.message;
-        note(assistant.element, detail, 'failure'); error(stopped ? '' : detail); $('status').textContent = stopped ? '已停止' : '请求失败';
+        const detail = stopped ? 'Generation stopped.' : e.message;
+        note(assistant.element, detail, 'failure'); error(stopped ? '' : detail); $('status').textContent = stopped ? 'Stopped' : 'Failed';
     } finally { controller = null; busy(); $('prompt').focus(); }
 };
 loadModels();
