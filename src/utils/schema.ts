@@ -100,6 +100,23 @@ function cleanSchema(schema: any, root: any, aggressive: boolean, refs: Set<stri
     }
   }
 
+  if (Array.isArray(result.enum)) {
+    if (result.enum.length === 0) {
+      delete result.enum;
+    } else if (result.enum.every((value: any) => typeof value === "string" || typeof value === "number")) {
+      // Google's Schema encodes even numeric enum values as strings. Keep the
+      // declared type so tool arguments remain numbers rather than strings.
+      result.enum = result.enum.map(String);
+    } else {
+      // Boolean, null, and structured enums cannot be represented by Google's
+      // string/number enum schema. Preserve the constraint as model guidance
+      // without changing the argument type or sending an invalid enum payload.
+      const guidance = `Allowed values: ${result.enum.map((value: any) => JSON.stringify(value)).join(", ")}.`;
+      result.description = [result.description, guidance].filter(Boolean).join(" ");
+      delete result.enum;
+    }
+  }
+
   if (result.type === "ARRAY" && !result.items) result.items = { type: "STRING" };
   if (!result.type && schema.properties) result.type = "OBJECT";
   return result;

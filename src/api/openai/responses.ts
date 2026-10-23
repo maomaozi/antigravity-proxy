@@ -414,7 +414,7 @@ export function validateResponsesRequest(body: any): string | undefined {
     }
   }
   if (body.tool_choice != null && body.tool_choice !== "auto") return "Only tool_choice=auto is supported.";
-  if (body.parallel_tool_calls === false) return "parallel_tool_calls=false is not supported by the current upstream protocol.";
+  if (body.parallel_tool_calls != null && typeof body.parallel_tool_calls !== "boolean") return "parallel_tool_calls must be a boolean.";
   if (body.truncation != null && body.truncation !== "disabled") return "Only truncation=disabled is supported.";
   if (body.text?.verbosity != null) return "text.verbosity is not supported.";
   if (body.instructions != null && typeof body.instructions !== "string") return "instructions must be a string.";
@@ -613,6 +613,11 @@ export interface ResponsesResultContext {
 }
 
 export function encodeResponsesResult({ responseId, createdAt, requestBody, result }: ResponsesResultContext): any {
+  // Google has no request flag for serial tool use. Expose only the first
+  // proposed call so the client executes at most one tool before the next turn.
+  if (requestBody?.parallel_tool_calls === false && result.toolCalls.length > 1) {
+    result = { ...result, toolCalls: result.toolCalls.slice(0, 1) };
+  }
   const { status, incomplete } = responseStatus(result);
   const response: any = {
     id: responseId,
@@ -894,6 +899,9 @@ export function createResponsesStreamEncoder(context: ResponsesStreamContext): T
         });
       }
       for (const call of chunk.toolCalls ?? []) {
+        // Suppress extra calls before emitting any SSE events for them. Keep
+        // accepting argument deltas for the first call across later chunks.
+        if (context.requestBody?.parallel_tool_calls === false && toolStates.size > 0 && !toolStates.has(call.id)) continue;
         const state = ensureTool(controller, call);
         state.arguments += call.arguments;
         if (state.identity.kind === "function") {

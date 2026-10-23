@@ -13,6 +13,28 @@ beforeAll(async () => {
 });
 
 describe("Responses API request adapter", () => {
+  test("converts Codex boolean tool enums and structured output enums for Google", () => {
+    const parameters = {
+      type: "object",
+      properties: { enabled: { type: "boolean", enum: [true] } },
+      required: ["enabled"],
+    };
+    const request = adaptResponsesRequest({
+      model: "antigravity-gemini-3.8-flash",
+      input: "Use the tool",
+      tools: [{ type: "function", name: "enable", parameters }],
+      text: { format: { type: "json_schema", name: "result", schema: parameters } },
+    });
+
+    for (const aggressive of [false, true]) {
+      const result = transformCompletionToGoogleBody(request, "p", "us-central1", undefined, aggressive);
+      const toolSchema = result.request.tools[0].functionDeclarations[0].parameters;
+      expect(toolSchema.properties.enabled).toEqual({ type: "BOOLEAN", description: "Allowed values: true." });
+      expect(toolSchema.required).toEqual(["enabled"]);
+      expect(result.request.generationConfig.responseSchema.properties.enabled).toEqual(toolSchema.properties.enabled);
+    }
+  });
+
   test("maps supported Responses fields into the canonical completion request", () => {
     const body = {
       model: "antigravity-gemini-3.8-flash",
@@ -309,15 +331,68 @@ describe("Responses API request adapter", () => {
     expect(validateResponsesRequest({ model: "m", input: "hi", include: ["file_search_call.results"] })).toContain("include");
     expect(validateResponsesRequest({ model: "m", input: "hi", tools: [{ type: "code_interpreter" }] })).toContain("Unsupported Responses tool type");
     expect(validateResponsesRequest({ model: "m", input: "hi", tool_choice: "required" })).toContain("tool_choice");
-    expect(validateResponsesRequest({ model: "m", input: "hi", parallel_tool_calls: false })).toContain("parallel_tool_calls=false");
     expect(validateResponsesRequest({
       model: "m",
       input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.com/a.png" }] }],
     })).toContain("data URL");
   });
+
+  test("accepts serial tool calls and validates the parallel_tool_calls flag", () => {
+    for (const parallel_tool_calls of [false, true, undefined]) {
+      expect(validateResponsesRequest({ model: "m", input: "hi", parallel_tool_calls })).toBeUndefined();
+    }
+    for (const parallel_tool_calls of ["false", 0, {}]) {
+      expect(validateResponsesRequest({ model: "m", input: "hi", parallel_tool_calls })).toContain("must be a boolean");
+    }
+  });
 });
 
 describe("Responses API final response encoder", () => {
+  test("limits serial tool responses to the first call and preserves its round-trip history", () => {
+    const result = {
+      text: "", reasoning: "",
+      toolCalls: [
+        { index: 0, id: "sig:signature:call_a", name: "a", arguments: '{"enabled":true}' },
+        { index: 1, id: "call_b", name: "b", arguments: "{}" },
+      ],
+      finishReason: "tool_calls" as const,
+    };
+    const requestBody = { model: "antigravity-gemini-3.8-flash", input: "Use tools", parallel_tool_calls: false };
+    const response = encodeResponsesResult({ responseId: "resp_serial", createdAt: 1, requestBody, result });
+    expect(response.parallel_tool_calls).toBe(false);
+    expect(response.output).toHaveLength(1);
+    expect(response.output[0]).toMatchObject({ call_id: "sig:signature:call_a", name: "a", arguments: '{"enabled":true}' });
+    expect(result.toolCalls).toHaveLength(2);
+
+    const nextBody = { ...requestBody, input: [
+      { role: "user", content: "Use tools" },
+      ...response.output,
+      { type: "function_call_output", call_id: response.output[0].call_id, output: "done" },
+    ] };
+    expect(validateResponsesRequest(nextBody)).toBeUndefined();
+    const google = transformCompletionToGoogleBody(adaptResponsesRequest(nextBody), "p", "");
+    expect(google.request.contents[1].parts).toEqual([{
+      functionCall: { name: "a", args: { enabled: true }, id: "call_a" },
+      thoughtSignature: "signature",
+    }]);
+    expect(google.request.contents[2].parts[0].functionResponse).toMatchObject({ id: "call_a", name: "a" });
+
+    for (const parallel_tool_calls of [true, undefined]) {
+      const parallel = encodeResponsesResult({ responseId: "resp_parallel", createdAt: 1, requestBody: { ...requestBody, parallel_tool_calls }, result });
+      expect(parallel.output).toHaveLength(2);
+    }
+  });
+
+  test("accepts serial responses with zero or one tool call", () => {
+    for (const toolCalls of [[], [{ index: 0, id: "call_a", name: "a", arguments: "{}" }]]) {
+      const response = encodeResponsesResult({
+        responseId: "resp_serial", createdAt: 1, requestBody: { parallel_tool_calls: false },
+        result: { text: "", reasoning: "", toolCalls, finishReason: "stop" },
+      });
+      expect(response.output).toHaveLength(toolCalls.length);
+    }
+  });
+
   test("emits ordered reasoning, message, function-call output items and Responses usage", () => {
     const response = encodeResponsesResult({
       responseId: "resp_test",
@@ -447,7 +522,7 @@ describe("Responses API final response encoder", () => {
 });
 
 describe("Responses API streaming encoder", () => {
-  const eventsFrom = async (chunks: any[]) => {
+  const eventsFrom = async (chunks: any[], requestFields: Record<string, unknown> = {}) => {
     const source = new ReadableStream({
       start(controller) {
         for (const chunk of chunks) controller.enqueue(chunk);
@@ -458,10 +533,57 @@ describe("Responses API streaming encoder", () => {
       responseId: "resp_stream",
       model: "antigravity-gemini-3.8-flash",
       createdAt: 1700000000,
-      requestBody: { model: "antigravity-gemini-3.8-flash", stream: true },
+      requestBody: { model: "antigravity-gemini-3.8-flash", stream: true, ...requestFields },
     }))).text();
     return text.trim().split("\n\n").map(block => JSON.parse(block.split("\n").find(line => line.startsWith("data: "))!.slice(6)));
   };
+
+  test("serial streaming suppresses extra calls and preserves first-call deltas and usage", async () => {
+    const events = await eventsFrom([
+      { type: "chunk", chunk: { id: "resp_stream", created: 1, model: "m", toolCalls: [
+        { index: 0, id: "sig:signature:call_a", name: "a", arguments: '{"enabled":' },
+        { index: 1, id: "call_b", name: "b", arguments: "{}" },
+      ] } },
+      { type: "chunk", chunk: { id: "resp_stream", created: 1, model: "m", toolCalls: [
+        { index: 2, id: "call_c", name: "c", arguments: "{}" },
+        { index: 0, id: "sig:signature:call_a", name: "a", arguments: "true}" },
+      ], finishReason: "tool_calls", usage: {
+        inputTokens: 10, cachedInputTokens: null, outputTokens: 5, reasoningTokens: 2, reasoningTokensReported: true, totalTokens: 17,
+      } } },
+      { type: "done" },
+    ], { parallel_tool_calls: false });
+    const added = events.filter(event => event.type === "response.output_item.added");
+    const done = events.filter(event => event.type === "response.output_item.done");
+    expect(added).toHaveLength(1);
+    expect(done).toHaveLength(1);
+    expect(added[0].item.call_id).toBe("sig:signature:call_a");
+    expect(done[0].item.arguments).toBe('{"enabled":true}');
+    expect(events.filter(event => event.type === "response.function_call_arguments.delta").map(event => event.delta)).toEqual(['{"enabled":', "true}"]);
+    const completed = events.at(-1);
+    expect(completed.type).toBe("response.completed");
+    expect(completed.response.parallel_tool_calls).toBe(false);
+    expect(completed.response.output).toEqual([done[0].item]);
+    expect(completed.response.usage).toMatchObject({ input_tokens: 10, output_tokens: 7, total_tokens: 17 });
+    expect(JSON.stringify(events)).not.toContain("call_b");
+    expect(JSON.stringify(events)).not.toContain("call_c");
+  });
+
+  test("serial streaming also limits custom tools without changing their output shape", async () => {
+    const adapted = adaptResponsesRequest({
+      model: "antigravity-gemini-3.8-flash", input: "Patch",
+      tools: [{ type: "custom", name: "apply_patch", format: { type: "text" } }],
+    });
+    const events = await eventsFrom([
+      { type: "chunk", chunk: { id: "resp_stream", created: 1, model: "m", toolCalls: [
+        { index: 0, id: "call_patch", name: adapted.tools![0].name, arguments: '{"input":"PATCH"}' },
+        { index: 1, id: "call_extra", name: "b", arguments: "{}" },
+      ], finishReason: "tool_calls" } },
+      { type: "done" },
+    ], { parallel_tool_calls: false });
+    expect(events.at(-1).response.output).toHaveLength(1);
+    expect(events.at(-1).response.output[0]).toMatchObject({ type: "custom_tool_call", name: "apply_patch", input: "PATCH" });
+    expect(JSON.stringify(events)).not.toContain("call_extra");
+  });
 
   test("emits the complete text lifecycle and final response without Chat [DONE]", async () => {
     const events = await eventsFrom([

@@ -195,6 +195,11 @@ Codex-style `namespace` tool groups, freeform `custom` tools, tool outputs,
 parallel tool calls, `text.format` JSON modes, `max_output_tokens`,
 `temperature`, `top_p`, `prompt_cache_key`, and metadata.
 
+`parallel_tool_calls: false` returns at most one client tool call per response,
+including streaming responses. Google has no equivalent request flag, so the
+proxy exposes only the first proposed call when the upstream generates several.
+The client can execute that call and continue with its result in the next turn.
+
 `web_search` is accepted and maps to Gemini native Google Search when it is the
 only tool capability. Antigravity's current v1internal endpoint rejects native
 Google Search mixed with client function calling, so mixed Codex requests keep

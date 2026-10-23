@@ -217,4 +217,129 @@ describe("completion failure classification", () => {
     expect(result.body.error.code).toBe("upstream_error");
     expect(result.body.error.message).toContain("503");
   });
+
+  test.each(["complete", "cancel", "error"])("cleans up stream timers and abort listeners on %s", async ending => {
+    const timeouts = getProxyConfig().models.timeouts;
+    const originalStreamTimeout = timeouts.stream;
+    timeouts.stream = 100;
+    const client = new AbortController();
+    let sourceController!: ReadableStreamDefaultController<Uint8Array>;
+    let cancelledWith: unknown;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        sourceController = controller;
+        controller.enqueue(new TextEncoder().encode(
+          `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] } }] })}\n\n`,
+        ));
+      },
+      cancel(reason) { cancelledWith = reason; },
+    });
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(source));
+    let cancelReader: (() => Promise<void>) | undefined;
+    try {
+      const execution = await executeCompletion({
+        request: { model, messages: [{ role: "user", content: "OK" }], stream: true },
+        sessionIdentity: { key: "failure-regression", id: "failure-regression", source: "test", inferred: false },
+        requestId: `stream-cleanup-${ending}`, requestStartedAt: Date.now(), signal: client.signal,
+      });
+      if (execution.kind !== "stream") throw new Error("Expected stream");
+      const upstreamSignal = fetchSpy.mock.calls[0]![1]!.signal!;
+      const reader = execution.stream.getReader();
+      cancelReader = () => reader.cancel();
+      expect((await reader.read()).done).toBe(false);
+      if (ending === "complete") {
+        sourceController.close();
+        while (!(await reader.read()).done) {}
+      } else if (ending === "cancel") {
+        await reader.cancel("client stopped reading");
+      } else {
+        const failure = new Error("upstream disconnected");
+        sourceController.error(failure);
+        await expect(reader.read()).rejects.toBe(failure);
+      }
+      // A completed/cancelled/failed response must not fire its stream timeout.
+      await Bun.sleep(125);
+      expect(upstreamSignal.aborted).toBe(false);
+      client.abort("late client abort");
+      expect(upstreamSignal.aborted).toBe(false);
+      if (ending === "cancel") expect(cancelledWith).toBe("client stopped reading");
+    } finally {
+      timeouts.stream = originalStreamTimeout;
+      await cancelReader?.().catch(() => {});
+    }
+  });
+
+  function genericInvalidArgument(details?: unknown[]) {
+    return Response.json({
+      error: { code: 400, status: "INVALID_ARGUMENT", message: "Request contains an invalid argument.", ...(details ? { details } : {}) },
+    }, { status: 400 });
+  }
+
+  test("recovers a generic Gemini 400 on the same account, endpoint, and payload", async () => {
+    getProxyConfig().retry.maxAttempts = 3;
+    fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(genericInvalidArgument())
+      .mockResolvedValueOnce(new Response(
+        `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "Recovered" }] }, finishReason: "STOP" }] })}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    const execution = await executeCompletion({
+      request: { model, messages: [{ role: "user", content: "OK" }], stream: true },
+      sessionIdentity: { key: "failure-regression", id: "failure-regression", source: "test", inferred: false },
+      requestId: "generic-400-recovery", requestStartedAt: Date.now(),
+    });
+    expect(execution.kind).toBe("stream");
+    if (execution.kind !== "stream") throw new Error("Expected recovered stream");
+    expect(execution.attempts).toBe(2);
+    expect((await collectCompletionStream(execution.stream)).text).toBe("Recovered");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const [first, second] = fetchSpy.mock.calls;
+    expect(second![0]).toBe(first![0]);
+    // The envelope gets a new requestId, while model input remains identical.
+    const firstBody = JSON.parse(String(first![1]?.body));
+    const secondBody = JSON.parse(String(second![1]?.body));
+    expect(secondBody.request).toEqual(firstBody.request);
+    expect(secondBody.project).toBe(firstBody.project);
+    expect(secondBody.model).toBe(firstBody.model);
+    expect(new Headers(second![1]?.headers).get("Authorization")).toBe("Bearer access");
+  });
+
+  test("retries a persistent generic Gemini 400 only once and preserves the error", async () => {
+    getProxyConfig().retry.maxAttempts = 5;
+    fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(genericInvalidArgument([]))
+      .mockResolvedValueOnce(genericInvalidArgument([]));
+    const result = await run();
+    expect(result.status).toBe(400);
+    expect(result.body.error.code).toBe("invalid_argument");
+    expect(result.body.error.attempts).toHaveLength(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(getAccounts()[0].healthScore).toBe(100);
+    expect(getAccounts()[0].capabilities?.[model]).toBeUndefined();
+  });
+
+  test("does not retry detailed validation failures", async () => {
+    getProxyConfig().retry.maxAttempts = 5;
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValueOnce(genericInvalidArgument([
+      { "@type": "type.googleapis.com/google.rpc.BadRequest", fieldViolations: [{ field: "contents", description: "Invalid input" }] },
+    ]));
+    expect((await run()).status).toBe(400);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not retry explicit parameter errors", async () => {
+    getProxyConfig().retry.maxAttempts = 5;
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      error: { code: 400, status: "INVALID_ARGUMENT", message: "temperature must be non-negative" },
+    }, { status: 400 }));
+    const result = await run();
+    expect(result.body.error.message).toBe("temperature must be non-negative");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("respects a single-attempt budget for generic Gemini 400 failures", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValueOnce(genericInvalidArgument());
+    expect((await run()).status).toBe(400);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
 });

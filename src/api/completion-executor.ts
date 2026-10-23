@@ -12,6 +12,7 @@ import {
   updateAccountUsage,
 } from "../auth/manager";
 import { getProxyConfig } from "../config/manager";
+import type { AntigravityAccount } from "../auth/types";
 import type { CompletionRequest, CompletionResult, CompletionStreamEvent } from "../core/completion";
 import { collectCompletionStream } from "../core/completion";
 import type { SessionIdentity } from "../session/identity";
@@ -161,6 +162,8 @@ export async function executeCompletion({
   const triedEmails: string[] = [];
   const attemptLogs: CompletionAttempt[] = [];
   let systemicErrorCount = 0;
+  let invalidArgumentRetried = false;
+  let invalidArgumentRetry: { account: AntigravityAccount; endpoint: string } | undefined;
 
   const sessionId = sessionIdentity.key;
   const routingKey = sessionIdentity.source === "thread-id" ? sessionIdentity.id : undefined;
@@ -184,7 +187,9 @@ export async function executeCompletion({
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
-    let account = await getBestAccount(
+    const pendingInvalidArgumentRetry = invalidArgumentRetry;
+    invalidArgumentRetry = undefined;
+    let account = pendingInvalidArgumentRetry?.account ?? await getBestAccount(
       "sandbox",
       request.model,
       sessionIdentity.key,
@@ -220,7 +225,9 @@ export async function executeCompletion({
       && existingBinding?.pool === "sandbox"
       && !!existingBinding.endpoint
       && sandboxEndpoints.includes(existingBinding.endpoint);
-    if (boundEndpointIsUsable) {
+    if (pendingInvalidArgumentRetry) {
+      googleUrl = pendingInvalidArgumentRetry.endpoint;
+    } else if (boundEndpointIsUsable) {
       googleUrl = existingBinding.endpoint!;
     } else {
       const sandboxEndpointIndex = Math.min(attempts - 1, sandboxEndpoints.length - 1);
@@ -393,6 +400,23 @@ export async function executeCompletion({
         }
 
         if (status === 400) {
+          // Some Gemini failures contain only this generic message. Retry the
+          // same request once before failing; detailed validation errors still
+          // return immediately, and the configured attempt limit still applies.
+          let genericInvalidArgument = false;
+          try {
+            const error = JSON.parse(errText).error;
+            genericInvalidArgument = error?.status === "INVALID_ARGUMENT"
+              && error?.message?.trim() === "Request contains an invalid argument."
+              && (!error.details || (Array.isArray(error.details) && error.details.length === 0));
+          } catch {}
+          if (modelLower.includes("gemini") && genericInvalidArgument && !invalidArgumentRetried && attempts < maxAttempts) {
+            invalidArgumentRetried = true;
+            invalidArgumentRetry = { account, endpoint: googleUrl };
+            console.warn(`[Retry] Gemini returned a generic INVALID_ARGUMENT; retrying the same account and endpoint once (request ${requestId}).`);
+            continue;
+          }
+          console.warn(`[InvalidRequest] Request: ${requestId} | Model: ${googleBody.model} | Contents: ${googleBody.request.contents.length} | Tools: ${request.tools?.length || 0} | Bytes: ${Buffer.byteLength(JSON.stringify(googleBody))}`);
           return jsonError(400, {
             error: {
               message: parsedError.message || "Upstream rejected the request as invalid.",
@@ -447,17 +471,12 @@ export async function executeCompletion({
             createdAt: requestStartedAt,
           });
         };
-        const timeoutWatchdog = new TransformStream<Uint8Array, Uint8Array>({
-          flush() {
-            clearTimers();
-          },
-          cancel() {
-            clearTimers();
-          },
-        });
+        const timeoutWatchdog = new TransformStream<Uint8Array, Uint8Array>();
+        // pipeTo settles on completion, cancellation, and upstream errors.
+        // Handle its rejection here; the readable propagates it to the client.
+        void googleRes.body.pipeTo(timeoutWatchdog.writable).then(clearTimers, clearTimers);
 
-        const stream = googleRes.body
-          .pipeThrough(timeoutWatchdog)
+        const stream = timeoutWatchdog.readable
           .pipeThrough(createCompletionStreamTransformer(
           request.model,
           requestId,
