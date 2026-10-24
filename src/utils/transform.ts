@@ -299,17 +299,9 @@ export function transformCompletionToGoogleBody(
   // OpenAI-compatible clients such as OpenCode omit `name` from role=tool
   // messages. Recover it from the preceding assistant tool call using the
   // original Google call ID so FunctionResponse.name matches FunctionCall.name.
+  // IDs may be reused in later turns; populate this map as calls are visited
+  // so a later call cannot overwrite the name of an earlier response.
   const toolCallNames = new Map<string, string>();
-  for (const msg of otherMessages) {
-    for (const toolCall of msg.toolCalls || []) {
-      if (!toolCall.name) continue;
-      const { callId } = decodeToolCallMetadata(toolCall.id);
-      const name = proxyConfig.features.sanitizeToolNames
-        ? sanitizeFunctionName(toolCall.name)
-        : toolCall.name;
-      if (callId) toolCallNames.set(callId, name);
-    }
-  }
 
   const toInlineData = (url: string) => {
     const match = url.match(/^data:([^;,]+);base64,(.+)$/s);
@@ -345,6 +337,7 @@ export function transformCompletionToGoogleBody(
     // The name is part of Google's correlation contract. Prefer the name of
     // the matching call even when an OpenAI client sends a stale/wrong name.
     const responseName = toolCallNames.get(callId) || msg.name || "function_result";
+    toolCallNames.delete(callId);
     return {
       functionResponse: {
         ...(callId ? { id: callId } : {}),
@@ -403,12 +396,14 @@ export function transformCompletionToGoogleBody(
     for (const tc of msg.toolCalls || []) {
       const explicitSignature = tc.thoughtSignature;
       const { callId, thoughtSignature } = decodeToolCallMetadata(tc.id, explicitSignature);
+      const functionName = proxyConfig.features.sanitizeToolNames
+        ? sanitizeFunctionName(tc.name)
+        : tc.name;
+      if (callId) toolCallNames.set(callId, functionName);
       const funcPart: any = {
         functionCall: {
           ...(callId ? { id: callId } : {}),
-          name: proxyConfig.features.sanitizeToolNames
-            ? sanitizeFunctionName(tc.name)
-            : tc.name,
+          name: functionName,
           args: typeof tc.arguments === "string"
             ? JSON.parse(tc.arguments || "{}")
             : (tc.arguments || {})

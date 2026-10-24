@@ -215,6 +215,30 @@ describe("Responses API request adapter", () => {
     expect(google.request.tools).toEqual([{ googleSearch: {} }]);
   });
 
+  test("replays a function and a custom tool that reuse the same upstream call ID", () => {
+    const firstId = "sig:command-signature:call_1555473";
+    const secondId = "sig:patch-signature:call_1555473";
+    const body = {
+      model: "antigravity-gemini-3.8-flash",
+      input: [
+        { role: "user", content: "Inspect, then patch" },
+        { type: "function_call", call_id: firstId, name: "exec_command", arguments: '{"cmd":"pwd"}' },
+        { type: "function_call_output", call_id: firstId, output: "workspace" },
+        { type: "custom_tool_call", call_id: secondId, name: "apply_patch", input: "PATCH" },
+        { type: "custom_tool_call_output", call_id: secondId, output: "patched" },
+      ],
+    };
+    expect(validateResponsesRequest(body)).toBeUndefined();
+    const request = adaptResponsesRequest(body);
+    const { contents } = transformCompletionToGoogleBody(request, "project", "", "session").request;
+    expect(contents[1].parts[0].functionCall.name).toBe("exec_command");
+    expect(contents[2].parts[0].functionResponse.name).toBe("exec_command");
+    expect(contents[4].parts[0].functionResponse.name).toBe(contents[3].parts[0].functionCall.name);
+    expect(contents[4].parts[0].functionResponse.name).not.toBe("exec_command");
+    expect(contents[1].parts[0].thoughtSignature).toBe("command-signature");
+    expect(contents[3].parts[0].thoughtSignature).toBe("patch-signature");
+  });
+
   test("groups reasoning, parallel function calls, and their outputs into canonical turns", () => {
     const body = {
       model: "antigravity-gemini-3.8-flash",

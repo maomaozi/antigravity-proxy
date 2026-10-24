@@ -478,6 +478,27 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(result.request.contents[4].parts).toHaveLength(1);
   });
 
+  test("matches responses to their own turn when signed call IDs are reused", () => {
+    const firstId = "sig:first-signature:call_reused";
+    const secondId = "sig:second-signature:call_reused";
+    const body = {
+      model: "antigravity-gemini-3.8-flash",
+      messages: [
+        { role: "user", content: "Run both tools in sequence" },
+        { role: "assistant", tool_calls: [{ id: firstId, function: { name: "exec_command", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: firstId, content: "first result" },
+        { role: "assistant", tool_calls: [{ id: secondId, function: { name: "apply_patch", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: secondId, name: "stale_name", content: "second result" },
+      ],
+    };
+    expect(validateOpenAIRequestForGoogle(body)).toBeUndefined();
+    const { contents } = transformToGoogleBody(body, "p", "").request;
+    expect(contents[2].parts[0].functionResponse).toEqual({ id: "call_reused", name: "exec_command", response: { result: "first result" } });
+    expect(contents[4].parts[0].functionResponse).toEqual({ id: "call_reused", name: "apply_patch", response: { result: "second result" } });
+    expect(contents[1].parts[0].thoughtSignature).toBe("first-signature");
+    expect(contents[3].parts[0].thoughtSignature).toBe("second-signature");
+  });
+
   test("sanitizes colliding and overlong function names deterministically", () => {
     const longName = `9.${"x".repeat(140)}`;
     const result = transformToGoogleBody({
