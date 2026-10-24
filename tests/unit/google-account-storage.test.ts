@@ -14,7 +14,7 @@ async function fixture() {
   return { path, storage: new GoogleAccountStorage(path) };
 }
 function account(): AntigravityAccount {
-  return { email: "one@example.com", refreshToken: "secret-refresh", accessToken: "secret-access", healthScore: 75, lastUsed: 123, tokenUsage: 50, cooldowns: { "sandbox|Gemini Models": 999 }, quota: [] };
+  return { email: "one@example.com", refreshToken: "secret-refresh", accessToken: "secret-access", healthScore: 75, lastUsed: 123, tokenUsage: 50, cooldowns: { "sandbox|Gemini Models": 999 }, quota: [], quotaWindows: [{ groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.6 }] };
 }
 
 describe("Google account storage", () => {

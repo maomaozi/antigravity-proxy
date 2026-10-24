@@ -1,6 +1,7 @@
 let globalAccounts = [];
 let globalCooldowns = {};
 let globalSupportedModels = [];
+let globalModelNames = new Map();
 let globalCodexModels = [];
 let expandedAccounts = new Set();
 let expandedCodexAccounts = new Set();
@@ -121,6 +122,54 @@ function formatCompactReset(iso) {
     return seconds > 0 ? `${seconds}s` : 'Ready';
 }
 
+function getGoogleQuotaWindows(account, familyName) {
+    const gemini = familyName === 'Gemini Models';
+    const thirdParty = /^Claude |^GPT-OSS/.test(familyName);
+    if (!gemini && !thirdParty) return [];
+    return (account.quotaWindows || [])
+        .filter(window => gemini ? /gemini/i.test(window.groupName) : /claude|gpt/i.test(window.groupName))
+        .filter(window => (window.window === '5h' || window.window === 'weekly') && Number.isFinite(window.remainingFraction))
+        .map(window => ({
+            label: window.window === 'weekly' ? '7d' : '5h',
+            remainingFraction: Math.max(0, Math.min(1, window.remainingFraction)),
+            remaining: Math.round(Math.max(0, Math.min(1, window.remainingFraction)) * 100),
+            resetTime: window.remainingFraction < 1 && Number.isFinite(Date.parse(window.resetTime))
+                ? Date.parse(window.resetTime) : null,
+        }))
+        .sort((a, b) => (a.label === '5h' ? 0 : 1) - (b.label === '5h' ? 0 : 1));
+}
+
+function getGoogleWindowStats(accounts, familyName) {
+    const groups = new Map();
+    accounts.forEach(account => {
+        getGoogleQuotaWindows(account, familyName).forEach(window => {
+            const group = groups.get(window.label) || { label: window.label, sum: 0, count: 0, earliestReset: null };
+            group.sum += window.remainingFraction * 100;
+            group.count++;
+            if (window.resetTime > Date.now() && (!group.earliestReset || window.resetTime < group.earliestReset)) {
+                group.earliestReset = window.resetTime;
+            }
+            groups.set(window.label, group);
+        });
+    });
+    return [...groups.values()].map(group => ({
+        label: group.label,
+        availability: Math.round(group.sum / group.count),
+        earliestReset: group.earliestReset,
+    })).sort((a, b) => (a.label === '5h' ? 0 : 1) - (b.label === '5h' ? 0 : 1));
+}
+
+function renderGoogleQuotaWindows(windows) {
+    return `<div class="space-y-1.5">${windows.map(window => `<div class="grid grid-cols-[20px_minmax(0,1fr)_28px_56px] items-center gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
+        <span class="text-zinc-500">${window.label}</span>
+        <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 overflow-hidden" role="progressbar" aria-label="${window.label}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${window.remaining}">
+            <div class="h-full ${codexQuotaBarClass(window.remaining)} transition-all duration-500" style="width: ${window.remaining}%"></div>
+        </div>
+        <span class="text-right ${window.remaining < 20 ? 'text-rose-500' : 'text-zinc-500'}">${window.remaining}%</span>
+        <span class="text-right text-zinc-500">${window.resetTime ? formatCompactReset(window.resetTime) : 'Ready'}</span>
+    </div>`).join('')}</div>`;
+}
+
 function getFamilyQuotaData(accounts, familyName) {
     const familyAccounts = [];
     let earliestReset = null;
@@ -129,9 +178,10 @@ function getFamilyQuotaData(accounts, familyName) {
         if (acc.quota) {
             const familyQuotas = acc.quota.filter(q => getFamilyName(q.groupName) === familyName);
             if (familyQuotas.length > 0) {
-                const avgQuota = Math.round(
-                    familyQuotas.reduce((sum, q) => sum + (q.remainingFraction * 100), 0) / familyQuotas.length
-                );
+                const windows = getGoogleQuotaWindows(acc, familyName);
+                const avgQuota = Math.round(windows.length
+                    ? Math.min(...windows.map(window => window.remainingFraction * 100))
+                    : familyQuotas.reduce((sum, q) => sum + (q.remainingFraction * 100), 0) / familyQuotas.length);
 
                 let accountReset = null;
                 familyQuotas.forEach(q => {
@@ -151,7 +201,8 @@ function getFamilyQuotaData(accounts, familyName) {
                 familyAccounts.push({
                     email: acc.email,
                     avgQuota,
-                    resetTime: accountReset
+                    resetTime: accountReset,
+                    windows,
                 });
             }
         }
@@ -357,7 +408,9 @@ function calculateFamilyStats(accounts) {
         }
 
         for (const [fam, data] of Object.entries(familyQuotas)) {
-            stats[fam].totalQuota += (data.sum / data.count);
+            const windows = getGoogleQuotaWindows(acc, fam);
+            stats[fam].totalQuota += windows.length
+                ? Math.min(...windows.map(window => window.remainingFraction)) : data.sum / data.count;
             stats[fam].totalCount++;
             if (isHealthy) stats[fam].healthyCount++;
         }
@@ -370,7 +423,8 @@ function calculateFamilyStats(accounts) {
             name,
             availability: Math.round(avgAvailability),
             healthy: data.healthyCount,
-            total: data.totalCount
+            total: data.totalCount,
+            windowStats: getGoogleWindowStats(accounts, name),
         };
     });
 }
@@ -524,12 +578,11 @@ function renderFamilyGrid(stats) {
 
         const modelsInFamily = (stat.models || globalSupportedModels
             .filter(m => getFamilyName(m) === stat.name))
-            .map(m => m.replace('models/', '').replace('anthropic/', ''))
-            .sort()
+            .map(m => globalModelNames.get(m) || m.replace('models/', '').replace('anthropic/', ''))
             .join(', ');
 
-        const quotaWindowSummary = stat.provider === 'codex' && stat.windowStats?.length
-            ? `<div class="shrink-0 w-[132px] space-y-1.5" title="Codex quota windows">
+        const quotaWindowSummary = stat.windowStats?.length
+            ? `<div class="shrink-0 w-full space-y-1.5" title="Quota windows">
                 ${stat.windowStats.map(window => `<div>
                     <div class="grid grid-cols-[20px_28px_1fr] gap-x-1 items-baseline text-[8px] font-bold tabular-nums whitespace-nowrap mb-0.5">
                         <span class="text-zinc-500">${escapeHtml(window.label)}</span>
@@ -559,8 +612,8 @@ function renderFamilyGrid(stats) {
                     </div>
                 </div>
 
-                <div class="flex items-center justify-between gap-4 mt-auto">
-                     <div class="min-w-0 flex-1 h-12 overflow-hidden text-[10px] text-zinc-500 dark:text-zinc-600 leading-tight" title="${modelsInFamily}">${modelsInFamily}</div>
+                <div class="flex flex-col items-stretch gap-2 mt-auto">
+                     <div class="min-w-0 h-12 shrink-0 overflow-hidden text-[10px] text-zinc-500 dark:text-zinc-600 leading-tight" title="${escapeHtml(modelsInFamily)}">${escapeHtml(modelsInFamily)}</div>
                      ${quotaWindowSummary}
                 </div>
             </div>
@@ -594,8 +647,8 @@ function renderFamilyGrid(stats) {
                                 }
                             }
 
-                            let rowClass = stat.provider === 'codex'
-                                ? "grid grid-cols-[minmax(0,64px)_minmax(0,1fr)] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors"
+                            let rowClass = acc.windows?.length
+                                ? "grid grid-cols-1 items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors"
                                 : "grid grid-cols-[minmax(0,72px)_minmax(36px,1fr)_max-content] sm:grid-cols-[minmax(0,88px)_minmax(48px,1fr)_max-content] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors";
                             let textClass = "text-zinc-600 dark:text-zinc-400";
                             
@@ -604,7 +657,7 @@ function renderFamilyGrid(stats) {
                                 textClass = "text-rose-500 font-bold";
                             }
 
-                            const resetSummary = stat.provider === 'codex' && acc.windows?.length
+                            const resetSummary = acc.windows?.length
                                 ? `<div class="space-y-1">${acc.windows.map(window => `<div class="grid grid-cols-[20px_minmax(0,1fr)_26px_44px] items-center gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
                                     <span class="text-zinc-500">${escapeHtml(window.label)}</span>
                                     <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
@@ -622,7 +675,7 @@ function renderFamilyGrid(stats) {
                                 <div class="text-[10px] ${textClass} truncate">
                                     ${acc.email.split('@')[0]}
                                 </div>
-                                ${stat.provider === 'codex'
+                                ${acc.windows?.length
                                     ? resetSummary
                                     : `<div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 rounded-none overflow-hidden">
                                         <div class="h-full ${quotaColor} rounded-none" style="width: ${acc.avgQuota}%"></div>
@@ -700,7 +753,10 @@ function renderAccountsTable(accounts) {
                     </h4>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         ${familiesWithData.map(({cat, quotas, familyHealth}) => {
-                            const best = Math.round(Math.max(...quotas.map(q => q.remainingFraction * 100)));
+                            const windows = getGoogleQuotaWindows(acc, cat);
+                            const best = Math.round(windows.length
+                                ? Math.min(...windows.map(window => window.remainingFraction * 100))
+                                : Math.max(...quotas.map(q => q.remainingFraction * 100)));
                             const isSandboxDown = (globalCooldowns[`${acc.email}|sandbox|${cat}`] || 0) > now;
                             const isAllDown = isSandboxDown;
                             
@@ -734,9 +790,9 @@ function renderAccountsTable(accounts) {
                                     </div>
                                 </div>
                                 
-                                <div class="h-0.5 w-full bg-zinc-100 dark:bg-zinc-900 mt-4 rounded-none overflow-hidden">
+                                ${windows.length ? renderGoogleQuotaWindows(windows) : `<div class="h-0.5 w-full bg-zinc-100 dark:bg-zinc-900 mt-4 rounded-none overflow-hidden">
                                     <div class="h-full ${barColor} transition-all duration-500 rounded-none" style="width: ${best}%"></div>
-                                </div>
+                                </div>`}
                                 
                                 <div class="flex items-center justify-between mt-2.5">
                                     <div class="text-[8px] text-zinc-500 dark:text-zinc-600 uppercase tracking-wider font-medium shrink-0">Status: OK</div>
@@ -827,6 +883,7 @@ function updateUI(data) {
         if (data.accounts) globalAccounts = data.accounts;
         if (data.cooldowns) globalCooldowns = data.cooldowns;
         if (data.supportedModels) globalSupportedModels = data.supportedModels;
+        if (data.antigravity?.chatModels) globalModelNames = new Map(data.antigravity.chatModels.map(model => [model.id, model.name]));
         if (data.codexModels) globalCodexModels = data.codexModels;
         if (data.version && $('app-version')) $('app-version').textContent = 'v' + data.version;
     }

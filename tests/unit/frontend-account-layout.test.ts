@@ -10,6 +10,9 @@ const sessionsPage = await Bun.file(new URL("../../src/frontend/sessions.html", 
 function createCodexQuotaHarness() {
   return new Function("window", `${app}
     return {
+      google(accounts, family) {
+        return { windows: getGoogleQuotaWindows(accounts[0], family), stats: getGoogleWindowStats(accounts, family), family: getFamilyQuotaData(accounts, family) };
+      },
       calculate(accounts) {
         globalCodexAccounts = accounts;
         globalCodexModels = ["gpt-5-codex"];
@@ -21,6 +24,27 @@ function createCodexQuotaHarness() {
 }
 
 describe("dashboard account provider layout", () => {
+  test('shows shared Google weekly quotas in the correct families and respects the tighter window', () => {
+    const makeAccount = (weekly: number) => ({
+      email: `weekly-${weekly}@example.com`,
+      quota: [{ groupName: 'Gemini 3.8 Flash', remainingFraction: 0.9 }],
+      quotaWindows: [
+        { groupName: 'Gemini Models', window: 'weekly', remainingFraction: weekly },
+        { groupName: 'Gemini Models', window: '5h', remainingFraction: 0.9 },
+        { groupName: 'Claude and GPT models', window: 'weekly', remainingFraction: 0 },
+      ],
+    });
+    const harness = createCodexQuotaHarness();
+    const gemini = harness.google([makeAccount(0.2), makeAccount(0.4)], 'Gemini Models');
+    expect(gemini.windows.map((item: any) => item.label)).toEqual(['5h', '7d']);
+    expect(gemini.stats.map((item: any) => item.availability)).toEqual([90, 30]);
+    expect(gemini.family.accounts[0].avgQuota).toBe(20);
+    for (const family of ['Claude Sonnet 4.6', 'Claude Opus 4.6', 'GPT-OSS 120B']) {
+      expect(harness.google([makeAccount(0.2)], family).windows.map((item: any) => item.remaining)).toEqual([0]);
+    }
+    expect(harness.google([makeAccount(0.2)], 'Other').windows).toEqual([]);
+  });
+
   test("keeps provider login actions out of the global header", () => {
     expect(header).not.toContain('href="/oauth/start"');
     expect(header).not.toContain("ADD ACCOUNT");
@@ -174,9 +198,9 @@ describe("dashboard account provider layout", () => {
 
   test("renders Codex 5h and 7d as separate progress bars", () => {
     expect(app).toContain("formatCompactReset");
-    expect(app).toContain('w-[132px] space-y-1.5');
+    expect(app).toContain('w-full space-y-1.5');
     expect(app).toContain("codexQuotaBarClass(window.availability)");
-    expect(app).toContain("grid-cols-[minmax(0,64px)_minmax(0,1fr)]");
+    expect(app).toContain("grid grid-cols-1 items-center gap-2");
     expect(app).toContain("grid-cols-[20px_minmax(0,1fr)_26px_44px]");
     expect(app).toContain("codexQuotaBarClass(window.remaining)");
   });
@@ -184,7 +208,7 @@ describe("dashboard account provider layout", () => {
   test("keeps family cards aligned while expanding independently", () => {
     expect(main).toContain("lg:grid-cols-5 items-start");
     expect(app).toContain("flex flex-col self-start");
-    expect(app).toContain("min-w-0 flex-1 h-12 overflow-hidden");
+    expect(app).toContain("min-w-0 h-12 shrink-0 overflow-hidden");
     expect(app).not.toContain("flex flex-col h-full");
   });
 

@@ -2,6 +2,50 @@ import { getImpersonationHeaders, generateFingerprint } from "../utils/headers";
 import { type AntigravityAccount } from "../auth/types";
 import { getAccounts, saveAccounts } from "../auth/manager";
 import { refreshAccessToken } from "../auth/oauth";
+import { ANTIGRAVITY_CLIENT_VERSION, getUnavailableModelError } from "../models";
+
+export async function fetchQuotaWindows(
+  account: AntigravityAccount,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AntigravityAccount['quotaWindows'] | null> {
+  if (!account.accessToken) return null;
+  try {
+    const response = await fetchImpl('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${account.accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': `antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} (aidev_client; os_type=linux; arch=arm64; cl=1005016104)`,
+      },
+      body: JSON.stringify({ project: 'aicode-consumers' }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as any;
+    if (!Array.isArray(data.groups)) return null;
+    const windows: NonNullable<AntigravityAccount['quotaWindows']> = [];
+    for (const group of data.groups) {
+      if (typeof group?.displayName !== 'string' || !Array.isArray(group.buckets)) continue;
+      for (const bucket of group.buckets) {
+        if (bucket?.window !== '5h' && bucket?.window !== 'weekly') continue;
+        // Protobuf omits default numeric values; an absent fraction means exhausted.
+        const remaining = bucket.remainingFraction ?? 0;
+        if (typeof remaining !== 'number' || !Number.isFinite(remaining)) continue;
+        windows.push({
+          groupName: group.displayName,
+          window: bucket.window,
+          remainingFraction: Math.max(0, Math.min(1, remaining)),
+          resetTime: typeof bucket.resetTime === 'string' && Number.isFinite(Date.parse(bucket.resetTime))
+            ? bucket.resetTime : undefined,
+        });
+      }
+    }
+    return windows;
+  } catch (error) {
+    console.error(`Error fetching quota windows for ${account.email}`, error);
+    return null;
+  }
+}
 
 export async function fetchQuota(
   account: AntigravityAccount,
@@ -75,7 +119,7 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
     const groups = new Map<string, any>();
 
     for (const [key, m] of entries) {
-        if (!m.quotaInfo) continue;
+        if (!m.quotaInfo || m.disabled || getUnavailableModelError(key.replace(/^models\//, ''))) continue;
 
         const label = m.displayMetadata?.label || m.displayName || m.model?.name || "Unknown";
         const lowerLabel = label.toLowerCase();
@@ -180,6 +224,11 @@ async function performQuotaRefresh(): Promise<void> {
     await Promise.all(accounts.map(async acc => {
         if (acc.projectId) { 
             const quota = await fetchQuota(acc);
+            const windows = await fetchQuotaWindows(acc);
+            if (windows !== null) {
+                acc.quotaWindows = windows;
+                changed = true;
+            }
             if (quota) {
                 acc.quota = quota;
                 changed = true;

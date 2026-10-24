@@ -48,6 +48,12 @@ export interface AntigravityAccount {
   capabilities?: Record<string, boolean>;
   
   // Quota info (cached)
+  quotaWindows?: Array<{
+    groupName: string;
+    window: '5h' | 'weekly';
+    remainingFraction: number;
+    resetTime?: string;
+  }>;
   quota?: Array<{
     groupName: string; // e.g., "Gemini 1.5 Pro"
     limit: string;

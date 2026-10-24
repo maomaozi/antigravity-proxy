@@ -4,6 +4,16 @@ const usageHtml = await Bun.file(new URL("../../src/frontend/usage.html", import
 const usageJs = await Bun.file(new URL("../../src/frontend/js/usage.js", import.meta.url)).text();
 
 describe("frontend usage page layout and effort column", () => {
+  test('compacts input counts across K/M boundaries while retaining exact count formatting', () => {
+    const format = new Function(`const tokenFormatter = new Intl.NumberFormat('en-US');
+      ${usageJs.slice(usageJs.indexOf('function formatTokens'), usageJs.indexOf('function formatSpeed'))}
+      return { compact: formatTokenAmount, exact: formatTokens };`)();
+    for (const [value, expected] of [[0, '0'], [999, '999'], [1000, '1K'], [12345, '12.35K'], [999999, '1M'], [1234567, '1.23M'], [1_000_000_000, '1000M']]) {
+      expect(format.compact(value)).toBe(expected);
+    }
+    expect(format.exact(1234567)).toBe('1,234,567');
+  });
+
   test("table header defines Effort to the right of Reasoning and before Total", () => {
     const reasoningIndex = usageHtml.indexOf(">Reasoning</th>");
     const effortIndex = usageHtml.indexOf(">Effort</th>");

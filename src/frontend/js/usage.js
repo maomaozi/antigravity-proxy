@@ -23,6 +23,19 @@ function formatTokens(value) {
     return tokenFormatter.format(Number(value) || 0);
 }
 
+function formatTokenAmount(value) {
+    const count = Number(value) || 0;
+    const size = Math.abs(count);
+    if (size < 1000) return formatTokens(count);
+    let unit = size >= 1_000_000 ? 1_000_000 : 1000;
+    let amount = Number((count / unit).toFixed(2));
+    if (unit === 1000 && Math.abs(amount) >= 1000) {
+        unit = 1_000_000;
+        amount = Number((count / unit).toFixed(2));
+    }
+    return `${amount}${unit === 1_000_000 ? 'M' : 'K'}`;
+}
+
 function formatSpeed(value) {
     if (value === null || value === undefined) return '—';
     const speed = Number(value);
@@ -63,11 +76,13 @@ function renderUsageStats() {
     const cacheCoverage = reportedRequests < requests ? ` · ${formatTokens(reportedRequests)}/${formatTokens(requests)} reported` : '';
     usageById('stat-requests').textContent = formatTokens(summary.requests);
     usageById('stat-sessions').textContent = `${formatTokens(summary.sessions)} sessions`;
-    usageById('stat-input').textContent = formatTokens(input);
+    usageById('stat-input').textContent = formatTokenAmount(input);
+    usageById('stat-input').title = formatTokens(input);
     usageById('stat-uncached').textContent = summary.uncachedInputTokens === null || summary.uncachedInputTokens === undefined
         ? 'Not reported'
-        : `${formatTokens(summary.uncachedInputTokens)} uncached`;
-    usageById('stat-cached').textContent = cacheReported ? formatTokens(cached) : '—';
+        : `${formatTokenAmount(summary.uncachedInputTokens)} uncached`;
+    usageById('stat-cached').textContent = cacheReported ? formatTokenAmount(cached) : '—';
+    usageById('stat-cached').title = cacheReported ? formatTokens(cached) : '';
     usageById('stat-cache-rate').textContent = cacheReported
         ? `${reportedInput ? (cached / reportedInput * 100).toFixed(1) : '0.0'}% cache rate${cacheCoverage}`
         : 'Not reported';
@@ -87,11 +102,11 @@ function renderUsageTable() {
             const cacheReported = row.cachedInputTokens !== null && row.cachedInputTokens !== undefined;
             const cacheRate = cacheReported && row.inputTokens ? (row.cachedInputTokens / row.inputTokens * 100).toFixed(1) : '0.0';
             const cached = cacheReported
-                ? `<div>${formatTokens(row.cachedInputTokens)}</div><div class="mt-1 text-[9px] opacity-70">${cacheRate}%</div>`
+                ? `<div title="${formatTokens(row.cachedInputTokens)}">${formatTokenAmount(row.cachedInputTokens)}</div><div class="mt-1 text-[9px] opacity-70">${cacheRate}%</div>`
                 : '<div title="Upstream did not report cached input tokens">—</div><div class="mt-1 text-[9px] opacity-70">Not reported</div>';
             const uncached = row.uncachedInputTokens === null || row.uncachedInputTokens === undefined
                 ? '<span title="Cannot derive uncached input without cache metadata">—</span>'
-                : formatTokens(row.uncachedInputTokens);
+                : formatTokenAmount(row.uncachedInputTokens);
             const reasoning = row.reasoningTokensReported ? formatTokens(row.reasoningTokens) : '<span title="Upstream did not report reasoning separately">—</span>';
             const speed = row.tokensPerSecond === null || row.tokensPerSecond === undefined
                 ? '<span title="No valid duration or generated tokens">—</span>'
@@ -116,7 +131,7 @@ function renderUsageTable() {
                     <div class="truncate text-zinc-700 dark:text-zinc-300" title="${usageEscape(row.accountEmail)}">${usageEscape(row.accountEmail)}</div>
                     <div class="mt-1 text-[9px] text-zinc-400"><span class="uppercase">${usageEscape(row.pool)}</span> · ${usageEscape(usageEndpoint(row.endpoint))} · ${row.streamed ? 'SSE' : 'JSON'}</div>
                 </td>
-                <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.inputTokens)}</td>
+                <td class="px-3 py-3 text-right tabular-nums" title="${formatTokens(row.inputTokens)}">${formatTokenAmount(row.inputTokens)}</td>
                 <td class="px-3 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">${cached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${uncached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.outputTokens)}</td>

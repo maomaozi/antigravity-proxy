@@ -6,7 +6,7 @@ interface StorageFormat {
     accounts: AntigravityAccount[];
 }
 
-const runtimeKeys = ["healthScore", "modelScores", "lastUsed", "tokenUsage", "consecutiveFailures", "cooldowns", "history", "challenge", "capabilities", "quota"] as const;
+const runtimeKeys = ["healthScore", "modelScores", "lastUsed", "tokenUsage", "consecutiveFailures", "cooldowns", "history", "challenge", "capabilities", "quota", "quotaWindows"] as const;
 type RuntimeAccount = Pick<AntigravityAccount, "email"> & Partial<Pick<AntigravityAccount, typeof runtimeKeys[number]>>;
 
 function decodeAccounts(value: unknown): StorageFormat {
