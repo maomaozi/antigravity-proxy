@@ -40,6 +40,7 @@ function formatSpeed(value) {
     if (value === null || value === undefined) return '—';
     const speed = Number(value);
     if (!Number.isFinite(speed)) return '—';
+    if (Math.abs(speed) >= 1000) return `${formatTokenAmount(speed)} tok/s`;
     return `${speed.toFixed(speed >= 10 ? 1 : 2)} tok/s`;
 }
 
@@ -73,9 +74,10 @@ function renderUsageStats() {
     const reportedRequests = Number(summary.cacheReportedRequests) || 0;
     const reportedInput = Number(summary.cacheReportedInputTokens) || 0;
     const requests = Number(summary.requests) || 0;
-    const cacheCoverage = reportedRequests < requests ? ` · ${formatTokens(reportedRequests)}/${formatTokens(requests)} reported` : '';
-    usageById('stat-requests').textContent = formatTokens(summary.requests);
-    usageById('stat-sessions').textContent = `${formatTokens(summary.sessions)} sessions`;
+    const cacheCoverage = reportedRequests < requests ? ` · ${formatTokenAmount(reportedRequests)}/${formatTokenAmount(requests)} reported` : '';
+    usageById('stat-requests').textContent = formatTokenAmount(summary.requests);
+    usageById('stat-requests').title = formatTokens(summary.requests);
+    usageById('stat-sessions').textContent = `${formatTokenAmount(summary.sessions)} sessions`;
     usageById('stat-input').textContent = formatTokenAmount(input);
     usageById('stat-input').title = formatTokens(input);
     usageById('stat-uncached').textContent = summary.uncachedInputTokens === null || summary.uncachedInputTokens === undefined
@@ -86,11 +88,14 @@ function renderUsageStats() {
     usageById('stat-cache-rate').textContent = cacheReported
         ? `${reportedInput ? (cached / reportedInput * 100).toFixed(1) : '0.0'}% cache rate${cacheCoverage}`
         : 'Not reported';
-    usageById('stat-output').textContent = formatTokens(summary.outputTokens);
+    usageById('stat-output').textContent = formatTokenAmount(summary.outputTokens);
+    usageById('stat-output').title = formatTokens(summary.outputTokens);
     usageById('stat-speed').textContent = formatSpeed(summary.averageTokensPerSecond);
-    usageById('stat-speed-coverage').textContent = `${formatTokens(summary.timedRequests)} timed request${Number(summary.timedRequests) === 1 ? '' : 's'}`;
-    usageById('stat-reasoning').textContent = formatTokens(summary.reasoningTokens);
-    usageById('stat-total').textContent = formatTokens(summary.totalTokens);
+    usageById('stat-speed-coverage').textContent = `${formatTokenAmount(summary.timedRequests)} timed request${Number(summary.timedRequests) === 1 ? '' : 's'}`;
+    usageById('stat-reasoning').textContent = formatTokenAmount(summary.reasoningTokens);
+    usageById('stat-reasoning').title = formatTokens(summary.reasoningTokens);
+    usageById('stat-total').textContent = formatTokenAmount(summary.totalTokens);
+    usageById('stat-total').title = formatTokens(summary.totalTokens);
 }
 
 function renderUsageTable() {
@@ -107,7 +112,7 @@ function renderUsageTable() {
             const uncached = row.uncachedInputTokens === null || row.uncachedInputTokens === undefined
                 ? '<span title="Cannot derive uncached input without cache metadata">—</span>'
                 : formatTokenAmount(row.uncachedInputTokens);
-            const reasoning = row.reasoningTokensReported ? formatTokens(row.reasoningTokens) : '<span title="Upstream did not report reasoning separately">—</span>';
+            const reasoning = row.reasoningTokensReported ? formatTokenAmount(row.reasoningTokens) : '<span title="Upstream did not report reasoning separately">—</span>';
             const speed = row.tokensPerSecond === null || row.tokensPerSecond === undefined
                 ? '<span title="No valid duration or generated tokens">—</span>'
                 : `<div class="text-cyan-600 dark:text-cyan-400">${formatSpeed(row.tokensPerSecond)}</div><div class="mt-1 text-[9px] text-zinc-400">${formatDuration(row.durationMs)}</div>`;
@@ -134,11 +139,11 @@ function renderUsageTable() {
                 <td class="px-3 py-3 text-right tabular-nums" title="${formatTokens(row.inputTokens)}">${formatTokenAmount(row.inputTokens)}</td>
                 <td class="px-3 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">${cached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${uncached}</td>
-                <td class="px-3 py-3 text-right tabular-nums">${formatTokens(row.outputTokens)}</td>
+                <td class="px-3 py-3 text-right tabular-nums" title="${formatTokens(row.outputTokens)}">${formatTokenAmount(row.outputTokens)}</td>
                 <td class="px-3 py-3 text-right tabular-nums" title="Visible output + reported reasoning / total end-to-end request time">${speed}</td>
-                <td class="px-3 py-3 text-right tabular-nums">${reasoning}</td>
+                <td class="px-3 py-3 text-right tabular-nums"${row.reasoningTokensReported ? ` title="${formatTokens(row.reasoningTokens)}"` : ''}>${reasoning}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${effort}</td>
-                <td class="px-3 py-3 text-right tabular-nums font-bold">${formatTokens(row.totalTokens)}</td>
+                <td class="px-3 py-3 text-right tabular-nums font-bold" title="${formatTokens(row.totalTokens)}">${formatTokenAmount(row.totalTokens)}</td>
             </tr>`;
         }).join('');
     }
