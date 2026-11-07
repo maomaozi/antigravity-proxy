@@ -149,6 +149,8 @@ function getGoogleQuotaWindows(account, familyName) {
 function getGoogleWindowStats(accounts, familyName) {
     const groups = new Map();
     accounts.forEach(account => {
+        // A shared pool can exist even when this account cannot use the family.
+        if (!(account.quota || []).some(quota => getQuotaFamilyName(quota) === familyName)) return;
         getGoogleQuotaWindows(account, familyName).forEach(window => {
             const group = groups.get(window.label) || { label: window.label, sum: 0, count: 0, earliestReset: null };
             group.sum += window.remainingFraction * 100;
@@ -186,12 +188,13 @@ function getFamilyQuotaData(accounts, familyName) {
             const familyQuotas = acc.quota.filter(q => getQuotaFamilyName(q) === familyName);
             if (familyQuotas.length > 0) {
                 const windows = getGoogleQuotaWindows(acc, familyName);
-                const avgQuota = Math.round(windows.length
-                    ? Math.min(...windows.map(window => window.remainingFraction * 100))
-                    : familyQuotas.reduce((sum, q) => sum + (q.remainingFraction * 100), 0) / familyQuotas.length);
+                const remainingFraction = windows.length
+                    ? Math.min(...windows.map(window => window.remainingFraction))
+                    : familyQuotas.reduce((sum, q) => sum + q.remainingFraction, 0) / familyQuotas.length;
 
                 let accountReset = null;
-                familyQuotas.forEach(q => {
+                const resetSources = windows.length ? windows : familyQuotas.filter(q => q.remainingFraction < 1);
+                resetSources.forEach(q => {
                     if (q.resetTime) {
                         const resetTime = new Date(q.resetTime).getTime();
                         if (resetTime > Date.now()) {
@@ -207,7 +210,8 @@ function getFamilyQuotaData(accounts, familyName) {
 
                 familyAccounts.push({
                     email: acc.email,
-                    avgQuota,
+                    remainingFraction,
+                    avgQuota: Math.round(remainingFraction * 100),
                     resetTime: accountReset,
                     windows,
                 });
@@ -403,44 +407,18 @@ function getQuotaFamilyName(quota) {
 }
 
 function calculateFamilyStats(accounts) {
-    const stats = {};
     const keys = [...new Set([...Object.keys(MODEL_FAMILIES), ...accounts.flatMap(account => (account.quota || []).map(getQuotaFamilyName))])];
-    keys.forEach(fam => {
-        stats[fam] = { totalQuota: 0, healthyCount: 0, totalCount: 0 };
-    });
-
-    accounts.forEach(acc => {
-        const isHealthy = acc.healthScore >= 50;
-        const familyQuotas = {};
-        
-        if (acc.quota) {
-            acc.quota.forEach(q => {
-                const fam = getQuotaFamilyName(q);
-                if (stats[fam]) {
-                    if (!familyQuotas[fam]) familyQuotas[fam] = { sum: 0, count: 0 };
-                    familyQuotas[fam].sum += q.remainingFraction;
-                    familyQuotas[fam].count++;
-                }
-            });
-        }
-
-        for (const [fam, data] of Object.entries(familyQuotas)) {
-            const windows = getGoogleQuotaWindows(acc, fam);
-            stats[fam].totalQuota += windows.length
-                ? Math.min(...windows.map(window => window.remainingFraction)) : data.sum / data.count;
-            stats[fam].totalCount++;
-            if (isHealthy) stats[fam].healthyCount++;
-        }
-    });
-
+    const healthyEmails = new Set(accounts.filter(account => account.healthScore >= 50).map(account => account.email));
     return keys.map(name => {
-        const data = stats[name];
-        const avgAvailability = data.totalCount > 0 ? (data.totalQuota / data.totalCount) * 100 : 0;
+        const familyData = getFamilyQuotaData(accounts, name);
+        const total = familyData.accounts.length;
+        const totalQuota = familyData.accounts.reduce((sum, account) => sum + account.remainingFraction, 0);
         return {
             name,
-            availability: Math.round(avgAvailability),
-            healthy: data.healthyCount,
-            total: data.totalCount,
+            availability: total ? Math.round(totalQuota / total * 100) : 0,
+            healthy: familyData.accounts.filter(account => healthyEmails.has(account.email)).length,
+            total,
+            familyData,
             windowStats: getGoogleWindowStats(accounts, name),
         };
     });
@@ -773,10 +751,9 @@ function renderAccountsTable(accounts) {
                     </h4>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         ${familiesWithData.map(({cat, quotas, familyHealth}) => {
-                            const windows = getGoogleQuotaWindows(acc, cat);
-                            const best = Math.round(windows.length
-                                ? Math.min(...windows.map(window => window.remainingFraction * 100))
-                                : Math.max(...quotas.map(q => q.remainingFraction * 100)));
+                            const familyQuota = getFamilyQuotaData([acc], cat).accounts[0];
+                            const windows = familyQuota.windows;
+                            const best = familyQuota.avgQuota;
                             const isSandboxDown = (globalCooldowns[`${acc.email}|sandbox|${cat}`] || 0) > now;
                             const isAllDown = isSandboxDown;
                             
@@ -784,13 +761,7 @@ function renderAccountsTable(accounts) {
                             let barColor = isAllDown ? 'bg-rose-500' : (best > 50 ? 'bg-emerald-500' : (best < 20 ? 'bg-rose-500' : 'bg-zinc-300 dark:bg-zinc-600'));
                             let familyBorderColor = isAllDown ? 'border-rose-200 dark:border-rose-900/50' : 'border-zinc-200 dark:border-zinc-800';
 
-                            let earliestFamilyReset = null;
-                            quotas.forEach(q => {
-                                if (q.resetTime) {
-                                    const r = new Date(q.resetTime).getTime();
-                                    if (r > now && (!earliestFamilyReset || r < earliestFamilyReset)) earliestFamilyReset = r;
-                                }
-                            });
+                            const earliestFamilyReset = familyQuota.resetTime;
 
                             return `
                             <div class="bg-white dark:bg-[#0f0f0f] rounded border ${familyBorderColor} overflow-hidden group/family transition-colors p-4">

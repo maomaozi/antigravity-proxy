@@ -8,12 +8,17 @@ const sessions = await Bun.file(new URL("../../src/frontend/js/sessions.js", imp
 const sessionsPage = await Bun.file(new URL("../../src/frontend/sessions.html", import.meta.url)).text();
 
 function createCodexQuotaHarness() {
-  return new Function("window", `${app}
+  const elements = new Map<string, { innerHTML: string }>();
+  return new Function("window", "document", `${app}
     return {
       google(accounts, family) {
         return { windows: getGoogleQuotaWindows(accounts[0], family), stats: getGoogleWindowStats(accounts, family), family: getFamilyQuotaData(accounts, family) };
       },
       families(accounts) { return calculateFamilyStats(accounts); },
+      renderGoogle(accounts) {
+        renderAccountsTable(accounts);
+        return document.getElementById('accounts-table-body').innerHTML;
+      },
       calculate(accounts) {
         globalCodexAccounts = accounts;
         globalCodexModels = ["gpt-5-codex"];
@@ -21,10 +26,117 @@ function createCodexQuotaHarness() {
         return calculateCodexFamilyStat();
       }
     };
-  `)({});
+  `)({}, { getElementById(id: string) {
+    if (!elements.has(id)) elements.set(id, { innerHTML: '' });
+    return elements.get(id);
+  } });
 }
 
 describe("dashboard account provider layout", () => {
+  test('aggregates each Google family over the same accounts shown in its expanded card', () => {
+    const accounts = Array.from({ length: 6 }, (_, index) => ({
+      email: `account-${index}@example.com`, healthScore: 100,
+      quota: [
+        { groupName: 'Gemini 3 Flash', remainingFraction: 1 },
+        { groupName: index === 5 ? 'Claude Opus 5.5 (High)' : 'Claude Opus 4.6 (Thinking)', remainingFraction: 1 },
+        { groupName: index === 5 ? 'Claude Sonnet 5.5 (High)' : 'Claude Sonnet 4.6 (Thinking)', remainingFraction: 1 },
+        { groupName: 'GPT-OSS 120B (Medium)', remainingFraction: 1 },
+        ...(index === 5 ? [{ groupName: 'Gemini 4 Argon (High)', remainingFraction: 1 }] : []),
+      ],
+      quotaWindows: [
+        { groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.8 },
+        { groupName: 'Claude and GPT models', window: '5h', remainingFraction: 1 },
+        { groupName: 'Claude and GPT models', window: 'weekly', remainingFraction: index === 2 ? 0.54 : 1 },
+        // A quota summary can advertise a pool without exposing its models.
+        { groupName: 'Gemini 4 Argon', window: 'weekly', remainingFraction: index === 5 ? 0.75 : 0 },
+      ],
+    }));
+    const harness = createCodexQuotaHarness();
+    const families = harness.families(accounts);
+    for (const family of families) {
+      const rows = harness.google(accounts, family.name).family.accounts;
+      expect(family.total).toBe(rows.length);
+      for (const window of family.windowStats) {
+        const measured = rows.flatMap((row: any) => row.windows.filter((item: any) => item.label === window.label));
+        expect(measured.length).toBeGreaterThan(0);
+        expect(window.availability).toBe(Math.round(measured.reduce((sum: number, item: any) => sum + item.remainingFraction * 100, 0) / measured.length));
+      }
+    }
+    expect(families.find((item: any) => item.name === 'Claude Opus 5.5')).toMatchObject({
+      total: 1, availability: 100, windowStats: [{ label: '5h', availability: 100 }, { label: '7d', availability: 100 }],
+    });
+    expect(families.find((item: any) => item.name === 'Claude Opus 4.6').windowStats[1].availability).toBe(91);
+    expect(families.find((item: any) => item.name === 'Claude Sonnet 5.5').windowStats[1].availability).toBe(100);
+    expect(families.find((item: any) => item.name === 'GPT-OSS 120B').windowStats[1].availability).toBe(92);
+    expect(families.find((item: any) => item.name === 'Gemini 4 Argon')).toMatchObject({
+      total: 1, availability: 75, windowStats: [{ label: '7d', availability: 75 }],
+    });
+    expect(harness.families([]).every((item: any) => item.total === 0 && item.windowStats.length === 0)).toBe(true);
+  });
+
+  test('uses window resets and the same fallback percentage in account details and model cards', () => {
+    const reset = Date.now() + 3 * 86400_000;
+    const accounts = [{
+      email: 'resets@example.com', healthScore: 100,
+      quota: [
+        { groupName: 'Claude Opus 5.5 (High)', remainingFraction: 1 },
+        { groupName: 'Gemini 3 Flash', remainingFraction: 0.2 },
+        { groupName: 'Gemini 3.8 Flash (High)', remainingFraction: 0.8 },
+      ],
+      quotaWindows: [
+        { groupName: 'Claude and GPT models', window: 'weekly', remainingFraction: 0.4, resetTime: new Date(reset).toISOString() },
+      ],
+    }];
+    const harness = createCodexQuotaHarness();
+    expect(harness.google(accounts, 'Claude Opus 5.5').family).toMatchObject({
+      earliestReset: reset, accounts: [{ avgQuota: 40, resetTime: reset }],
+    });
+    expect(harness.families(accounts).find((item: any) => item.name === 'Gemini Models').availability).toBe(50);
+    const html = harness.renderGoogle(accounts);
+    expect(html).toMatch(/>50%<\/span>/);
+    expect(html).not.toMatch(/>80%<\/span>/);
+    const opus = html.split('Claude Opus 5.5')[1].split('Status: OK')[1];
+    expect(opus.split('Quota resets in')[1].split('</span>')[1]).not.toContain('Ready');
+  });
+
+  test('weights Google accounts equally and rounds only after aggregating measured quotas', () => {
+    const accounts = [{
+      email: 'many-tiers@example.com', healthScore: 100,
+      quota: ['High', 'Low', 'Medium'].map(tier => ({ groupName: `Claude Opus 5.5 (${tier})`, remainingFraction: 0.8049 })),
+    }, {
+      email: 'one-tier@example.com', healthScore: 40,
+      quota: [{ groupName: 'Claude Opus 5.5 (High)', remainingFraction: 0.2051 }],
+    }];
+    const stat = createCodexQuotaHarness().families(accounts).find((item: any) => item.name === 'Claude Opus 5.5');
+    expect(stat).toMatchObject({ availability: 51, total: 2, healthy: 1, windowStats: [] });
+    expect(stat.familyData.accounts.map((item: any) => item.avgQuota)).toEqual([80, 21]);
+  });
+
+  test('keeps missing windows out of period averages and ignores reset dates for full windows', () => {
+    const future = new Date(Date.now() + 86400_000).toISOString();
+    const accounts = [{
+      email: 'with-windows@example.com', healthScore: 100,
+      quota: [{ groupName: 'Claude Opus 5.5 (High)', remainingFraction: 1 }],
+      quotaWindows: [
+        { groupName: 'Claude and GPT models', window: '5h', remainingFraction: 1, resetTime: future },
+        { groupName: 'Claude and GPT models', window: 'weekly', remainingFraction: 0.4, resetTime: future },
+      ],
+    }, {
+      email: 'no-summary@example.com', healthScore: 100,
+      quota: [{ groupName: 'Claude Opus 5.5 (High)', remainingFraction: 0.8 }],
+      quotaWindows: [],
+    }];
+    const harness = createCodexQuotaHarness();
+    const stat = harness.families(accounts).find((item: any) => item.name === 'Claude Opus 5.5');
+    expect(stat).toMatchObject({ availability: 60, total: 2, windowStats: [
+      { label: '5h', availability: 100, earliestReset: null },
+      { label: '7d', availability: 40, earliestReset: Date.parse(future) },
+    ] });
+    const html = harness.renderGoogle([accounts[0]]);
+    expect(html).toContain('Ready');
+    expect(harness.google([accounts[0]], 'Claude Opus 5.5').windows[0].resetTime).toBeNull();
+  });
+
   test('shows Argon and newly discovered model families with their dedicated quotas', () => {
     const accounts = [{
       email: 'special@example.com', healthScore: 100,
