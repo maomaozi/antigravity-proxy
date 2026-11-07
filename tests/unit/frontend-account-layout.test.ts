@@ -89,9 +89,13 @@ describe("dashboard account provider layout", () => {
     expect(app).toContain("await loadCodexUsage(true)");
   });
 
-  test("uses the same primary account columns for Google and Codex", () => {
+  test("labels Google health and Codex quota in the account columns", () => {
     expect(main.match(/>Identity<\/th>/g)?.length).toBe(2);
-    expect(main.match(/>Health<\/th>/g)?.length).toBe(2);
+    const googleSection = main.split('id="google-accounts-section"')[1].split('</section>')[0];
+    const codexSection = main.split('id="codex-accounts-section"')[1].split('</section>')[0];
+    expect(googleSection).toContain(">Health</th>");
+    expect(codexSection).toContain(">Quota</th>");
+    expect(codexSection).not.toContain(">Health</th>");
     expect(main.match(/>Last Active<\/th>/g)?.length).toBe(2);
     expect(main.match(/>Action<\/th>/g)?.length).toBe(2);
     expect(main).not.toContain(">Account ID</th>");
