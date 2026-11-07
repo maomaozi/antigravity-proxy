@@ -15,7 +15,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
 - **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for unused Google quota pools and Codex 5-hour windows. Google activation selects an advertised chat model per independent pool, including Claude/Opus and dedicated model quotas such as Argon. Shared pools receive one request, exhausted pools are skipped, and quotas are refreshed after activation. The first check runs 10 minutes after server startup.
-- **Antigravity Routing**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models through the Sandbox Pool.
+- **Antigravity Routing**: Accesses Antigravity Gemini, Claude, and GPT-OSS models through the Sandbox Pool, including account-specific Gemini 4 Argon and Claude Sonnet/Opus 5.5 models.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
 - **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account, pool, and endpoint in SQLite.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
@@ -136,8 +136,10 @@ the selected account is logged on the server, and OAuth tokens stay server-side.
 
 ### Basic Chat Completion
 
-`GET /v1/models` lists the proxy's configured model IDs. It is a static catalog,
-not a live availability check; upstream model IDs and account access can change.
+`GET /v1/models` combines the proxy's baseline Antigravity IDs, models discovered
+for enabled accounts during quota refreshes, and configured Codex model IDs.
+It uses the latest saved discovery results rather than querying upstream on each
+request. A listed model still requires an eligible account with available quota.
 
 Chat and Responses failures preserve their cause in `error.code`:
 
@@ -385,14 +387,14 @@ For Gemini, use `json_schema` when structured output is required. Core constrain
 ## Integration Guides
 
 ### Claude Code Configuration
-To use **Claude Code** with Antigravity Proxy, point the API base URL to your local instance and specify a model from the Sandbox Pool:
+To use **Claude Code** with Antigravity Proxy, point the API base URL to your local instance and specify a model from the Sandbox Pool. Sonnet 5.5 requires an account advertising that model; use a Claude ID from `/v1/models` that your accounts support:
 
 ```bash
 # Point Claude Code to the proxy
 export CLAUDE_CODE_API_BASE="http://localhost:3000/v1"
 
 # Run Claude specifying an Antigravity model
-claude --model antigravity-claude-sonnet-4-6-thinking
+claude --model antigravity-claude-sonnet-5-5
 ```
 
 ### OpenCode Configuration
@@ -427,17 +429,47 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
                     "high": { "reasoningEffort": "high" }
                 }
             },
+            "antigravity-gemini-4-argon": {
+                "name": "Gemini 4 Argon (Antigravity)",
+                "limit": { "context": 1048576, "output": 65536 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "medium": { "reasoningEffort": "medium" },
+                    "high": { "reasoningEffort": "high" }
+                }
+            },
+            "antigravity-claude-sonnet-5-5": {
+                "name": "Claude Sonnet 5.5 (Antigravity)",
+                "limit": { "context": 1000000, "output": 128000 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "medium": { "reasoningEffort": "medium" },
+                    "high": { "reasoningEffort": "high" }
+                }
+            },
+            "antigravity-claude-opus-5-5": {
+                "name": "Claude Opus 5.5 (Antigravity)",
+                "limit": { "context": 1000000, "output": 128000 },
+                "reasoning": true,
+                "variants": {
+                    "low": { "reasoningEffort": "low" },
+                    "medium": { "reasoningEffort": "medium" },
+                    "high": { "reasoningEffort": "high" }
+                }
+            },
             "antigravity-claude-sonnet-4-6-thinking": {
                 "name": "Claude Sonnet 4.6 Thinking (Antigravity)",
-                "limit": { "context": 200000, "output": 64000 }
+                "limit": { "context": 250000, "output": 64000 }
             },
             "antigravity-claude-opus-4-6-thinking": {
                 "name": "Claude Opus 4.6 Thinking (Antigravity)",
-                "limit": { "context": 1000000, "output": 64000 }
+                "limit": { "context": 250000, "output": 64000 }
             },
             "antigravity-gpt-oss-120b": {
                 "name": "GPT-OSS 120B (Antigravity)",
-                "limit": { "context": 128000, "output": 32768 }
+                "limit": { "context": 131072, "output": 32768 }
             }
         }
     }
@@ -446,15 +478,32 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
 
 ### Current Antigravity Catalog
 
-The proxy exposes the following Gemini models through `/v1/models` and Playground.
+The following catalog was checked on **2026-11-08 (Asia/Singapore)** using
+Antigravity Hub **2.29.0** discovery requests across four enabled accounts.
+The chat rows use base proxy IDs; account-specific tier IDs are also listed by
+`/v1/models`. Discovery confirms that an account is offered a model, while
+generation remains subject to its access, quota, and upstream capacity.
 
-| Gemini model | Proxy ID | Status |
+| Model | Proxy ID | Catalog status |
 | --- | --- | --- |
 | Gemini 3.8 Flash | `antigravity-gemini-3.8-flash` | Recommended; default High |
-| Gemini 3.5 Flash Lite | `antigravity-gemini-3.5-flash-lite` | Available; default Low |
-| Gemini 3.1 Flash Lite | `antigravity-gemini-3.1-flash-lite` | Available; default Low |
-| Gemini 3 Flash | `antigravity-gemini-3-flash` | Available for compatibility; default Low |
+| Gemini 4 Argon | `antigravity-gemini-4-argon` | Account-specific; Low / Medium / High; default High |
+| Gemini 3.5 Flash Lite | `antigravity-gemini-3.5-flash-lite` | Discovered; default Low |
+| Gemini 3.1 Flash Lite | `antigravity-gemini-3.1-flash-lite` | Discovered; default Low |
+| Gemini 3 Flash | `antigravity-gemini-3-flash` | Compatibility model; default Low |
+| Gemini 2.5 Pro | `antigravity-gemini-2.5-pro` | Discovered compatibility ID; no advertised thinking-level variants |
+| Claude Sonnet 5.5 | `antigravity-claude-sonnet-5-5` | Account-specific; Low / Medium / High; default High |
+| Claude Opus 5.5 | `antigravity-claude-opus-5-5` | Account-specific; Low / Medium / High; default High |
+| Claude Sonnet 4.6 (Thinking) | `antigravity-claude-sonnet-4-6-thinking` | Offered on accounts retaining 4.6; fixed thinking |
+| Claude Opus 4.6 (Thinking) | `antigravity-claude-opus-4-6-thinking` | Offered on accounts retaining 4.6; fixed thinking |
+| GPT-OSS 120B | `antigravity-gpt-oss-120b` | Discovered; fixed Medium |
 | Gemini 3.1 Flash Image (Nano Banana 2) | `gemini-3.1-flash-image` | Image generation and reference-image editing |
+
+Argon and Claude 5.5 were offered on one of the four checked accounts; the other
+three offered Claude 4.6 and had Argon disabled. Model access is determined per
+account. Image models use `/v1/images/generations` and the image-generation
+selector rather than the chat catalog. Codex models are configured separately
+under `codex.models` and are also included in `/v1/models`.
 
 **Gemini 3.5 Flash is retired; Gemini 3.5 Flash Lite remains available.** The
 former model's Low / Medium / High backends return a retirement notice with HTTP
@@ -492,9 +541,13 @@ thinking level to the model ID:
 | Model | Levels | Default |
 | --- | --- | --- |
 | `antigravity-gemini-3.8-flash` | `low`, `medium`, `high` | `high` |
+| `antigravity-gemini-4-argon` | `low`, `medium`, `high` when discovered | `high` |
 | `antigravity-gemini-3.5-flash-lite` | `low`, `medium`, `high` | `low` |
 | `antigravity-gemini-3.1-flash-lite` | `low`, `medium`, `high` | `low` |
 | `antigravity-gemini-3-flash` | `low`, `medium`, `high` | `low` |
+| `antigravity-gemini-2.5-pro` | No advertised variants | Upstream default |
+| `antigravity-claude-sonnet-5-5` | `low`, `medium`, `high` when discovered | `high` |
+| `antigravity-claude-opus-5-5` | `low`, `medium`, `high` when discovered | `high` |
 | `antigravity-claude-sonnet-4-6-thinking` | Fixed thinking | Thinking |
 | `antigravity-claude-opus-4-6-thinking` | Fixed thinking | Thinking |
 | `antigravity-gpt-oss-120b` | Fixed | `medium` |
@@ -502,6 +555,11 @@ thinking level to the model ID:
 For example, use `antigravity-gemini-3.8-flash-high` or
 `antigravity-gemini-3.8-flash-low`. The base model ID selects the default shown
 above.
+
+For discovered tiered models, use the base ID with `reasoning_effort` or an exact
+tier ID such as `antigravity-gemini-4-argon-high`,
+`antigravity-claude-sonnet-5-5-medium`, or `antigravity-claude-opus-5-5-low`.
+Only the tiers advertised by an eligible account can be routed.
 
 ## How It Works
 
