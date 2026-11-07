@@ -34,10 +34,13 @@ function isCodexProviderEnabled() {
 
 function isGoogleAccountActive(account) {
     if (!account?.refreshToken || account.disabled || account.challenge) return false;
-    const families = [...new Set((account.quota || []).map(quota => getFamilyName(quota.groupName)))];
+    const families = [...new Set((account.quota || []).map(quota => getQuotaFamilyName(quota)))];
     if (!families.length) return true;
     const now = Date.now();
     return families.some(family => {
+        const quotas = (account.quota || []).filter(quota => getQuotaFamilyName(quota) === family);
+        if (quotas.length && quotas.every(quota => Number(quota.remainingFraction) <= 0)) return false;
+        if (getGoogleQuotaWindows(account, family).some(window => window.remainingFraction <= 0)) return false;
         const sandboxExpiry = Number(globalCooldowns[`${account.email}|sandbox|${family}`] || 0);
         return sandboxExpiry <= now;
     });
@@ -123,11 +126,15 @@ function formatCompactReset(iso) {
 }
 
 function getGoogleQuotaWindows(account, familyName) {
-    const gemini = familyName === 'Gemini Models';
-    const thirdParty = /^Claude |^GPT-OSS/.test(familyName);
-    if (!gemini && !thirdParty) return [];
-    return (account.quotaWindows || [])
-        .filter(window => gemini ? /gemini/i.test(window.groupName) : /claude|gpt/i.test(window.groupName))
+    const quotas = (account.quota || []).filter(quota => getQuotaFamilyName(quota) === familyName);
+    const key = name => String(name).toLowerCase().replace(/\s*\((?:low|medium|high|thinking)\)$/i, '').replace(/[^a-z0-9]/g, '');
+    const names = quotas.flatMap(quota => [quota.limitName, quota.groupName]).map(key);
+    const windows = account.quotaWindows || [];
+    const specific = windows.filter(window => names.includes(key(window.groupName)));
+    const familyWindows = windows.filter(window => key(window.groupName) === key(familyName));
+    const selected = specific.length ? specific : familyWindows.length ? familyWindows : /^Claude |^GPT/.test(familyName)
+        ? windows.filter(window => /claude.*gpt|gpt.*claude/i.test(window.groupName)) : [];
+    return selected
         .filter(window => (window.window === '5h' || window.window === 'weekly') && Number.isFinite(window.remainingFraction))
         .map(window => ({
             label: window.window === 'weekly' ? '7d' : '5h',
@@ -176,7 +183,7 @@ function getFamilyQuotaData(accounts, familyName) {
 
     accounts.forEach(acc => {
         if (acc.quota) {
-            const familyQuotas = acc.quota.filter(q => getFamilyName(q.groupName) === familyName);
+            const familyQuotas = acc.quota.filter(q => getQuotaFamilyName(q) === familyName);
             if (familyQuotas.length > 0) {
                 const windows = getGoogleQuotaWindows(acc, familyName);
                 const avgQuota = Math.round(windows.length
@@ -378,16 +385,26 @@ const MODEL_FAMILIES = {
 };
 
 function getFamilyName(modelName) {
-    const n = modelName.toLowerCase();
+    const n = String(modelName).toLowerCase().replace(/[ .]/g, '-');
+    const claude = n.match(/claude-(sonnet|opus)-(\d+)-(\d+)/);
+    if (claude) return `Claude ${claude[1] === 'opus' ? 'Opus' : 'Sonnet'} ${claude[2]}.${claude[3]}`;
+    const gemini = n.match(/gemini-(\d+)(?:-([a-z]+))?/);
+    if (gemini && Number(gemini[1]) >= 4) return `Gemini ${gemini[1]}${gemini[2] ? ` ${gemini[2][0].toUpperCase()}${gemini[2].slice(1)}` : ''}`;
     for (const [family, check] of Object.entries(MODEL_FAMILIES)) {
         if (check(n)) return family;
     }
+    if (n.includes('claude')) return 'Claude Models';
+    if (n.includes('gpt')) return 'GPT Models';
     return 'Other';
+}
+
+function getQuotaFamilyName(quota) {
+    return quota.familyName || getFamilyName(quota.groupName);
 }
 
 function calculateFamilyStats(accounts) {
     const stats = {};
-    const keys = Object.keys(MODEL_FAMILIES);
+    const keys = [...new Set([...Object.keys(MODEL_FAMILIES), ...accounts.flatMap(account => (account.quota || []).map(getQuotaFamilyName))])];
     keys.forEach(fam => {
         stats[fam] = { totalQuota: 0, healthyCount: 0, totalCount: 0 };
     });
@@ -398,7 +415,7 @@ function calculateFamilyStats(accounts) {
         
         if (acc.quota) {
             acc.quota.forEach(q => {
-                const fam = getFamilyName(q.groupName);
+                const fam = getQuotaFamilyName(q);
                 if (stats[fam]) {
                     if (!familyQuotas[fam]) familyQuotas[fam] = { sum: 0, count: 0 };
                     familyQuotas[fam].sum += q.remainingFraction;
@@ -545,7 +562,7 @@ function organizeAccountDetails(account) {
     const groups = new Map();
     if (account.quota) {
         account.quota.forEach(q => {
-            const fam = getFamilyName(q.groupName);
+            const fam = getQuotaFamilyName(q);
             if (!groups.has(fam)) groups.set(fam, []);
             groups.get(fam).push({ ...q, pct: Math.round(q.remainingFraction * 100) });
         });
@@ -563,7 +580,7 @@ function renderFamilyGrid(stats) {
         
         const accountsWithFamily = stat.provider === 'codex'
             ? globalCodexAccounts
-            : globalAccounts.filter(acc => acc.quota && acc.quota.some(q => getFamilyName(q.groupName) === stat.name));
+            : globalAccounts.filter(acc => acc.quota && acc.quota.some(q => getQuotaFamilyName(q) === stat.name));
         
         const allAccountsDownForFamily = stat.provider === 'codex'
             ? stat.total > 0 && stat.healthy === 0
@@ -576,8 +593,11 @@ function renderFamilyGrid(stats) {
         let barIndicatorColor = allAccountsDownForFamily ? 'bg-rose-500' : (stat.availability > 50 ? 'bg-emerald-500' : (stat.availability < 20 ? 'bg-rose-500' : 'bg-zinc-300 dark:bg-zinc-600'));
         let borderColor = allAccountsDownForFamily ? 'border-rose-200 dark:border-rose-900/50' : 'border-zinc-200 dark:border-zinc-800';
 
-        const modelsInFamily = (stat.models || globalSupportedModels
-            .filter(m => getFamilyName(m) === stat.name))
+        const familyModels = [...new Set(accountsWithFamily.flatMap(account => (account.quota || [])
+            .filter(quota => getQuotaFamilyName(quota) === stat.name)
+            .flatMap(quota => quota.modelIds || (quota.modelId ? [quota.modelId] : []))))];
+        const modelsInFamily = (stat.models || (familyModels.length ? familyModels : globalSupportedModels
+            .filter(m => getFamilyName(m) === stat.name)))
             .map(m => globalModelNames.get(m) || m.replace('models/', '').replace('anthropic/', ''))
             .join(', ');
 
@@ -604,7 +624,7 @@ function renderFamilyGrid(stats) {
             <div class="p-3 sm:p-4 cursor-pointer flex flex-col" onclick="toggleFamily(${index})">
                 <div class="flex items-start justify-between mb-4">
                     <div>
-                        <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">${stat.name}</div>
+                        <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">${escapeHtml(stat.name)}</div>
                         <div class="flex items-baseline gap-2">
                             <span class="text-2xl font-bold ${indicatorColor} tracking-tighter">${stat.availability}%</span>
                             <span class="text-[9px] text-zinc-500 dark:text-zinc-600 font-medium">AVAILABILITY</span>
@@ -776,7 +796,7 @@ function renderAccountsTable(accounts) {
                             <div class="bg-white dark:bg-[#0f0f0f] rounded border ${familyBorderColor} overflow-hidden group/family transition-colors p-4">
                                 <div class="flex items-center justify-between mb-4">
                                     <div class="min-w-0 flex-grow">
-                                        <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1 truncate">${cat}</div>
+                                        <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1 truncate">${escapeHtml(cat)}</div>
                                         <div class="flex items-baseline gap-2">
                                             <span class="text-xl font-bold ${textColor} tracking-tighter leading-none">${best}%</span>
                                             <span class="text-[8px] text-zinc-500 dark:text-zinc-600 font-medium whitespace-nowrap">AVAILABILITY</span>
@@ -827,7 +847,7 @@ function renderAccountsTable(accounts) {
             </div>`;
         }
 
-        const knownFamilies = acc.quota ? [...new Set(acc.quota.map(q => getFamilyName(q.groupName)))] : Object.keys(MODEL_FAMILIES);
+        const knownFamilies = acc.quota ? [...new Set(acc.quota.map(q => getQuotaFamilyName(q)))] : Object.keys(MODEL_FAMILIES);
         const totalPossibleBlocks = knownFamilies.length * 2;
         const activeCooldowns = emailCooldowns.filter(k => globalCooldowns[k] > now).length;
         const isAllDownFinal = activeCooldowns >= totalPossibleBlocks && totalPossibleBlocks > 0;

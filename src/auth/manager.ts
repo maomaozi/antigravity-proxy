@@ -1,3 +1,4 @@
+import { accountSupportsModel, getAccountModelQuotas, getAccountQuotaWindows, getModelFamilyName, getAccountModelFamily } from "../models";
 import { type AntigravityAccount } from "./types";
 import { loadConfig, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
@@ -13,21 +14,8 @@ const googleRefreshPromises = new Map<string, Promise<AntigravityAccount | null>
 
 export const eventBus = new EventEmitter();
 
-const MODEL_FAMILIES = {
-  'Gemini Models': (n: string) => n.includes('gemini'),
-  'Claude Sonnet 4.6': (n: string) => n.includes('claude') && n.includes('sonnet') && (n.includes('4-6') || n.includes('4.6')),
-  'Claude Opus 4.6': (n: string) => n.includes('claude') && n.includes('opus') && (n.includes('4-6') || n.includes('4.6')),
-  'Claude Models': (n: string) => n.includes('claude'),
-  'GPT-OSS 120B': (n: string) => n.includes('gpt-oss') && n.includes('120b'),
-  'GPT Models': (n: string) => n.includes('gpt'),
-};
-
-export function getFamilyName(modelName: string) {
-  const n = modelName.toLowerCase();
-  for (const [family, check] of Object.entries(MODEL_FAMILIES)) {
-    if (check(n)) return family;
-  }
-  return 'Other';
+export function getFamilyName(modelName: string, account?: AntigravityAccount): string {
+  return account ? getAccountModelFamily(account, modelName) : getModelFamilyName(modelName);
 }
 
 export async function initManager() {
@@ -132,22 +120,17 @@ function isAccountQuotaExhausted(account: AntigravityAccount, model?: string): b
   let config: ReturnType<typeof getProxyConfig>;
   try { config = getProxyConfig(); } catch { return false; }
   const threshold = config.features.softQuotaThresholdPercent;
-  if (threshold >= 100 || !account.quota || account.quota.length === 0) return false;
-
+  const windows = model ? getAccountQuotaWindows(account, model) : (account.quotaWindows || []);
+  // Hard exhaustion (including dedicated weekly pools) must not be rescued.
+  if (windows.some(window => window.remainingFraction <= 0)) return true;
   const family = model ? getFamilyName(model) : null;
-  const relevantQuotas = family
-    ? account.quota.filter(q => {
-        const qLower = q.groupName.toLowerCase();
-        const fLower = family.toLowerCase();
-        return qLower.includes(fLower) || fLower.includes(qLower) ||
-               (fLower.includes('claude') && qLower.includes('claude')) ||
-               (fLower.includes('gemini') && qLower.includes('gemini'));
-      })
-    : account.quota;
+  const relevantQuotas = model ? getAccountModelQuotas(account, model) : (account.quota || []);
+  if (relevantQuotas.some(quota => quota.remainingFraction <= 0)) return true;
+  if (threshold >= 100) return false;
 
-  if (relevantQuotas.length === 0) return false;
+  if (relevantQuotas.length === 0 && windows.length === 0) return false;
 
-  const usedPercent = relevantQuotas.reduce((worst, q) => {
+  const usedPercent = [...relevantQuotas, ...windows].reduce((worst, q) => {
     const used = (1 - q.remainingFraction) * 100;
     return Math.max(worst, used);
   }, 0);
@@ -180,7 +163,7 @@ export type AccountSelectionFailure =
 export function getAccountSelectionFailure(pool: "sandbox", model: string): AccountSelectionFailure {
   const configured = accounts.filter(account => account.refreshToken);
   if (configured.length === 0) return "no_accounts";
-  const supported = configured.filter(account => account.capabilities?.[model] !== false);
+  const supported = configured.filter(account => accountSupportsModel(account, model));
   if (supported.length === 0) return "model_not_found";
   const enabled = supported.filter(account => !account.disabled);
   if (enabled.length === 0) return supported.every(account => account.suspension?.reason === "tos_violation")
@@ -189,9 +172,8 @@ export function getAccountSelectionFailure(pool: "sandbox", model: string): Acco
   if (usable.length === 0) return "account_verification_required";
   if (usable.every(account => isAccountQuotaExhausted(account, model))) return "insufficient_quota";
   const now = Date.now();
-  const family = getFamilyName(model);
   if (usable.every(account => isAccountQuotaExhausted(account, model)
-    || (cooldownMap.get(`${account.email}|${pool}|${family}`) || 0) > now)) {
+    || (cooldownMap.get(`${account.email}|${pool}|${getFamilyName(model, account)}`) || 0) > now)) {
     return "rate_limit_exceeded";
   }
   return "no_available_accounts";
@@ -205,17 +187,19 @@ export async function getBestAccount(
   skipRescue: boolean = false,
   routingKey?: string,
   signal?: AbortSignal,
+  reasoningEffort?: string,
 ): Promise<AntigravityAccount | null> {
   if (accounts.length === 0) return null;
   const now = Date.now();
   const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !excludeEmails.includes(a.email));
-  const family = model ? getFamilyName(model) : 'Other';
+  const routingModel = model && reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort) && !/-(low|medium|high)$/.test(model)
+    ? `${model}-${reasoningEffort}` : model;
   
   if (pool) {
     let candidates = usable.filter(a => {
-      if (model && a.capabilities?.[model] === false) return false;
-      if (isAccountQuotaExhausted(a, model)) return false;
-      const expiry = cooldownMap.get(`${a.email}|${pool}|${family}`);
+      if (model && !accountSupportsModel(a, model, reasoningEffort)) return false;
+      if (isAccountQuotaExhausted(a, routingModel)) return false;
+      const expiry = cooldownMap.get(`${a.email}|${pool}|${getFamilyName(model || "Other", a)}`);
       return !expiry || expiry <= now;
     });
 
@@ -227,11 +211,11 @@ export async function getBestAccount(
     if (stickyEmail && excludeEmails.length === 0) {
       const stickyAccount = usable.find(a =>
         a.email === stickyEmail &&
-        !(model && a.capabilities?.[model] === false) &&
-        !isAccountQuotaExhausted(a, model)
+        (!model || accountSupportsModel(a, model, reasoningEffort)) &&
+        !isAccountQuotaExhausted(a, routingModel)
       );
       if (stickyAccount) {
-        const cooldownKey = `${stickyEmail}|${pool}|${family}`;
+        const cooldownKey = `${stickyEmail}|${pool}|${getFamilyName(model || "Other", stickyAccount)}`;
         const expiry = cooldownMap.get(cooldownKey);
         if (!expiry || expiry <= now) {
           if (expiry) cooldownMap.delete(cooldownKey);
@@ -263,14 +247,15 @@ export async function getBestAccount(
     }
 
     if (candidates.length === 0 && !skipRescue) {
-      candidates = usable.filter(a => !(model && a.capabilities?.[model] === false))
+      candidates = usable.filter(a => (!model || accountSupportsModel(a, model, reasoningEffort)))
         .filter(a => {
-          const expiry = cooldownMap.get(`${a.email}|${pool}|${family}`);
+          if (model && (getAccountModelQuotas(a, routingModel!).some(q => q.remainingFraction <= 0) || getAccountQuotaWindows(a, routingModel!).some(w => w.remainingFraction <= 0))) return false;
+          const expiry = cooldownMap.get(`${a.email}|${pool}|${getFamilyName(model || "Other", a)}`);
           return !expiry || expiry <= now;
         })
         .sort((a, b) => {
-          const expA = cooldownMap.get(`${a.email}|${pool}|${family}`) || 0;
-          const expB = cooldownMap.get(`${b.email}|${pool}|${family}`) || 0;
+          const expA = cooldownMap.get(`${a.email}|${pool}|${getFamilyName(model || "Other", a)}`) || 0;
+          const expB = cooldownMap.get(`${b.email}|${pool}|${getFamilyName(model || "Other", b)}`) || 0;
           return expA - expB;
         });
     }
@@ -346,7 +331,7 @@ function calculatePriority(account: AntigravityAccount, now: number, model?: str
   const secondsSinceUsed = (now - account.lastUsed) / 1000;
   let health = account.healthScore;
   if (model && pool) {
-      const family = getFamilyName(model);
+      const family = getFamilyName(model, account);
       let score = account.modelScores?.[`${model}|${pool}`];
       
       if (score === undefined && account.modelScores) {
@@ -369,7 +354,7 @@ function calculatePriority(account: AntigravityAccount, now: number, model?: str
 export async function updateAccountUsage(email: string, success: boolean, model?: string, pool?: string, status?: number) {
   const account = accounts.find(a => a.email === email);
   if (!account) return;
-  if (success && pool && model) clearCooldown(email, pool, getFamilyName(model));
+  if (success && pool && model) clearCooldown(email, pool, getFamilyName(model, account));
   account.lastUsed = Date.now();
   const delta = success ? 2 : (status === 403 ? -50 : -10);
   account.healthScore = Math.max(0, Math.min(100, account.healthScore + delta));
@@ -425,12 +410,14 @@ export async function updateAccountProject(email: string, projectId: string) {
     }
 }
 
-export function getEarliestReset(pool: 'sandbox'): string | null {
+export function getEarliestReset(pool: 'sandbox', model?: string): string | null {
   const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && a.quota);
   if (usable.length === 0) return null;
   let resetTimes: number[] = [];
   for (const acc of usable) {
-    acc.quota?.forEach(q => {
+    const quotas = model ? getAccountModelQuotas(acc, model) : (acc.quota || []);
+    const windows = model ? getAccountQuotaWindows(acc, model) : (acc.quotaWindows || []);
+    [...quotas, ...windows.filter(window => window.remainingFraction < 1)].forEach(q => {
       if (q.resetTime) {
         const t = new Date(q.resetTime).getTime();
         if (!isNaN(t)) resetTimes.push(t);

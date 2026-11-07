@@ -1,7 +1,7 @@
 import { getSignature, cacheSignature } from "./cache";
 import { cleanJSONSchemaForAntigravity } from "./schema";
 import { getProxyConfig } from "../config/manager";
-import { getUnavailableModelError } from "../models";
+import { getUnavailableModelError, isModernGeminiModel, type DiscoveredModel } from "../models";
 import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
 import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionChunk } from "../api/openai/chat";
 
@@ -90,9 +90,9 @@ export function validateCompletionRequestForGoogle(request: CompletionRequest): 
   const messages = request.messages.filter(message => message?.role !== "system");
   const lastMessage = messages.at(-1);
   if (!lastMessage) return "At least one non-system message is required.";
-  const isGemini3Request = request.model.toLowerCase().includes("gemini-3");
-  if (isGemini3Request && (lastMessage.role === "assistant" || lastMessage.role === "model")) {
-    return "Gemini 3 requests cannot end with a model/assistant turn; add a user or tool response.";
+  const isModernGeminiRequest = isModernGeminiModel(request.model);
+  if (isModernGeminiRequest && (lastMessage.role === "assistant" || lastMessage.role === "model")) {
+    return "Gemini requests cannot end with a model/assistant turn; add a user or tool response.";
   }
 
   let pendingToolCalls = new Set<string>();
@@ -182,7 +182,8 @@ export function transformCompletionToGoogleBody(
   projectId: string, 
   location: string, 
   sessionId?: string, 
-  aggressive: boolean = false
+  aggressive: boolean = false,
+  discoveredModel?: DiscoveredModel,
 ): any {
   const modelError = getUnavailableModelError(request.model);
   if (modelError) throw new Error(modelError);
@@ -290,6 +291,12 @@ export function transformCompletionToGoogleBody(
                googleModel = "claude-sonnet-4-5-thinking";
            }
        }
+  }
+
+  // Discovery wins over legacy fuzzy aliases and tier stripping.
+  if (discoveredModel) {
+    googleModel = discoveredModel.id;
+    extractedTier ||= discoveredModel.id.match(/-(low|medium|high)$/)?.[1];
   }
 
   // Extract system instruction (like plugin)
@@ -426,10 +433,10 @@ export function transformCompletionToGoogleBody(
     });
   }
 
-  const isThinkingModel = rawModel.includes("-thinking") ||
+  const isThinkingModel = !googleModel.includes("gpt") && (discoveredModel?.supportsThinking || rawModel.includes("-thinking") ||
                           rawModel.includes("gemini-3.8-flash") ||
-                          rawModel.includes("gemini-3.5-flash");
-  const isGemini3ProtocolModel = rawModel.includes("gemini-3");
+                          rawModel.includes("gemini-3.5-flash"));
+  const isModernGeminiProtocolModel = isModernGeminiModel(googleModel);
   let thinkingBudget = request.thinkingBudget;
 
   if (!thinkingBudget && isThinkingModel) {
@@ -448,9 +455,9 @@ export function transformCompletionToGoogleBody(
   const normalizedMaxOutputTokens = Number.isFinite(requestedMaxTokens) && requestedMaxTokens > 0
     ? Math.trunc(requestedMaxTokens)
     : defaultMaxOutputTokens;
-  const modelOutputLimit = isGemini3ProtocolModel
+  const modelOutputLimit = discoveredModel?.maxOutputTokens || (isModernGeminiProtocolModel
     ? (googleModel.includes("flash-lite") ? 65535 : 65536)
-    : (googleModel.includes("claude") ? 64000 : (googleModel.includes("gpt-oss") ? 32768 : undefined));
+    : (googleModel.includes("claude") ? 64000 : (googleModel.includes("gpt-oss") ? 32768 : undefined)));
   const maxOutputTokens = modelOutputLimit
     ? Math.min(normalizedMaxOutputTokens, modelOutputLimit)
     : normalizedMaxOutputTokens;
@@ -461,7 +468,7 @@ export function transformCompletionToGoogleBody(
   };
 
   // Gemini 3.5+ rejects or ignores legacy sampling parameters and candidateCount.
-  if (!isGemini3ProtocolModel) {
+  if (!isModernGeminiProtocolModel) {
     generationConfig.temperature = request.temperature ?? 0.7;
     generationConfig.topP = request.topP ?? 0.95;
     generationConfig.candidateCount = 1;
@@ -509,8 +516,8 @@ export function transformCompletionToGoogleBody(
   }
 
   const structuredClaudeResponse = hasStructuredResponse && googleModel.includes("claude");
-  if ((isThinkingModel || googleModel.includes("gemini-3")) && !structuredClaudeResponse) {
-    googleRequest.generationConfig.thinkingConfig = isGemini3ProtocolModel
+  if ((isThinkingModel || isModernGeminiProtocolModel) && !structuredClaudeResponse) {
+    googleRequest.generationConfig.thinkingConfig = isModernGeminiProtocolModel
       ? {
           includeThoughts: true,
           thinkingLevel: extractedTier || "low"

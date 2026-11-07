@@ -298,7 +298,6 @@ describe("Unit Tests: transformToGoogleBody", () => {
     "gemini-3.1-pro-preview",
     "gemini-pro-agent",
     "GEMINI-4-ARGON-DISABLED",
-    "antigravity-gemini-4-argon",
   ])("rejects unavailable model %s before calling upstream", (model) => {
     const body = { model, messages: [{ role: "user", content: "Hi" }] };
     expect(validateOpenAIRequestForGoogle(body)).toContain("/v1/models");

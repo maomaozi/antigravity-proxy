@@ -17,7 +17,7 @@ import { executeCompletion } from "./api/completion-executor";
 import { OAUTH_CONFIG } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { createWindowActivationRuntime, startQuotaWindowActivationScheduler } from "./api/window-activation";
-import { ANTIGRAVITY_MODEL_CATALOG, SUPPORTED_MODELS } from "./models";
+import { ANTIGRAVITY_MODEL_CATALOG, getAvailableModelCatalog } from "./models";
 import { resolveCodexAffinityIdentity, resolveSessionIdentity } from "./session/identity";
 import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings } from "./session/store";
 import { CodexAccountManager } from "./codex/account-manager";
@@ -32,7 +32,7 @@ function getCodexModelIds() {
 }
 
 function getSupportedModelIds() {
-  return [...SUPPORTED_MODELS.map(model => model.id), ...getCodexModelIds()];
+  return [...getAvailableModelCatalog(getAccounts()).map(model => model.id), ...getCodexModelIds()];
 }
 
 const logBuffer: string[] = [];
@@ -151,7 +151,7 @@ Bun.serve({
     }
 
     if (cleanPath === "/v1/models") {
-        const models = SUPPORTED_MODELS.map(model => ({
+        const models = getAvailableModelCatalog(getAccounts()).map(model => ({
             id: model.id,
             object: "model",
             created: Math.floor(Date.now() / 1000),
@@ -172,7 +172,7 @@ Bun.serve({
         return json({
             object: "list",
             data: [...models, ...codexModels],
-            antigravity: ANTIGRAVITY_MODEL_CATALOG,
+            antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) },
         });
     }
 
@@ -381,13 +381,13 @@ Bun.serve({
                     version: APP_VERSION,
                     accounts: getAccounts(),
                     supportedModels: getSupportedModelIds(),
-                    antigravity: ANTIGRAVITY_MODEL_CATALOG,
+                    antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) },
                     codexModels: getCodexModelIds(),
                     cooldowns: getCooldowns(),
                     logs: logBuffer
                 });
 
-                onUpdate = (data: any) => send("update", { ...data, supportedModels: getSupportedModelIds(), codexModels: getCodexModelIds() });
+                onUpdate = (data: any) => send("update", { ...data, antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) }, supportedModels: getSupportedModelIds(), codexModels: getCodexModelIds() });
                 onFlash = (data: { email: string, status: 'success' | 'error' }) => send("flash", data);
                 onLog = (msg: string) => send("log", { message: msg });
                 onCooldown = (data: any) => send("cooldown", data);
@@ -509,7 +509,7 @@ Bun.serve({
             accounts: getAccounts(),
             codexAccounts: codexAccountManager.listPublic(),
             supportedModels: getSupportedModelIds(),
-            antigravity: ANTIGRAVITY_MODEL_CATALOG,
+            antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) },
             codexModels: getCodexModelIds()
         });
     }

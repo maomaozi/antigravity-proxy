@@ -13,6 +13,7 @@ function createCodexQuotaHarness() {
       google(accounts, family) {
         return { windows: getGoogleQuotaWindows(accounts[0], family), stats: getGoogleWindowStats(accounts, family), family: getFamilyQuotaData(accounts, family) };
       },
+      families(accounts) { return calculateFamilyStats(accounts); },
       calculate(accounts) {
         globalCodexAccounts = accounts;
         globalCodexModels = ["gpt-5-codex"];
@@ -24,6 +25,28 @@ function createCodexQuotaHarness() {
 }
 
 describe("dashboard account provider layout", () => {
+  test('shows Argon and newly discovered model families with their dedicated quotas', () => {
+    const accounts = [{
+      email: 'special@example.com', healthScore: 100,
+      quota: [
+        { groupName: 'Gemini 3 Flash', remainingFraction: 0.8 },
+        { groupName: 'Gemini 4 Argon (High)', remainingFraction: 0.4, familyName: 'Gemini 4 Argon' },
+        { groupName: 'Claude Opus 5.5 (High)', remainingFraction: 1 },
+      ],
+      quotaWindows: [
+        { groupName: 'Gemini Models', window: '5h', remainingFraction: 0.8 },
+        { groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.9 },
+        { groupName: 'Gemini 4 Argon', window: 'weekly', remainingFraction: 0.4 },
+        { groupName: 'Claude and GPT models', window: '5h', remainingFraction: 1 },
+      ],
+    }];
+    const harness = createCodexQuotaHarness();
+    expect(harness.google(accounts, 'Gemini 4 Argon').windows.map((item: any) => [item.label, item.remaining])).toEqual([['7d', 40]]);
+    expect(harness.google(accounts, 'Gemini Models').windows.map((item: any) => item.remaining)).toEqual([80, 90]);
+    expect(harness.families(accounts).find((item: any) => item.name === 'Gemini 4 Argon')).toMatchObject({ availability: 40, total: 1 });
+    expect(harness.families(accounts).some((item: any) => item.name === 'Claude Opus 5.5')).toBe(true);
+  });
+
   test('shows shared Google weekly quotas in the correct families and respects the tighter window', () => {
     const makeAccount = (weekly: number) => ({
       email: `weekly-${weekly}@example.com`,

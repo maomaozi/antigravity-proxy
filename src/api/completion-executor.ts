@@ -1,3 +1,4 @@
+import { findAccountModel } from "../models";
 import {
   emitAccountFlash,
   ensureFingerprint,
@@ -138,7 +139,7 @@ export function buildCompletionFailure(
     status = 429;
     type = "insufficient_quota";
     code = "insufficient_quota";
-    const resetTime = getEarliestReset(pool);
+    const resetTime = getEarliestReset(pool, model);
     message = `Quota exhausted for model '${model}'.${resetTime ? ` Next reset in ${resetTime}.` : ""} Try another model or wait for quota reset.`;
   } else if (reason === "rate_limit_exceeded" || lastFailure?.status === 429) {
     status = 429;
@@ -205,6 +206,7 @@ export async function executeCompletion({
       true,
       routingKey,
       signal,
+      request.reasoningEffort,
     );
 
     if (!account) {
@@ -216,6 +218,7 @@ export async function executeCompletion({
         false,
         routingKey,
         signal,
+        request.reasoningEffort,
       );
     }
 
@@ -260,6 +263,7 @@ export async function executeCompletion({
       "",
       sessionId,
       aggressive,
+      findAccountModel(account, request.model, request.reasoningEffort),
     );
 
     const headers = getImpersonationHeaders(account.accessToken!, account.fingerprint!, googleBody.model);
@@ -351,8 +355,8 @@ export async function executeCompletion({
             continue;
           }
           if (parsedError.isChallengeRequired) {
-            console.log(`[Auth] ${parsedError.reason} for ${account.email}, flagging pool sandbox for family ${getFamilyName(request.model)}.`);
-            flagAccountChallenge(account.email, "sandbox", getFamilyName(request.model), {
+            console.log(`[Auth] ${parsedError.reason} for ${account.email}, flagging pool sandbox for family ${getFamilyName(request.model, account)}.`);
+            flagAccountChallenge(account.email, "sandbox", getFamilyName(request.model, account), {
               type: "CAPTCHA",
               url: parsedError.validationUrl || "https://cloud.google.com/gemini/docs/codeassist/request-license",
               reason: parsedError.reason,
@@ -364,7 +368,7 @@ export async function executeCompletion({
             console.log(`[Model] Unsupported model ${request.model} for ${account.email}, marking capability.`);
             flagModelUnsupported(account.email, request.model);
             await updateAccountUsage(account.email, false, request.model, "sandbox", status);
-            return buildCompletionFailure(request.model, "sandbox", attempts, attemptLogs);
+            continue;
           }
           await updateAccountUsage(account.email, false, request.model, "sandbox", status);
           return jsonError(status, {
@@ -449,7 +453,7 @@ export async function executeCompletion({
         await updateAccountUsage(account.email, false, request.model, "sandbox", status);
         if (status === 429) {
           const cooldownDuration = parsedError.resetSeconds ? `${Math.ceil(parsedError.resetSeconds)}s` : undefined;
-          markCooldown(account.email, "sandbox", getFamilyName(request.model), cooldownDuration);
+          markCooldown(account.email, "sandbox", getFamilyName(request.model, account), cooldownDuration);
         }
         continue;
       }
@@ -474,7 +478,7 @@ export async function executeCompletion({
             identity: sessionIdentity,
             accountEmail: account.email,
             model: request.model,
-            modelFamily: getFamilyName(request.model),
+            modelFamily: getFamilyName(request.model, account),
             upstreamModel: googleBody.model,
             pool: "sandbox",
             endpoint: googleUrl,
@@ -507,7 +511,7 @@ export async function executeCompletion({
           identity: sessionIdentity,
           accountEmail: account.email,
           model: request.model,
-          modelFamily: getFamilyName(request.model),
+          modelFamily: getFamilyName(request.model, account),
           pool: "sandbox",
           projectId: effectiveProjectId,
           endpoint: googleUrl,
@@ -534,7 +538,7 @@ export async function executeCompletion({
       if (!result.text && result.toolCalls.length === 0 && result.finishReason !== "length") {
         console.warn(`[Empty] Account ${account.email} returned empty response for ${request.model}, retrying with another account...`);
         attemptLogs.push({ email: account.email, status: 502, reason: "empty_response" });
-        markCooldown(account.email, "sandbox", getFamilyName(request.model), "30s");
+        markCooldown(account.email, "sandbox", getFamilyName(request.model, account), "30s");
         continue;
       }
 
@@ -542,7 +546,7 @@ export async function executeCompletion({
         identity: sessionIdentity,
         accountEmail: account.email,
         model: request.model,
-        modelFamily: getFamilyName(request.model),
+        modelFamily: getFamilyName(request.model, account),
         pool: "sandbox",
         projectId: effectiveProjectId,
         endpoint: googleUrl,
@@ -553,7 +557,7 @@ export async function executeCompletion({
           identity: sessionIdentity,
           accountEmail: account.email,
           model: request.model,
-          modelFamily: getFamilyName(request.model),
+          modelFamily: getFamilyName(request.model, account),
           upstreamModel: googleBody.model,
           pool: "sandbox",
           endpoint: googleUrl,

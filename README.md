@@ -14,7 +14,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Multi-Agent Support**: Specifically designed to work with **Claude Code**, **OpenCode**, and other agentic frameworks.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
-- **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for inactive Gemini or Codex 5-hour windows. Each inactive account receives one minimal request to start its window; Gemini activation uses 3.8 Flash with an output limit of 100 tokens. The first check runs 10 minutes after server startup.
+- **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for unused Google quota pools and Codex 5-hour windows. Google activation selects an advertised chat model per independent pool, including Claude/Opus and dedicated model quotas such as Argon. Shared pools receive one request, exhausted pools are skipped, and quotas are refreshed after activation. The first check runs 10 minutes after server startup.
 - **Antigravity Routing**: Accesses Antigravity Gemini, Claude Thinking, and GPT-OSS models through the Sandbox Pool.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
 - **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account, pool, and endpoint in SQLite.
@@ -465,9 +465,14 @@ use 3.8 Flash instead.
 The old `gemini-2.5-flash`, `gemini-2.5-flash-lite`, and
 `gemini-2.5-flash-thinking` IDs are labeled **Gemini 3.5 Flash Lite** upstream.
 They remain accepted as upstream aliases and are not listed as separate models.
-Gemini 2.5 Pro returned HTTP 503 capacity exhaustion, so it is not offered in the
-selector; this transient failure is not treated as retirement. Gemini 4 Argon is
-marked disabled. Gemini 3.6 Flash, 3.7 Flash, and 3.1 Pro remain absent.
+The proxy discovers each account's current public models when refreshing quotas.
+Enabled account-specific models, including Gemini 4 Argon and newer Claude models,
+appear in `/v1/models` and Playground automatically. Tiered models also get a base
+alias (for example `antigravity-gemini-4-argon`) with available thinking levels.
+Requests use only accounts advertising the requested model and preserve its actual
+upstream ID. Argon's dedicated weekly quota is displayed and enforced separately
+from the common Gemini pool. Disabled and internal models remain excluded.
+Gemini 3.6 Flash, 3.7 Flash, and 3.1 Pro remain retired/absent.
 
 Playground's existing model selector lists chat models and their thinking levels.
 Choose image models in image generation mode.

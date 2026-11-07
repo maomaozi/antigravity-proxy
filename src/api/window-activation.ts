@@ -1,3 +1,5 @@
+import { accountSupportsModel, findAccountModel, getAccountQuotaWindows, getModelFamilyName, updateQuotaFamilies } from "../models";
+import { transformCompletionToGoogleBody } from "../utils/transform";
 import { randomUUID } from "node:crypto";
 import {
   ensureFingerprint,
@@ -16,7 +18,7 @@ import type {
 import { getProxyConfig } from "../config/manager";
 import { getImpersonationHeaders } from "../utils/headers";
 import { parseGoogleError } from "../utils/errors";
-import { fetchQuota, refreshAllQuotas } from "./quota";
+import { fetchQuota, fetchQuotaWindows, refreshAllQuotas } from "./quota";
 
 export const WINDOW_ACTIVATION_INTERVAL_MS = 10 * 60_000;
 
@@ -32,16 +34,42 @@ export interface WindowActivationRuntime {
   refreshGoogleQuotas(): Promise<void>;
   listGoogleAccounts(): AntigravityAccount[];
   getCodexUsageSnapshots(): Promise<CodexUsageSnapshot[]>;
-  activateGoogle(account: AntigravityAccount): Promise<boolean>;
+  activateGoogle(account: AntigravityAccount, model: string): Promise<boolean>;
   activateCodex(email: string): Promise<boolean>;
   refreshCodexUsage(): Promise<void>;
 }
 
+export interface GoogleActivationTarget {
+  key: string;
+  model: string;
+}
+
+/** One request per independent pool, never one hard-coded model per account. */
+export function getGoogleActivationTargets(account: AntigravityAccount): GoogleActivationTarget[] {
+  if (account.disabled || account.challenge || !account.refreshToken) return [];
+  const targets = new Map<string, GoogleActivationTarget>();
+  const active = new Set<string>();
+  for (const quota of account.quota || []) {
+    const model = (quota.modelIds || (quota.modelId ? [quota.modelId] : []))
+      .find(id => !/image/i.test(id) && accountSupportsModel(account, id))
+      || (!account.availableModels && !quota.modelId && /gemini/i.test(quota.groupName) ? "gemini-3.8-flash-tiered" : undefined);
+    if (!model) continue;
+    const windows = getAccountQuotaWindows(account, model);
+    const key = windows[0]?.groupName || quota.limitName;
+    if (quota.remainingFraction < 1) active.add(key);
+    if (quota.remainingFraction !== 1 || windows.some(window => window.remainingFraction <= 0)) continue;
+    const shortWindows = windows.filter(window => window.window === '5h');
+    // Weekly-only dedicated pools (e.g. Argon) can be activated when unused too.
+    const activationWindows = shortWindows.length ? shortWindows : windows;
+    if (activationWindows.some(window => window.remainingFraction < 1)) continue;
+    if (!targets.has(key)) targets.set(key, { key, model });
+  }
+  return [...targets.values()].filter(target => !active.has(target.key));
+}
+
+/** Compatibility helper retained for callers interested only in Gemini. */
 export function isGoogleGeminiWindowInactive(account: AntigravityAccount): boolean {
-  if (account.disabled || account.challenge) return false;
-  const geminiQuotas = (account.quota || []).filter(quota => quota.groupName.toLowerCase().includes("gemini"));
-  return geminiQuotas.length > 0
-    && geminiQuotas.every(quota => Number(quota.remainingFraction) >= 1);
+  return getGoogleActivationTargets(account).some(target => getModelFamilyName(target.model).startsWith("Gemini"));
 }
 
 export function isCodexFiveHourWindowInactive(usage: CodexUsage | null): boolean {
@@ -62,24 +90,19 @@ export function isCodexFiveHourWindowInactive(usage: CodexUsage | null): boolean
 }
 
 function googleActivationBody(account: AntigravityAccount, model: string): Record<string, unknown> {
-  return {
-    project: account.projectId,
-    model,
-    userAgent: "antigravity",
-    requestId: `window-activation-${randomUUID()}`,
-    requestType: "agent",
-    request: {
-      contents: [{ role: "user", parts: [{ text: "." }] }],
-      generationConfig: { maxOutputTokens: 100 },
-      sessionId: randomUUID(),
-    },
-  };
+  const body = transformCompletionToGoogleBody({
+    model, messages: [{ role: "user", content: "." }], stream: false,
+    maxOutputTokens: 2048, thinkingBudget: 1024,
+  }, account.projectId!, "", randomUUID(), false, findAccountModel(account, model));
+  return { ...body, requestId: `window-activation-${randomUUID()}` };
 }
 
-export async function activateGoogleGeminiWindow(
+export async function activateGoogleModelWindow(
   account: AntigravityAccount,
+  model: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
+  if (!accountSupportsModel(account, model) || account.disabled || account.challenge) return false;
   const send = async (forceRefresh: boolean): Promise<Response | null> => {
     const ready = await prepareAccountForRequest(account.email, forceRefresh);
     if (!ready?.accessToken || !ready.projectId) return null;
@@ -87,7 +110,6 @@ export async function activateGoogleGeminiWindow(
     const configured = getProxyConfig().endpoints.sandbox;
     const endpoint = (Array.isArray(configured) ? configured : [configured])[0];
     if (!endpoint) return null;
-    const model = "gemini-3.8-flash-tiered";
     return fetchImpl(endpoint, {
       method: "POST",
       headers: getImpersonationHeaders(ready.accessToken, ready.fingerprint, model),
@@ -113,15 +135,26 @@ export async function activateGoogleGeminiWindow(
     throw new Error(`Google activation request failed (${response.status}): ${responseBody.slice(0, 300)}`);
   }
 
+  if (/"error"\s*:|"response.failed"/.test(responseBody)) {
+    throw new Error(`Google activation stream failed: ${responseBody.slice(0, 300)}`);
+  }
   const ready = getAccounts().find(candidate => candidate.email === account.email);
   if (ready) {
     const quota = await fetchQuota(ready, true, fetchImpl);
     if (quota) {
       ready.quota = quota;
+      const windows = await fetchQuotaWindows(ready, fetchImpl);
+      if (windows !== null) ready.quotaWindows = windows;
+      updateQuotaFamilies(ready);
       await saveAccounts(getAccounts());
     }
   }
   return true;
+}
+
+export async function activateGoogleGeminiWindow(account: AntigravityAccount, fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  const target = getGoogleActivationTargets(account).find(target => getModelFamilyName(target.model).startsWith("Gemini"));
+  return activateGoogleModelWindow(account, target?.model || "gemini-3.8-flash-tiered", fetchImpl);
 }
 
 function codexActivationModel(): string | null {
@@ -186,7 +219,7 @@ export function createWindowActivationRuntime(
     getCodexUsageSnapshots: () => getProxyConfig().codex.enabled
       ? codexManager.getUsageSnapshots()
       : Promise.resolve([]),
-    activateGoogle: account => activateGoogleGeminiWindow(account, fetchImpl),
+    activateGoogle: (account, model) => activateGoogleModelWindow(account, model, fetchImpl),
     activateCodex: email => activateCodexWindow(codexManager, email, fetchImpl),
     refreshCodexUsage: async () => {
       if (getProxyConfig().codex.enabled) await codexManager.getUsageSnapshots();
@@ -214,18 +247,22 @@ export async function runQuotaWindowActivationCheck(
 
   for (const account of runtime.listGoogleAccounts()) {
     summary.googleChecked++;
-    if (!isGoogleGeminiWindowInactive(account)) continue;
-    try {
-      if (await runtime.activateGoogle(account)) {
-        summary.googleActivated++;
-        console.log(`[WindowActivation] Activated Gemini window for ${account.email}.`);
-      } else {
+    for (const target of getGoogleActivationTargets(account)) {
+      if (account.disabled || account.challenge) break;
+      // The previous activation refreshes this account, and may activate shared quotas.
+      if (!getGoogleActivationTargets(account).some(current => current.key === target.key)) continue;
+      try {
+        if (await runtime.activateGoogle(account, target.model)) {
+          summary.googleActivated++;
+          console.log(`[WindowActivation] Activated ${target.key} (${target.model}) for ${account.email}.`);
+        } else {
+          summary.failures++;
+          console.warn(`[WindowActivation] Could not prepare ${target.model} for ${account.email}.`);
+        }
+      } catch (error: any) {
         summary.failures++;
-        console.warn(`[WindowActivation] Could not prepare Gemini account ${account.email}.`);
+        console.warn(`[WindowActivation] ${target.model} activation failed for ${account.email}: ${error?.message || error}`);
       }
-    } catch (error: any) {
-      summary.failures++;
-      console.warn(`[WindowActivation] Gemini activation failed for ${account.email}: ${error?.message || error}`);
     }
   }
 
@@ -276,7 +313,7 @@ export function startQuotaWindowActivationScheduler(
     try {
       const summary = await runQuotaWindowActivationCheck(runtime);
       console.log(
-        `[WindowActivation] 10-minute check complete: Gemini ${summary.googleActivated}/${summary.googleChecked},`
+        `[WindowActivation] 10-minute check complete: Google pools ${summary.googleActivated}/${summary.googleChecked},`
           + ` Codex ${summary.codexActivated}/${summary.codexChecked}, failures ${summary.failures}.`,
       );
     } catch (error: any) {

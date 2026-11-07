@@ -3,7 +3,7 @@ import { type AntigravityAccount } from "../auth/types";
 import { getAccounts, saveAccounts, setAccountDisabled } from "../auth/manager";
 import { parseGoogleError } from "../utils/errors";
 import { refreshAccessToken } from "../auth/oauth";
-import { ANTIGRAVITY_CLIENT_VERSION, getUnavailableModelError } from "../models";
+import { ANTIGRAVITY_CLIENT_VERSION, getUnavailableModelError, normalizeModelId, findAccountModel, getModelFamilyName, updateQuotaFamilies, type DiscoveredModel } from "../models";
 
 export async function fetchQuotaWindows(
   account: AntigravityAccount,
@@ -57,7 +57,7 @@ export async function fetchQuota(
   fetchImpl: typeof fetch = fetch,
 ): Promise<AntigravityAccount['quota'] | null> {
   if (account.disabled || !account.projectId || !account.accessToken) return null;
-  
+
   if (!account.fingerprint || !account.fingerprint.clientMetadata?.sqmId) {
     account.fingerprint = generateFingerprint(account.email);
   }
@@ -92,7 +92,22 @@ export async function fetchQuota(
         return null;
     }
 
-    return parseQuotaResponse(await res.json());
+    const data = await res.json();
+    const parsed = parseQuotaResponse(data);
+    if (parsed === null) return null;
+    const models = modelEntries(data).filter(([id, model]) => isPublicModel(id, model));
+    account.availableModels = models.map(([id, model]) => ({
+      id: normalizeModelId(id),
+      name: model.displayMetadata?.label || model.displayName || id,
+      supportsThinking: model.supportsThinking === true,
+      maxOutputTokens: typeof model.maxOutputTokens === "number" ? model.maxOutputTokens : undefined,
+    } satisfies DiscoveredModel));
+    // A successful discovery supersedes old unsupported responses for advertised models.
+    for (const key of Object.keys(account.capabilities || {})) {
+      if (findAccountModel(account, key)) delete account.capabilities![key];
+    }
+    updateQuotaFamilies({ ...account, quota: parsed });
+    return parsed;
   } catch (e) {
     console.error(`Error fetching quota for ${account.email}`, e);
   }
@@ -103,10 +118,10 @@ function getNextMidnightPT(): string {
     const now = new Date();
     const ptDateStr = now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
     const ptDate = new Date(ptDateStr);
-    
+
     const midnightPT = new Date(ptDate);
     midnightPT.setHours(24, 0, 0, 0);
-    
+
     const diffMs = midnightPT.getTime() - ptDate.getTime();
     return new Date(now.getTime() + diffMs).toISOString();
 }
@@ -121,50 +136,77 @@ async function detectSuspension(account: AntigravityAccount, response: Response)
   }
 }
 
-function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
-    // Handle both array and map formats
-    let rawModels = data.availableModels || data.models || [];
-    let entries: [string, any][] = [];
-    if (!Array.isArray(rawModels) && typeof rawModels === 'object') {
-        entries = Object.entries(rawModels);
-    } else {
-        entries = rawModels.map((m: any) => [m.model?.name || m.displayName || m.displayMetadata?.label || "Unknown", m]);
-    }
-    
+function modelEntries(data: any): [string, any][] {
+    const models = data?.availableModels ?? data?.models;
+    if (!models || typeof models !== 'object') return [];
+    return Array.isArray(models)
+      ? models.map((m: any) => [m.name || m.id || m.model?.name || "", m])
+      : Object.entries(models);
+}
+
+function isPublicModel(id: string, model: any): boolean {
+    return typeof id === 'string' && !!model && !model.disabled && !model.isInternal && !getUnavailableModelError(id)
+      && /^(gemini|claude|gpt)-/.test(normalizeModelId(id));
+}
+
+export function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
+    if (!data || typeof (data.availableModels ?? data.models) !== 'object' || (data.availableModels ?? data.models) === null) return null;
+    const entries = modelEntries(data);
     const groups = new Map<string, any>();
 
     for (const [key, m] of entries) {
-        if (!m.quotaInfo || m.disabled || getUnavailableModelError(key.replace(/^models\//, ''))) continue;
-
-        const label = m.displayMetadata?.label || m.displayName || m.model?.name || "Unknown";
-        const lowerLabel = label.toLowerCase();
-        
-        // Skip unknown or placeholder models
-        if (label === "Unknown" || lowerLabel === "unknown") continue;
-
-        const modelId = key.replace("models/", "");
-
-        const allowedPatterns = [
-            "Claude",
-            "Anthropic",
-            "GPT",
-            "Gemini",
-            "chat",
-            "tab_flash",
-            "MODEL_PLACEHOLDER"
-        ];
-
-        const isAllowed = allowedPatterns.some(pattern => label.includes(pattern));
-        
-        if (!isAllowed) continue;
-
-        const remainingFraction = m.quotaInfo.remainingFraction ?? 0;
+        if (!isPublicModel(key, m) || !m.quotaInfo) continue;
+        const modelId = normalizeModelId(key);
+        const label = m.displayMetadata?.label || m.displayName || modelId;
+        const remaining = m.quotaInfo.remainingFraction ?? 0;
+        if (typeof remaining !== 'number' || !Number.isFinite(remaining)) continue;
+        const remainingFraction = Math.max(0, Math.min(1, remaining));
         const windowActive = remainingFraction < 1;
-        
+
         const limitName = m.quotaInfo.limitName || label;
+
+        let resetTime = windowActive ? (m.quotaInfo.quotaResetTime ||
+                       m.quotaResetTime ||
+                       m.quotaInfo.resetTime ||
+                       m.resetTime ||
+                       m.quotaInfo.nextResetTime ||
+                       m.nextResetTime ||
+                       m.quotaInfo.quota_reset_time ||
+                       m.quota_reset_time) : undefined;
+
+        if (typeof resetTime === 'number') {
+            if (resetTime < 10000000000) resetTime *= 1000;
+            resetTime = new Date(resetTime).toISOString();
+        }
+
+        if (typeof resetTime === 'string' && resetTime.endsWith('s') && /^\d+/.test(resetTime)) {
+            const seconds = parseInt(resetTime, 10);
+            if (!isNaN(seconds)) {
+                resetTime = new Date(Date.now() + seconds * 1000).toISOString();
+            }
+        }
+
+        if (windowActive && (!resetTime || Number.isNaN(new Date(resetTime).getTime()))) {
+            resetTime = getNextMidnightPT();
+        }
+
+        const diffMs = resetTime ? Math.max(0, new Date(resetTime).getTime() - Date.now()) : 0;
+        const hours = Math.floor(diffMs / (1000 * 60 * 60));
+        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+        const resetIn = windowActive ? `${hours}h ${minutes}m` : "Ready";
+        const pct = Math.round(remainingFraction * 100);
+        const quotaLeft = `${pct}%`;
 
         if (groups.has(limitName)) {
             const group = groups.get(limitName);
+            if (!group.modelIds.includes(modelId)) group.modelIds.push(modelId);
+            if (remainingFraction < group.remainingFraction) {
+                group.resetTime = resetTime;
+                group.resetIn = resetIn;
+            }
+            group.remainingFraction = Math.min(group.remainingFraction, remainingFraction);
+            group.quotaLeft = `${Math.round(group.remainingFraction * 100)}%`;
+            group.windowActive = group.remainingFraction < 1;
             // Append label if not already present
             if (!group.labels.includes(label)) {
                 group.labels.push(label);
@@ -172,41 +214,11 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
                 group.groupName = group.labels.join(" / ");
             }
         } else {
-            let resetTime = windowActive ? (m.quotaInfo.quotaResetTime ||
-                           m.quotaResetTime || 
-                           m.quotaInfo.resetTime || 
-                           m.resetTime || 
-                           m.quotaInfo.nextResetTime || 
-                           m.nextResetTime ||
-                           m.quotaInfo.quota_reset_time ||
-                           m.quota_reset_time) : undefined;
-            
-            if (typeof resetTime === 'number') {
-                if (resetTime < 10000000000) resetTime *= 1000;
-                resetTime = new Date(resetTime).toISOString();
-            }
-            
-            if (typeof resetTime === 'string' && resetTime.endsWith('s') && /^\d+/.test(resetTime)) {
-                const seconds = parseInt(resetTime, 10);
-                if (!isNaN(seconds)) {
-                    resetTime = new Date(Date.now() + seconds * 1000).toISOString();
-                }
-            }
-
-            if (windowActive && (!resetTime || Number.isNaN(new Date(resetTime).getTime()))) {
-                resetTime = getNextMidnightPT();
-            }
-
-            const diffMs = resetTime ? Math.max(0, new Date(resetTime).getTime() - Date.now()) : 0;
-            const hours = Math.floor(diffMs / (1000 * 60 * 60));
-            const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-            const resetIn = windowActive ? `${hours}h ${minutes}m` : "Ready";
-            const pct = Math.round(remainingFraction * 100);
-            const quotaLeft = `${pct}%`;
-
             groups.set(limitName, {
                 groupName: label,
-                labels: [label], 
+                familyName: getModelFamilyName(modelId),
+                modelIds: [modelId],
+                labels: [label],
                 limit: m.quotaInfo.quotaLimit || "Unknown",
                 usage: m.quotaInfo.quotaUsage || "Unknown",
                 limitName: limitName,
@@ -221,14 +233,14 @@ function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
     }
 
     const results = Array.from(groups.values()).map(g => {
-        const { labels, ...rest } = g; 
+        const { labels, ...rest } = g;
         return rest;
     });
 
     // Sort by name for consistency
     results.sort((a, b) => a.groupName.localeCompare(b.groupName));
 
-    return results.length > 0 ? results : null;
+    return results;
 }
 
 let quotaRefreshInFlight: Promise<void> | null = null;
@@ -248,6 +260,7 @@ async function performQuotaRefresh(): Promise<void> {
                 acc.quota = quota;
                 changed = true;
             }
+            updateQuotaFamilies(acc);
         }
     }));
     if (changed) await saveAccounts(getAccounts());

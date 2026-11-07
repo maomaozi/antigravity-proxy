@@ -57,6 +57,7 @@ describe("Google account storage", () => {
     await storage.save({ accounts: [saved] });
     const before = await stat(path);
     const backupBefore = await stat(`${path}.bak`);
+    saved.availableModels = [{ id: "gemini-4-argon-high", name: "Gemini 4 Argon (High)", supportsThinking: true }];
     saved.healthScore = 95;
     saved.lastUsed = 789;
     saved.quota = [{ groupName: "Gemini", limit: "", usage: "", limitName: "gemini", remainingFraction: 0.5, quotaLeft: "50%", resetIn: "1h" }];

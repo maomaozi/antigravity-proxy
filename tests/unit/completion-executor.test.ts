@@ -8,7 +8,7 @@ import type { AntigravityAccount } from "../../src/auth/types";
 import * as storage from "../../src/auth/storage";
 import { getProxyConfig } from "../../src/config/manager";
 import { fetchQuota, fetchQuotaWindows } from "../../src/api/quota";
-import { activateGoogleGeminiWindow } from "../../src/api/window-activation";
+import { activateGoogleGeminiWindow, activateGoogleModelWindow } from "../../src/api/window-activation";
 
 describe("completion executor timeouts resolution", () => {
   test("defaults to 120s for first byte and 900s for stream when no config provided", () => {
@@ -133,6 +133,52 @@ describe("completion failure classification", () => {
       expect(headers.get("User-Agent")).toStartWith(`antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} `);
       expect(headers.get("anthropic-beta")).toBe(model.includes("claude") ? "interleaved-thinking-2025-05-14" : null);
     }
+  });
+
+  test.each([false, true])("routes Argon requests only to an advertising account and respects reasoning effort (stream=%s)", async stream => {
+    const ordinary = getAccounts()[0]!;
+    ordinary.availableModels = [{ id: "gemini-3-flash", name: "Gemini 3 Flash" }];
+    const special = account("argon-test@example.com");
+    special.availableModels = ["low", "high"].map(tier => ({ id: `gemini-4-argon-${tier}`, name: `Gemini 4 Argon (${tier})`, supportsThinking: true }));
+    getAccounts().push(special);
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`,
+      { headers: { "Content-Type": "text/event-stream" } },
+    ));
+    try {
+      const execution = await executeCompletion({
+        request: { model: "antigravity-gemini-4-argon", reasoningEffort: "low", messages: [{ role: "user", content: "hi" }], stream },
+        sessionIdentity: { key: "argon-regression", id: "argon-regression", source: "test", inferred: false },
+        requestId: "argon-test", requestStartedAt: Date.now(),
+      });
+      const result = execution.kind === "stream" ? await collectCompletionStream(execution.stream)
+        : execution.kind === "result" ? execution.result : null;
+      expect(result?.text).toBe("OK");
+      const body = JSON.parse(String(fetchSpy.mock.calls[0]![1]!.body));
+      expect(body.model).toBe("gemini-4-argon-low");
+      expect(body.request.generationConfig.thinkingConfig.thinkingLevel).toBe("low");
+      expect(getSessionBinding("argon-regression", "antigravity-gemini-4-argon")?.accountEmail).toBe(special.email);
+    } finally { deleteSessionBindingsForAccount(special.email); }
+  });
+
+  test.each(["gemini-4-argon-low", "claude-opus-5-5-high"])("activates the discovered model %s and refreshes its quotas and windows", async id => {
+    const a = getAccounts()[0]!;
+    a.availableModels = [{ id, name: id, supportsThinking: true }];
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: Parameters<typeof fetch>[0]) => {
+      if (String(input).includes("fetchAvailableModels")) return Response.json({ models: {
+        [id]: { displayName: id, supportsThinking: true, quotaInfo: { remainingFraction: 0.99, resetTime: "3600s" } },
+      } });
+      if (String(input).includes("retrieveUserQuotaSummary")) return Response.json({ groups: [
+        { displayName: id.includes("argon") ? "Gemini 4 Argon" : "Claude and GPT models", buckets: [{ window: "weekly", remainingFraction: 0.99 }] },
+      ] });
+      return Response.json({ candidates: [{ content: { role: "model", parts: [{ text: "." }] }, finishReason: "STOP" }] });
+    }) as unknown as typeof fetch);
+    expect(await activateGoogleModelWindow(a, id)).toBe(true);
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]![1]!.body)).model).toBe(id);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(a.quota?.[0]?.remainingFraction).toBe(0.99);
+    expect(a.quotaWindows?.[0]?.remainingFraction).toBe(0.99);
+    expect(saveSpy).toHaveBeenCalled();
   });
 
   test("cached model rejection returns 404 without making a Google request", async () => {

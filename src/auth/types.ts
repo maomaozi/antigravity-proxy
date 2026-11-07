@@ -1,3 +1,5 @@
+import type { DiscoveredModel } from "../models";
+
 export interface DeviceFingerprint {
   userAgent: string;
   quotaUser: string;
@@ -53,6 +55,7 @@ export interface AntigravityAccount {
     message?: string;
   };
   capabilities?: Record<string, boolean>;
+  availableModels?: DiscoveredModel[];
   
   // Quota info (cached)
   quotaWindows?: Array<{
@@ -71,6 +74,8 @@ export interface AntigravityAccount {
     resetIn: string; // e.g., "14h 20m"
     windowActive?: boolean;
     modelId?: string;
+    modelIds?: string[];
+    familyName?: string;
     resetTime?: string; // ISO date
   }>
 }
