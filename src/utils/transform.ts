@@ -1,5 +1,6 @@
 import { getSignature, cacheSignature } from "./cache";
 import { cleanJSONSchemaForAntigravity } from "./schema";
+import { ClaudeToolSchemaError, normalizeClaudeToolSchema } from "./claude-schema";
 import { getProxyConfig } from "../config/manager";
 import { getUnavailableModelError, isModernGeminiModel, type DiscoveredModel } from "../models";
 import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
@@ -86,6 +87,14 @@ export function validateCompletionRequestForGoogle(request: CompletionRequest): 
   const modelError = getUnavailableModelError(request.model);
   if (modelError) return modelError;
   if (!Array.isArray(request.messages) || request.messages.length === 0) return "messages must be a non-empty array.";
+  if (request.model.toLowerCase().includes("claude")) {
+    try {
+      for (const tool of request.tools || []) normalizeClaudeToolSchema(tool.parameters || { type: "object", properties: {} }, tool.name);
+    } catch (error) {
+      if (error instanceof ClaudeToolSchemaError) return error.message;
+      throw error;
+    }
+  }
 
   const messages = request.messages.filter(message => message?.role !== "system");
   const lastMessage = messages.at(-1);
@@ -532,14 +541,18 @@ export function transformCompletionToGoogleBody(
     const sanitize = proxyConfig.features.sanitizeToolNames;
     googleRequest.tools = [{
       functionDeclarations: request.tools.map(t => {
-        const cleanParams = cleanJSONSchemaForAntigravity(t.parameters || { type: "object", properties: {} }, aggressive);
+        const parameters = t.parameters || { type: "object", properties: {} };
+        const claudeSchema = googleModel.includes("claude") ? normalizeClaudeToolSchema(parameters, t.name) : undefined;
+        // Generic aggressive cleaning chooses a single union branch. Claude's
+        // explicit normalization must preserve every alternative on retries too.
+        const cleanParams = cleanJSONSchemaForAntigravity(claudeSchema?.schema ?? parameters, claudeSchema ? false : aggressive);
         
         let funcName = t.name;
         if (sanitize) {
           funcName = sanitizeFunctionName(funcName);
         }
 
-        let description = t.description || "";
+        let description = [t.description, claudeSchema?.guidance].filter(Boolean).join("\n");
         const paramNames = Object.keys(cleanParams.properties || {});
         if (paramNames.length > 0) {
           description += ` [Parameters: ${paramNames.join(", ")}]`;

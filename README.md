@@ -213,6 +213,14 @@ scoped by each tool's namespace marker, instead of repeated in every child
 function description. Child descriptions, schemas, and custom-tool formats are
 preserved.
 
+Claude tool schemas with root `oneOf`, `anyOf`, or `allOf` are normalized to an
+object before Google Schema conversion. Union properties are combined and
+parameter-group rules are added to the tool description; compatible `allOf`
+constraints are intersected. Arguments keep their original flat structure.
+Unsupported combinations fail locally with the tool name. This rewrite relaxes
+some union constraints, so tool executors must still validate original schemas.
+See the [Claude schema compatibility analysis](docs/claude-tool-schema.md).
+
 Client-executed `tool_search` is supported with `execution: "client"`, a
 description, and a parameters schema. The proxy maps it to a Google function
 and returns a typed `tool_search_call`; Codex performs the search and sends

@@ -422,6 +422,15 @@ export async function executeCompletion({
         }
 
         if (status === 400) {
+          const invalidToolIndex = errText.match(/tools\.(\d+)\.(?:custom\.)?input_schema/);
+          if (invalidToolIndex) {
+            const index = Number(invalidToolIndex[1]);
+            const tool = request.tools?.[index];
+            const declaration = googleBody.request.tools?.find((group: any) => group.functionDeclarations)?.functionDeclarations?.[index];
+            console.warn(`[InvalidToolSchema] Request: ${requestId} | Index: ${index} | Name: ${JSON.stringify(tool?.name ?? declaration?.name ?? "unknown")}`
+              + ` | OriginalRootKeys: ${JSON.stringify(Object.keys(tool?.parameters || {}))}`
+              + ` | UpstreamRootKeys: ${JSON.stringify(Object.keys(declaration?.parameters || {}))}`);
+          }
           // Some Gemini failures contain only this generic message. Retry the
           // same request once before failing; detailed validation errors still
           // return immediately, and the configured attempt limit still applies.
