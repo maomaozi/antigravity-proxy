@@ -80,7 +80,7 @@ function adaptResponseFormat(text: any): CompletionResponseFormat | undefined {
   return undefined;
 }
 
-type ResponsesToolKind = "function" | "custom" | "local_shell";
+type ResponsesToolKind = "function" | "custom" | "local_shell" | "tool_search";
 
 interface ResponsesToolIdentity {
   kind: ResponsesToolKind;
@@ -103,7 +103,7 @@ function base64UrlDecode(value: string): string | undefined {
 }
 
 function encodeResponsesToolName(kind: ResponsesToolKind, namespace: string | undefined, name: string): string {
-  const kindCode = kind === "function" ? "f" : kind === "custom" ? "c" : "l";
+  const kindCode = kind === "function" ? "f" : kind === "custom" ? "c" : kind === "tool_search" ? "s" : "l";
   const encodedNamespace = base64UrlEncode(namespace ?? "");
   const encodedName = base64UrlEncode(name);
   return `${RESPONSES_TOOL_NAME_PREFIX}${kindCode}_${encodedNamespace.length}_${encodedNamespace}${encodedName}`;
@@ -132,39 +132,40 @@ function decodeResponsesToolName(value: string): ResponsesToolIdentity | undefin
       ? "custom"
       : kindCode === "l"
         ? "local_shell"
-        : undefined;
+        : kindCode === "s"
+          ? "tool_search"
+          : undefined;
   if (!kind || namespace == null || !name) return undefined;
   return { kind, ...(namespace ? { namespace } : {}), name };
 }
 
-function namespaceDescription(namespace: string, description: unknown, toolDescription: unknown): string | undefined {
+function namespaceDescription(namespace: string, toolDescription: unknown): string {
   const pieces = [
     `[Responses namespace: ${namespace}]`,
-    typeof description === "string" && description.trim() ? description.trim() : undefined,
     typeof toolDescription === "string" && toolDescription.trim() ? toolDescription.trim() : undefined,
   ].filter(Boolean);
-  return pieces.length ? pieces.join(" ") : undefined;
+  return pieces.join(" ");
 }
 
-function adaptFunctionTool(tool: any, namespace?: string, parentDescription?: unknown): CompletionTool {
+function adaptFunctionTool(tool: any, namespace?: string): CompletionTool {
   return {
     name: namespace
       ? encodeResponsesToolName("function", namespace, String(tool?.name ?? ""))
       : String(tool?.name ?? ""),
     description: namespace
-      ? namespaceDescription(namespace, parentDescription, tool?.description)
+      ? namespaceDescription(namespace, tool?.description)
       : asString(tool?.description),
     parameters: tool?.parameters,
     strict: typeof tool?.strict === "boolean" ? tool.strict : undefined,
   };
 }
 
-function adaptCustomTool(tool: any, namespace?: string, parentDescription?: unknown): CompletionTool {
+function adaptCustomTool(tool: any, namespace?: string): CompletionTool {
   const formatDescription = tool?.format && typeof tool.format === "object"
     ? `Freeform format: ${JSON.stringify(tool.format)}`
     : undefined;
   const description = namespace
-    ? namespaceDescription(namespace, parentDescription, [tool?.description, formatDescription].filter(Boolean).join(" "))
+    ? namespaceDescription(namespace, [tool?.description, formatDescription].filter(Boolean).join(" "))
     : [asString(tool?.description), formatDescription].filter(Boolean).join(" ") || undefined;
   return {
     name: encodeResponsesToolName("custom", namespace, String(tool?.name ?? "")),
@@ -181,13 +182,24 @@ function adaptCustomTool(tool: any, namespace?: string, parentDescription?: unkn
   };
 }
 
-function adaptTools(tools: unknown): { tools: CompletionTool[] | undefined; webSearch: boolean } {
-  if (!Array.isArray(tools)) return { tools: undefined, webSearch: false };
+function adaptTools(tools: unknown): { tools: CompletionTool[] | undefined; webSearch: boolean; namespaceInstructions: string[] } {
+  if (!Array.isArray(tools)) return { tools: undefined, webSearch: false, namespaceInstructions: [] };
   const adapted: CompletionTool[] = [];
+  const namespaceInstructions = new Set<string>();
+  const hasToolSearch = tools.some(tool => tool?.type === "tool_search" && tool.execution === "client");
   let webSearch = false;
 
   for (const tool of tools) {
     if (!tool || typeof tool !== "object") continue;
+    if (hasToolSearch && tool.defer_loading === true) continue;
+    if (tool.type === "tool_search" && tool.execution === "client") {
+      adapted.push({
+        name: encodeResponsesToolName("tool_search", undefined, "tool_search"),
+        description: tool.description,
+        parameters: tool.parameters,
+      });
+      continue;
+    }
     if (tool.type === "function") {
       adapted.push(adaptFunctionTool(tool));
       continue;
@@ -198,9 +210,14 @@ function adaptTools(tools: unknown): { tools: CompletionTool[] | undefined; webS
     }
     if (tool.type === "namespace" && Array.isArray(tool.tools)) {
       const namespace = String(tool.name ?? "");
+      const previousCount = adapted.length;
       for (const child of tool.tools) {
-        if (child?.type === "function") adapted.push(adaptFunctionTool(child, namespace, tool.description));
-        else if (child?.type === "custom") adapted.push(adaptCustomTool(child, namespace, tool.description));
+        if (hasToolSearch && child?.defer_loading === true) continue;
+        if (child?.type === "function") adapted.push(adaptFunctionTool(child, namespace));
+        else if (child?.type === "custom") adapted.push(adaptCustomTool(child, namespace));
+      }
+      if (adapted.length > previousCount && typeof tool.description === "string" && tool.description.trim()) {
+        namespaceInstructions.add(`[Responses namespace: ${namespace}]\n${tool.description.trim()}`);
       }
       continue;
     }
@@ -216,10 +233,18 @@ function adaptTools(tools: unknown): { tools: CompletionTool[] | undefined; webS
     if (tool.type === "local_shell") continue;
   }
 
-  return { tools: adapted.length ? adapted : undefined, webSearch };
+  const uniqueTools = [...new Map(adapted.map(tool => [tool.name, tool])).values()];
+  return { tools: uniqueTools.length ? uniqueTools : undefined, webSearch, namespaceInstructions: [...namespaceInstructions] };
 }
 
-function adaptInputItems(input: unknown, instructions: unknown): CompletionMessage[] {
+function activateToolDeclarations(tools: unknown): any[] {
+  if (!Array.isArray(tools)) return [];
+  return tools.map(tool => tool?.type === "namespace"
+    ? { ...tool, defer_loading: false, tools: activateToolDeclarations(tool.tools) }
+    : { ...tool, defer_loading: false });
+}
+
+function adaptInputItems(input: unknown, instructions: unknown, namespaceInstructions: string[] = []): CompletionMessage[] {
   const items = typeof input === "string"
     ? [{ role: "user", content: input }]
     : (Array.isArray(input) ? input : []);
@@ -248,6 +273,34 @@ function adaptInputItems(input: unknown, instructions: unknown): CompletionMessa
 
     if (type === "reasoning") {
       pendingReasoning += extractReasoningText(item);
+      continue;
+    }
+
+    if (type === "additional_tools") continue;
+
+    if (type === "tool_search_call") {
+      pendingToolCalls.push({
+        id: String(item.call_id ?? ""),
+        name: encodeResponsesToolName("tool_search", undefined, "tool_search"),
+        arguments: JSON.stringify(item.arguments ?? {}),
+      });
+      continue;
+    }
+
+    if (type === "tool_search_output") {
+      flushAssistant();
+      const loaded = adaptTools(activateToolDeclarations(item.tools));
+      messages.push({
+        role: "tool",
+        toolCallId: String(item.call_id ?? ""),
+        name: encodeResponsesToolName("tool_search", undefined, "tool_search"),
+        // Schemas are already in Google's function declarations. Repeating
+        // them in the search result would undo the context savings.
+        content: JSON.stringify({ tools: (loaded.tools ?? []).map(tool => {
+          const identity = toolIdentityForName(tool.name);
+          return { name: identity.name, ...(identity.namespace ? { namespace: identity.namespace } : {}) };
+        }) }),
+      });
       continue;
     }
 
@@ -321,15 +374,25 @@ function adaptInputItems(input: unknown, instructions: unknown): CompletionMessa
   }
 
   flushAssistant();
+  // Google has a flat function list. Preserve each namespace's shared rules
+  // once in systemInstruction instead of copying them into every child tool.
+  if (namespaceInstructions.length) {
+    systemParts.push("Tool namespace instructions (apply only to tools with the matching [Responses namespace: NAME] marker):\n\n"
+      + namespaceInstructions.join("\n\n"));
+  }
   if (systemParts.length) messages.unshift({ role: "system", content: systemParts.filter(Boolean).join("\n\n") });
   return messages;
 }
 
 export function adaptResponsesRequest(body: any): CompletionRequest {
-  const adaptedTools = adaptTools(body?.tools);
+  const loadedTools = Array.isArray(body?.input)
+    ? body.input.flatMap((item: any) => item?.type === "tool_search_output" || item?.type === "additional_tools"
+      ? activateToolDeclarations(item.tools) : [])
+    : [];
+  const adaptedTools = adaptTools([...(Array.isArray(body?.tools) ? body.tools : []), ...loadedTools]);
   return {
     model: typeof body?.model === "string" ? body.model : "",
-    messages: adaptInputItems(body?.input, body?.instructions),
+    messages: adaptInputItems(body?.input, body?.instructions, adaptedTools.namespaceInstructions),
     tools: adaptedTools.tools,
     webSearch: adaptedTools.webSearch || undefined,
     responseFormat: adaptResponseFormat(body?.text),
@@ -378,6 +441,12 @@ function validateResponsesTool(tool: any): string | undefined {
   if (tool.type === "function") return validateFunctionTool(tool);
   if (tool.type === "custom") return validateCustomTool(tool);
   if (tool.type === "web_search" || tool.type === "local_shell") return undefined;
+  if (tool.type === "tool_search") {
+    if (tool.execution !== "client") return "Only client-executed tool_search is supported; set execution=client.";
+    if (typeof tool.description !== "string" || !tool.description.trim()) return "Client tool_search requires a non-empty description.";
+    if (!tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters)) return "Client tool_search requires a parameters schema.";
+    return undefined;
+  }
   if (tool.type === "namespace") {
     if (typeof tool.name !== "string" || !tool.name) return "Every namespace tool must have a non-empty name.";
     if (!Array.isArray(tool.tools)) return `Namespace ${tool.name} must contain a tools array.`;
@@ -397,6 +466,18 @@ function validateResponsesTool(tool: any): string | undefined {
     return undefined;
   }
   return `Unsupported Responses tool type: ${String(tool.type)}.`;
+}
+
+function validateLoadedTools(tools: any, allowSearch: boolean = false): string | undefined {
+  if (!Array.isArray(tools)) return "Loaded tools must be an array.";
+  for (const tool of tools) {
+    if (!["function", "custom", "namespace"].includes(tool?.type) && !(allowSearch && tool?.type === "tool_search")) {
+      return `Unsupported loaded tool type: ${String(tool?.type)}.`;
+    }
+    const error = validateResponsesTool(tool);
+    if (error) return error;
+  }
+  return undefined;
 }
 
 export function validateResponsesRequest(body: any): string | undefined {
@@ -439,6 +520,23 @@ export function validateResponsesRequest(body: any): string | undefined {
   for (const item of body.input) {
     if (!item || typeof item !== "object") return "Responses input items must be objects.";
     if (item.type === "reasoning") continue;
+    if (item.type === "tool_search_call" || item.type === "tool_search_output") {
+      if (item.execution !== "client") return "Only client-executed tool search items are supported.";
+      if (typeof item.call_id !== "string" || !item.call_id) return `Every ${item.type} must have a non-empty call_id.`;
+      if (item.type === "tool_search_call") {
+        if (!item.arguments || typeof item.arguments !== "object" || Array.isArray(item.arguments)) return "tool_search_call.arguments must be an object.";
+      } else {
+        const error = validateLoadedTools(item.tools);
+        if (error) return error;
+      }
+      continue;
+    }
+    if (item.type === "additional_tools") {
+      if (item.role !== "developer") return "additional_tools must have role=developer.";
+      const error = validateLoadedTools(item.tools, true);
+      if (error) return error;
+      continue;
+    }
     if (item.type === "function_call") {
       if (typeof item.call_id !== "string" || !item.call_id) return "Every function_call must have a non-empty call_id.";
       if (typeof item.name !== "string" || !item.name) return "Every function_call must have a non-empty name.";
@@ -533,6 +631,16 @@ function buildToolOutputItem(
   status: "in_progress" | "completed" | "incomplete",
 ): any {
   const identity = toolIdentityForName(call.name);
+  if (identity.kind === "tool_search") {
+    return {
+      id,
+      type: "tool_search_call",
+      execution: "client",
+      call_id: call.id,
+      arguments: status === "in_progress" ? {} : parseToolArguments(call.arguments),
+      status,
+    };
+  }
   if (identity.kind === "custom") {
     return {
       id,

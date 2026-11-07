@@ -208,6 +208,26 @@ Codex-style `namespace` tool groups, freeform `custom` tools, tool outputs,
 parallel tool calls, `text.format` JSON modes, `max_output_tokens`,
 `temperature`, `top_p`, `prompt_cache_key`, and metadata.
 
+Namespace descriptions are preserved once in the upstream system instruction,
+scoped by each tool's namespace marker, instead of repeated in every child
+function description. Child descriptions, schemas, and custom-tool formats are
+preserved.
+
+Client-executed `tool_search` is supported with `execution: "client"`, a
+description, and a parameters schema. The proxy maps it to a Google function
+and returns a typed `tool_search_call`; Codex performs the search and sends
+`tool_search_output.tools`. Deferred functions (`defer_loading: true`) stay out
+of Google's declarations until discovered. Tools introduced by developer
+`additional_tools` input items are also accepted. JSON and streaming responses
+use the same search protocol. Hosted/server-executed search is not implemented
+on the Antigravity path.
+
+For Codex to offer tool discovery, set `"supports_search_tool": true` on the
+existing model entry in the JSON catalog selected by `model_catalog_json`.
+This is Codex model metadata, not a proxy `config.json` setting; the proxy's
+OpenAI `/v1/models` listing does not configure it. See the
+[implementation analysis and Gemini 3.8 Flash measurements](docs/tool-context-and-search.md).
+
 `parallel_tool_calls: false` returns at most one client tool call per response,
 including streaming responses. Google has no equivalent request flag, so the
 proxy exposes only the first proposed call when the upstream generates several.
