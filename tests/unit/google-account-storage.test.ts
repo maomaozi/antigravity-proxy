@@ -18,6 +18,24 @@ function account(): AntigravityAccount {
 }
 
 describe("Google account storage", () => {
+  test("disabled accounts survive restart and lost runtime state until explicitly enabled", async () => {
+    const { path, storage } = await fixture();
+    const saved = account();
+    saved.disabled = true;
+    saved.suspension = { reason: "tos_violation", message: "Service suspended", detectedAt: 123 };
+    await storage.save({ accounts: [saved] });
+    // A corrupt metrics file must never resurrect a suspended account.
+    await writeFile(`${path}.state.json`, "invalid");
+    await writeFile(`${path}.state.json.bak`, "invalid");
+    const reloaded = new GoogleAccountStorage(path);
+    const loaded = await reloaded.load();
+    expect(loaded.accounts[0]).toMatchObject({ disabled: true, suspension: saved.suspension });
+    loaded.accounts[0]!.disabled = false;
+    delete loaded.accounts[0]!.suspension;
+    await reloaded.save(loaded);
+    expect((await new GoogleAccountStorage(path).load()).accounts[0]!.disabled).toBe(false);
+  });
+
   test("migrates legacy arrays and separates credentials from runtime state", async () => {
     const { path, storage } = await fixture();
     await writeFile(path, JSON.stringify([account()]));

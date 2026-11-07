@@ -51,6 +51,8 @@ export class GoogleAccountStorage {
   save(config: StorageFormat): Promise<void> {
     const snapshot = decodeAccounts(JSON.parse(JSON.stringify(config)));
     const credentials = { accounts: snapshot.accounts.map(account => {
+      // Keep disabled/suspension with credentials so resetting runtime metrics
+      // or recovering a corrupt state file cannot re-enable an account.
       const credential = { ...account };
       for (const key of runtimeKeys) delete (credential as any)[key];
       return credential;

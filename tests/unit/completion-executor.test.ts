@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { buildCompletionFailure, executeCompletion, resolveTimeouts } from "../../src/api/completion-executor";
-import { getAccounts, getAccountSelectionFailure, markCooldown, clearCooldown } from "../../src/auth/manager";
+import { getAccounts, getAccountSelectionFailure, markCooldown, clearCooldown, getBestAccount, prepareAccountForRequest, resetAccount, setAccountDisabled } from "../../src/auth/manager";
 import { collectCompletionStream } from "../../src/core/completion";
 import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
-import { deleteSessionBindingsForAccount, getSessionBinding } from "../../src/session/store";
+import { deleteSessionBindingsForAccount, getSessionBinding, recordSessionBinding } from "../../src/session/store";
 import type { AntigravityAccount } from "../../src/auth/types";
 import * as storage from "../../src/auth/storage";
 import { getProxyConfig } from "../../src/config/manager";
+import { fetchQuota, fetchQuotaWindows } from "../../src/api/quota";
+import { activateGoogleGeminiWindow } from "../../src/api/window-activation";
 
 describe("completion executor timeouts resolution", () => {
   test("defaults to 120s for first byte and 900s for stream when no config provided", () => {
@@ -170,6 +172,97 @@ describe("completion failure classification", () => {
     const result = await run();
     expect(result.status).toBe(403);
     expect(result.body.error.code).toBe("account_verification_required");
+  });
+
+  function suspensionResponse() {
+    return Response.json({ error: {
+      code: 403, status: "PERMISSION_DENIED", message: "Service disabled for violation of Terms of Service.",
+      details: [{ reason: "TOS_VIOLATION", metadata: { appeal_url: "https://forms.gle/appeal" } }],
+    } }, { status: 403 });
+  }
+
+  test("suspension is persisted and subsequent requests do not contact the account", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(suspensionResponse());
+    expect((await run()).body.error.code).toBe("account_suspended");
+    expect(getAccounts()[0]).toMatchObject({ disabled: true, suspension: {
+      reason: "tos_violation", appealUrl: "https://forms.gle/appeal",
+    } });
+    expect(saveSpy).toHaveBeenCalled();
+    const cached = await run();
+    expect(cached.status).toBe(403);
+    expect(cached.body.error.code).toBe("account_suspended");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("suspended accounts are skipped during selection, preparation, and health reset", async () => {
+    await setAccountDisabled(getAccounts()[0].email, true, { reason: "tos_violation" });
+    await resetAccount(getAccounts()[0].email);
+    expect(await getBestAccount("sandbox", model)).toBeNull();
+    expect(await getBestAccount()).toBeNull();
+    expect(await prepareAccountForRequest(getAccounts()[0].email, true)).toBeNull();
+    await setAccountDisabled(getAccounts()[0].email, false);
+    expect(await prepareAccountForRequest(getAccounts()[0].email)).not.toBeNull();
+    expect(getAccounts()[0].suspension).toBeUndefined();
+  });
+
+  test("disabling an account clears session bindings and overrides session affinity", async () => {
+    const first = getAccounts()[0];
+    recordSessionBinding({ identity: { key: "disabled-affinity", id: "disabled-affinity", source: "test", inferred: false },
+      accountEmail: first.email, model, modelFamily: "Gemini Models", pool: "sandbox" });
+    recordSessionBinding({ identity: { key: "disabled-affinity", id: "disabled-affinity", source: "test", inferred: false },
+      accountEmail: first.email, model: "codex-test", modelFamily: "Codex", pool: "codex" });
+    await setAccountDisabled(first.email, true);
+    expect(getSessionBinding("disabled-affinity", model)).toBeNull();
+    expect(getSessionBinding("disabled-affinity", "codex-test")?.accountEmail).toBe(first.email);
+    const healthy = account("healthy-fallback@example.com");
+    getAccounts().push(healthy);
+    expect((await getBestAccount("sandbox", model, "disabled-affinity"))?.email).toBe(healthy.email);
+  });
+
+  test.each(["catalog", "summary", "activation"])("suspension detected during %s disables the account", async stage => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(suspensionResponse());
+    const first = getAccounts()[0];
+    if (stage === "catalog") await fetchQuota(first);
+    else if (stage === "summary") await fetchQuotaWindows(first);
+    else await expect(activateGoogleGeminiWindow(first)).rejects.toThrow("403");
+    expect(first).toMatchObject({ disabled: true, suspension: { reason: "tos_violation" } });
+    expect(saveSpy).toHaveBeenCalled();
+  });
+
+  test.each([false, true])("switches from a suspended account to a healthy account (stream=%s)", async stream => {
+    const first = getAccounts()[0];
+    const healthy = account("healthy-fallback@example.com");
+    healthy.lastUsed = Date.now();
+    getAccounts().push(healthy);
+    getProxyConfig().retry.maxAttempts = 2;
+    fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(suspensionResponse())
+      .mockResolvedValueOnce(new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`));
+    try {
+      const execution = await executeCompletion({
+        request: { model, messages: [{ role: "user", content: "OK" }], stream },
+        sessionIdentity: { key: "suspension-fallback", id: "suspension-fallback", source: "test", inferred: false },
+        requestId: "suspension-test", requestStartedAt: Date.now(),
+      });
+      const result = execution.kind === "stream" ? await collectCompletionStream(execution.stream)
+        : execution.kind === "result" ? execution.result : null;
+      expect(result?.text).toBe("OK");
+      expect(first.disabled).toBe(true);
+      expect(healthy.disabled).toBeUndefined();
+      expect(getSessionBinding("suspension-fallback", model)?.accountEmail).toBe(healthy.email);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      deleteSessionBindingsForAccount(healthy.email);
+    }
+  });
+
+  test("manually disabled accounts are not misreported as quota or verification failures", async () => {
+    getAccounts()[0].disabled = true;
+    fetchSpy = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network request"));
+    const result = await run();
+    expect(result.status).toBe(503);
+    expect(result.body.error.code).toBe("accounts_disabled");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   test("quota state and temporary cooldowns have distinct error codes", async () => {

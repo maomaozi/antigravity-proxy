@@ -36,11 +36,28 @@ function fixture() {
       return success();
     }) as ImageGenerationRuntime["fetch"],
     onSuccess: async a => { usage.push(a.email); },
+    onSuspended: async (a, suspension) => { a.disabled = true; a.suspension = { ...suspension, detectedAt: Date.now() }; },
   };
   return { runtime, accounts, calls, prepared, usage };
 }
 
 describe("Images API", () => {
+  test("skips disabled accounts and disables newly suspended image accounts", async () => {
+    const f = fixture();
+    f.accounts[0]!.disabled = true;
+    f.accounts[1]!.disabled = true;
+    f.runtime.randomIndex = () => 0;
+    f.runtime.fetch = (async () => Response.json({ error: {
+      code: 403, status: "PERMISSION_DENIED", details: [{ reason: "TOS_VIOLATION" }],
+    } }, { status: 403 })) as ImageGenerationRuntime['fetch'];
+    const response = await handleImageGeneration(request({ model: "image-model", prompt: "test" }), f.runtime);
+    expect(f.prepared.map(item => item.email)).toEqual(["c@example.com"]);
+    expect(await response.json()).toMatchObject({ error: { code: "account_suspended" } });
+    expect(f.accounts[2]!.disabled).toBe(true);
+    expect((await handleImageGeneration(request({ model: "image-model", prompt: "test" }), f.runtime)).status).toBe(503);
+    expect(f.prepared).toHaveLength(1);
+  });
+
   test("sends text and multiple reference images to the existing upstream endpoint in order", async () => {
     const f = fixture();
     const response = await handleImageGeneration(request({ model: "gemini-3.1-flash-image", prompt: "Make the sky orange", images: [png, jpeg] }), f.runtime);

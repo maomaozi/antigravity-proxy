@@ -683,7 +683,8 @@ export class SessionBindingStore {
     return this.db.query("DELETE FROM session_bindings WHERE id = ?").run(id).changes > 0;
   }
 
-  deleteForAccount(email: string): number {
+  deleteForAccount(email: string, pool?: SessionPool): number {
+    if (pool) return this.db.query("DELETE FROM session_bindings WHERE account_email = ? AND pool = ?").run(email, pool).changes;
     return this.db.query("DELETE FROM session_bindings WHERE account_email = ?").run(email).changes;
   }
 
@@ -745,8 +746,8 @@ export function clearSessionBindings(): number {
   return initSessionBindingStore().clear();
 }
 
-export function deleteSessionBindingsForAccount(email: string): number {
-  return initSessionBindingStore().deleteForAccount(email);
+export function deleteSessionBindingsForAccount(email: string, pool?: SessionPool): number {
+  return initSessionBindingStore().deleteForAccount(email, pool);
 }
 
 export function recordRequestTokenUsage(input: RecordRequestTokenUsageInput): RequestTokenUsage {

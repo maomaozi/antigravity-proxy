@@ -145,11 +145,22 @@ Chat and Responses failures preserve their cause in `error.code`:
 | --- | --- | --- |
 | 404 | `model_not_found` | The upstream rejected the model, or all configured accounts have cached that rejection. Select another model. |
 | 403 | `account_verification_required` | Supporting accounts need verification or a subscription. |
+| 403 | `account_suspended` | Upstream reported a Terms of Service suspension. Affected accounts are automatically disabled. |
 | 429 | `insufficient_quota` | Upstream quota exhaustion or the configured quota threshold was reached. |
 | 429 | `rate_limit_exceeded` | Accounts are temporarily rate limited or cooling down. Retry later. |
 | 503 | `no_accounts` | No accounts with credentials are configured. |
+| 503 | `accounts_disabled` | All accounts supporting the model are disabled. |
 | 503 | `no_available_accounts` | Account preparation failed. Check authentication and account availability. |
 | 5xx | `upstream_error` | Upstream requests failed, including empty responses; upstream HTTP status is retained when available. |
+
+Google accounts can be temporarily disabled or enabled from the dashboard, or
+with `POST /api/accounts/{email}/disabled` and JSON `{ "disabled": true }` (use
+`false` to enable). Disabled accounts retain their credentials and are excluded
+from chat, image generation, quota refresh, and automatic window activation.
+Upstream `TOS_VIOLATION` errors automatically disable the account, preserve the
+reason and appeal link, and let chat/Responses retry another account within the
+request's attempt budget. Restarting or resetting health does not re-enable
+disabled accounts; enable them explicitly after resolving the restriction.
 
 Cached model rejections retain the same 404 response on later requests rather
 than becoming quota errors. `error.message` identifies the model and next action;

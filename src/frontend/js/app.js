@@ -33,7 +33,7 @@ function isCodexProviderEnabled() {
 }
 
 function isGoogleAccountActive(account) {
-    if (!account?.refreshToken || account.challenge) return false;
+    if (!account?.refreshToken || account.disabled || account.challenge) return false;
     const families = [...new Set((account.quota || []).map(quota => getFamilyName(quota.groupName)))];
     if (!families.length) return true;
     const now = Date.now();
@@ -840,6 +840,7 @@ function renderAccountsTable(accounts) {
                     <div class="min-w-0">
                          <div class="font-medium text-zinc-700 dark:text-zinc-300 truncate text-xs flex items-center gap-2 group-hover:text-zinc-900 dark:group-hover:text-white transition-colors">
                              ${acc.email}
+                             ${acc.disabled ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-800" title="${escapeHtml(acc.suspension?.message || 'Account disabled')}">${acc.suspension?.reason === 'tos_violation' ? 'SUSPENDED' : 'DISABLED'}</span>` : ''}
                              ${isChallenge ? `<a href="${acc.challenge.url || '#'}" target="_blank" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold ${acc.challenge.reason === 'subscription_required' ? 'bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-800' : 'bg-amber-50 text-amber-600 border border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800'} transition-colors cursor-help" onclick="event.stopPropagation()" title="${acc.challenge.message || 'Validation required'}">${acc.challenge.reason === 'subscription_required' ? 'SUB' : 'VERIFY'}</a>` : ''}
                              ${isAllDownFinal ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:text-rose-400 animate-pulse dark:border-rose-800">COOLDOWN</span>` : ''}
                         </div>
@@ -859,6 +860,7 @@ function renderAccountsTable(accounts) {
             </td>
             <td class="px-4 py-3 text-right">
                  <div class="flex items-center justify-end gap-2" onclick="event.stopPropagation()">
+                     <button onclick="setGoogleAccountDisabled('${acc.email}', ${!acc.disabled})" class="text-[10px] font-bold text-zinc-500 hover:text-emerald-500 p-1">${acc.disabled ? 'Enable' : 'Disable'}</button>
                      <button onclick="resetAccountHealth('${acc.email}')" class="text-zinc-400 dark:text-zinc-600 hover:text-zinc-900 dark:hover:text-white transition-colors p-1" title="Reset Health"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></button>
                      <button onclick="deleteAccount('${acc.email}')" class="text-zinc-400 dark:text-zinc-600 hover:text-rose-500 transition-colors p-1" title="Remove"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
                      <svg class="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-300 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
@@ -868,6 +870,7 @@ function renderAccountsTable(accounts) {
         <tr id="detail-${safeEmail}" class="${isExpanded ? '' : 'hidden'} bg-zinc-50 dark:bg-[#050505] shadow-inner transition-colors">
             <td colspan="4" class="px-6 py-6 border-b border-zinc-200 dark:border-zinc-800">
                 ${detailsHtml}
+                ${acc.disabled && acc.suspension ? `<div class="mt-4 text-xs text-rose-600 dark:text-rose-400">${escapeHtml(acc.suspension.message || acc.suspension.reason)}${/^https:\/\//i.test(acc.suspension.appealUrl || '') ? ` <a href="${escapeHtml(acc.suspension.appealUrl)}" target="_blank" rel="noopener noreferrer" class="underline">Submit appeal</a>` : ''}</div>` : ''}
                 <div class="mt-6 flex justify-end">
                     <button onclick="deleteAccount('${acc.email}')" class="text-[10px] text-rose-600 dark:text-rose-500 hover:text-rose-700 dark:hover:text-rose-400 font-bold uppercase tracking-wider border border-rose-200 dark:border-rose-900/30 hover:border-rose-300 dark:hover:border-rose-900/60 bg-rose-50 dark:bg-rose-950/10 hover:bg-rose-100 dark:hover:bg-rose-950/30 px-3 py-1.5 rounded transition-all">Remove Permanently</button>
                 </div>
@@ -917,6 +920,21 @@ async function resetAccountHealth(email) {
     if (!confirm(`Reset health for ${email}?`)) return;
     await fetch(`/api/accounts/${email}/reset`, { method: 'POST' });
     addLog(`[ACTION] Health reset for ${email}`);
+}
+
+async function setGoogleAccountDisabled(email, disabled) {
+    try {
+        const res = await fetch(`/api/accounts/${encodeURIComponent(email)}/disabled`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disabled })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await refreshUsageDisplay();
+        addLog(`[ACTION] ${disabled ? 'Disabled' : 'Enabled'} account ${email}`);
+    } catch (error) {
+        addLog(`[ERROR] Could not update account ${email}: ${error.message}`);
+    }
 }
 
 async function editProjectId(email, currentPid) {

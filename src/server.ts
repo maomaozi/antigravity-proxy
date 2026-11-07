@@ -6,7 +6,7 @@ await loadProxyConfig();
 const pkg = await Bun.file("package.json").json();
 const APP_VERSION = pkg.version || "0.0.0";
 
-import { initManager, addAccount, getAccounts, removeAccount, saveAccounts, eventBus, markCooldown, getCooldowns, resetAccount, updateAccountProject, resetAllCooldowns } from "./auth/manager";
+import { initManager, addAccount, getAccounts, removeAccount, saveAccounts, eventBus, markCooldown, getCooldowns, resetAccount, updateAccountProject, resetAllCooldowns, setAccountDisabled } from "./auth/manager";
 import { type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
 import { validateCompletionRequestForGoogle } from "./utils/transform";
@@ -554,6 +554,15 @@ Bun.serve({
             return new Response("OK", { status: 200, headers: CORS_HEADERS });
         }
         return new Response("Bad Request", { status: 400, headers: CORS_HEADERS });
+    }
+
+    if (cleanPath.startsWith("/api/accounts/") && cleanPath.endsWith("/disabled") && req.method === "POST") {
+        const email = decodeURIComponent(cleanPath.split("/")[3]);
+        let body: any;
+        try { body = await req.json(); } catch { return jsonError("Invalid JSON body", 400); }
+        if (typeof body?.disabled !== "boolean") return jsonError("disabled must be a boolean", 400);
+        if (!await setAccountDisabled(email, body.disabled)) return jsonError("Account not found", 404);
+        return json({ email, disabled: body.disabled });
     }
 
     if (cleanPath.startsWith("/api/accounts/") && cleanPath.endsWith("/reset") && req.method === "POST") {

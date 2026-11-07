@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
-import { fetchQuota } from "../../src/api/quota";
+import { fetchQuota, fetchQuotaWindows } from "../../src/api/quota";
 import {
   isCodexFiveHourWindowInactive,
   isGoogleGeminiWindowInactive,
@@ -54,6 +54,23 @@ function codexSnapshot(email: string, usedPercent: number): CodexUsageSnapshot {
 }
 
 describe("quota window activation", () => {
+  test("disabled accounts are excluded from quota requests and window activation", async () => {
+    const account = googleAccount("disabled@example.com", 1);
+    account.disabled = true;
+    const unexpectedFetch = (async () => { throw new Error("Unexpected quota request"); }) as unknown as typeof fetch;
+    expect(await fetchQuota(account, true, unexpectedFetch)).toBeNull();
+    expect(await fetchQuotaWindows(account, unexpectedFetch)).toBeNull();
+    expect(isGoogleGeminiWindowInactive(account)).toBe(false);
+    let activations = 0;
+    const summary = await runQuotaWindowActivationCheck({
+      refreshGoogleQuotas: async () => {}, listGoogleAccounts: () => [account],
+      getCodexUsageSnapshots: async () => [], activateGoogle: async () => { activations++; return true; },
+      activateCodex: async () => true, refreshCodexUsage: async () => {},
+    });
+    expect(activations).toBe(0);
+    expect(summary.failures).toBe(0);
+  });
+
   test("does not turn Google's full unused duration into an active reset countdown", async () => {
     const now = Date.now();
     let requestedUrl = "";

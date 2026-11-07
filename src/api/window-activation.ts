@@ -4,6 +4,7 @@ import {
   getAccounts,
   prepareAccountForRequest,
   saveAccounts,
+  setAccountDisabled,
 } from "../auth/manager";
 import type { AntigravityAccount } from "../auth/types";
 import { callCodexResponsesAPI } from "../codex/api";
@@ -14,6 +15,7 @@ import type {
 } from "../codex/account-manager";
 import { getProxyConfig } from "../config/manager";
 import { getImpersonationHeaders } from "../utils/headers";
+import { parseGoogleError } from "../utils/errors";
 import { fetchQuota, refreshAllQuotas } from "./quota";
 
 export const WINDOW_ACTIVATION_INTERVAL_MS = 10 * 60_000;
@@ -36,6 +38,7 @@ export interface WindowActivationRuntime {
 }
 
 export function isGoogleGeminiWindowInactive(account: AntigravityAccount): boolean {
+  if (account.disabled || account.challenge) return false;
   const geminiQuotas = (account.quota || []).filter(quota => quota.groupName.toLowerCase().includes("gemini"));
   return geminiQuotas.length > 0
     && geminiQuotas.every(quota => Number(quota.remainingFraction) >= 1);
@@ -101,6 +104,12 @@ export async function activateGoogleGeminiWindow(
   if (!response) return false;
   const responseBody = await response.text().catch(() => "");
   if (!response.ok) {
+    const parsed = parseGoogleError(responseBody);
+    if (response.status === 403 && parsed.isAccountSuspended) {
+      await setAccountDisabled(account.email, true, {
+        reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
+      });
+    }
     throw new Error(`Google activation request failed (${response.status}): ${responseBody.slice(0, 300)}`);
   }
 

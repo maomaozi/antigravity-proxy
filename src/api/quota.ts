@@ -1,6 +1,7 @@
 import { getImpersonationHeaders, generateFingerprint } from "../utils/headers";
 import { type AntigravityAccount } from "../auth/types";
-import { getAccounts, saveAccounts } from "../auth/manager";
+import { getAccounts, saveAccounts, setAccountDisabled } from "../auth/manager";
+import { parseGoogleError } from "../utils/errors";
 import { refreshAccessToken } from "../auth/oauth";
 import { ANTIGRAVITY_CLIENT_VERSION, getUnavailableModelError } from "../models";
 
@@ -8,7 +9,7 @@ export async function fetchQuotaWindows(
   account: AntigravityAccount,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AntigravityAccount['quotaWindows'] | null> {
-  if (!account.accessToken) return null;
+  if (account.disabled || !account.accessToken) return null;
   try {
     const response = await fetchImpl('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', {
       method: 'POST',
@@ -20,7 +21,10 @@ export async function fetchQuotaWindows(
       body: JSON.stringify({ project: 'aicode-consumers' }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await detectSuspension(account, response);
+      return null;
+    }
     const data = await response.json() as any;
     if (!Array.isArray(data.groups)) return null;
     const windows: NonNullable<AntigravityAccount['quotaWindows']> = [];
@@ -52,7 +56,7 @@ export async function fetchQuota(
   retry = true,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AntigravityAccount['quota'] | null> {
-  if (!account.projectId || !account.accessToken) return null;
+  if (account.disabled || !account.projectId || !account.accessToken) return null;
   
   if (!account.fingerprint || !account.fingerprint.clientMetadata?.sqmId) {
     account.fingerprint = generateFingerprint(account.email);
@@ -83,6 +87,7 @@ export async function fetchQuota(
     }
 
     if (!res.ok) {
+        await detectSuspension(account, res);
         console.error(`Quota fetch failed for ${account.email}: ${res.status}`);
         return null;
     }
@@ -104,6 +109,16 @@ function getNextMidnightPT(): string {
     
     const diffMs = midnightPT.getTime() - ptDate.getTime();
     return new Date(now.getTime() + diffMs).toISOString();
+}
+
+async function detectSuspension(account: AntigravityAccount, response: Response): Promise<void> {
+  if (response.status !== 403) return;
+  const parsed = parseGoogleError(await response.text());
+  if (parsed.isAccountSuspended) {
+    await setAccountDisabled(account.email, true, {
+      reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
+    });
+  }
 }
 
 function parseQuotaResponse(data: any): AntigravityAccount['quota'] | null {
@@ -222,7 +237,7 @@ async function performQuotaRefresh(): Promise<void> {
     const accounts = getAccounts();
     let changed = false;
     await Promise.all(accounts.map(async acc => {
-        if (acc.projectId) { 
+        if (!acc.disabled && acc.projectId) {
             const quota = await fetchQuota(acc);
             const windows = await fetchQuotaWindows(acc);
             if (windows !== null) {

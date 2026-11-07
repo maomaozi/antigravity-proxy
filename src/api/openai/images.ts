@@ -1,8 +1,9 @@
 import { randomInt } from "node:crypto";
-import { emitAccountFlash, getAccounts, prepareAccountForRequest, updateAccountUsage } from "../../auth/manager";
+import { emitAccountFlash, getAccounts, prepareAccountForRequest, setAccountDisabled, updateAccountUsage } from "../../auth/manager";
 import type { AntigravityAccount } from "../../auth/types";
 import { getProxyConfig } from "../../config/manager";
 import { generateFingerprint, getImpersonationHeaders } from "../../utils/headers";
+import { parseGoogleError } from "../../utils/errors";
 
 const IMAGE_SIZES = new Set(["512", "1K", "2K", "4K"]);
 const ASPECT_RATIOS = new Set(["1:1", "1:4", "4:1", "1:8", "8:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]);
@@ -47,6 +48,7 @@ export interface ImageGenerationRuntime {
   randomIndex(length: number): number;
   fetch(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response>;
   onSuccess(account: AntigravityAccount, model: string): Promise<void>;
+  onSuspended(account: AntigravityAccount, suspension: Omit<NonNullable<AntigravityAccount['suspension']>, 'detectedAt'>): Promise<void>;
 }
 
 const defaultRuntime: ImageGenerationRuntime = {
@@ -56,6 +58,9 @@ const defaultRuntime: ImageGenerationRuntime = {
   getTimeoutMs: () => getProxyConfig().models.timeouts.image || getProxyConfig().models.timeouts.stream || 900_000,
   randomIndex: randomInt,
   fetch: (...args) => fetch(...args),
+  async onSuspended(account, suspension) {
+    await setAccountDisabled(account.email, true, suspension);
+  },
   async onSuccess(account, model) {
     await updateAccountUsage(account.email, true, model, "image");
     emitAccountFlash(account.email);
@@ -111,7 +116,7 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(runtime.getTimeoutMs())]);
   try {
     signal.throwIfAborted();
-    const candidates = runtime.getAccounts().filter(a => a.refreshToken && !a.challenge);
+    const candidates = runtime.getAccounts().filter(a => a.refreshToken && !a.disabled && !a.challenge);
     while (candidates.length) {
       signal.throwIfAborted();
       const selected = candidates.splice(runtime.randomIndex(candidates.length), 1)[0]!;
@@ -171,6 +176,13 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
       let data: any;
       try { data = JSON.parse(text); } catch { data = null; }
       if (!response.ok) {
+        const parsed = parseGoogleError(text);
+        if (response.status === 403 && parsed.isAccountSuspended) {
+          await runtime.onSuspended(account, {
+            reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
+          });
+          return error("Upstream service access is suspended for this account. The account has been disabled; retry with another account.", 403, "account_suspended", attempts);
+        }
         let message = typeof data?.error?.message === "string" ? data.error.message : `Antigravity returned HTTP ${response.status}`;
         for (const secret of [account.accessToken, account.refreshToken]) if (secret) message = message.replaceAll(secret, "[REDACTED]");
         lastError = error(message.slice(0, 1600), response.status, typeof data?.error?.status === "string" ? data.error.status : "upstream_error", attempts);

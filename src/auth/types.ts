@@ -25,6 +25,13 @@ export interface AntigravityAccount {
   expiresAt?: number; // timestamp
   projectId?: string;
   managedProjectId?: string;
+  disabled?: boolean;
+  suspension?: {
+    reason: string;
+    message?: string;
+    appealUrl?: string;
+    detectedAt: number;
+  };
   
   // Routing health stats
   healthScore: number;

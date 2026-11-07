@@ -24,6 +24,8 @@ export function parseGoogleError(body: string): {
   isQuotaExhausted: boolean;
   isChallengeRequired: boolean;
   isModelUnsupported: boolean;
+  isAccountSuspended: boolean;
+  appealUrl?: string;
   status: number;
   message?: string;
   resetSeconds?: number;
@@ -33,6 +35,8 @@ export function parseGoogleError(body: string): {
   let isQuotaExhausted = false;
   let isChallengeRequired = false;
   let isModelUnsupported = false;
+  let isAccountSuspended = false;
+  let appealUrl: string | undefined;
   let status = 500;
   let message: string | undefined;
   let resetSeconds: number | undefined;
@@ -105,6 +109,21 @@ export function parseGoogleError(body: string): {
           if (!isNaN(parsed) && parsed > 0) resetSeconds = parsed;
         }
       }
+
+      // A service suspension is account-wide and must take precedence over
+      // incidental words such as "quota" or "not supported" in the message.
+      const suspension = err.details?.find(detail =>
+        detail.reason === "TOS_VIOLATION" || detail.errorInfo?.reason === "TOS_VIOLATION");
+      if (suspension || /service has been disabled.*violation of terms of service/i.test(err.message || "")) {
+        reason = "tos_violation";
+        status = 403;
+        isAccountSuspended = true;
+        isChallengeRequired = false;
+        isQuotaExhausted = false;
+        isModelUnsupported = false;
+        const url = suspension?.metadata?.appeal_url;
+        if (url && /^https:\/\//i.test(url)) appealUrl = url;
+      }
     }
   } catch (e) {
     if (body.includes("automated queries")) {
@@ -114,5 +133,5 @@ export function parseGoogleError(body: string): {
     }
   }
 
-  return { reason, validationUrl, isQuotaExhausted, isChallengeRequired, isModelUnsupported, status, message, resetSeconds };
+  return { reason, validationUrl, isQuotaExhausted, isChallengeRequired, isModelUnsupported, isAccountSuspended, appealUrl, status, message, resetSeconds };
 }

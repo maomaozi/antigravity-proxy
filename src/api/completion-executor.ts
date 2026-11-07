@@ -9,6 +9,7 @@ import {
   getEarliestReset,
   getFamilyName,
   markCooldown,
+  setAccountDisabled,
   updateAccountUsage,
 } from "../auth/manager";
 import { getProxyConfig } from "../config/manager";
@@ -121,6 +122,13 @@ export function buildCompletionFailure(
     message = `Model '${model}' is unavailable for the configured accounts. Select another model.`;
   } else if (reason === "no_accounts") {
     message = "No accounts with credentials are configured. Add or authenticate an account.";
+  } else if (["tos_violation", "account_suspended"].includes(reason)) {
+    status = 403;
+    type = "access_denied";
+    code = "account_suspended";
+    message = "Upstream service access is suspended for the available accounts due to a Terms of Service violation. Check the account dashboard for appeal details.";
+  } else if (reason === "accounts_disabled") {
+    message = "All accounts supporting this model are disabled. Enable an account in the dashboard.";
   } else if (["account_verification_required", "validation_required", "subscription_required"].includes(reason)) {
     status = 403;
     type = "access_denied";
@@ -332,6 +340,16 @@ export async function executeCompletion({
         attemptLogs.push({ email: account.email, status, reason: parsedError.reason });
 
         if (status === 403 || status === 404) {
+          if (status === 403 && parsedError.isAccountSuspended) {
+            await setAccountDisabled(account.email, true, {
+              reason: parsedError.reason,
+              message: parsedError.message,
+              appealUrl: parsedError.appealUrl,
+            });
+            console.warn(`[Auth] Suspended account ${account.email} disabled (${parsedError.reason}); switching accounts.`);
+            await updateAccountUsage(account.email, false, request.model, "sandbox", status);
+            continue;
+          }
           if (parsedError.isChallengeRequired) {
             console.log(`[Auth] ${parsedError.reason} for ${account.email}, flagging pool sandbox for family ${getFamilyName(request.model)}.`);
             flagAccountChallenge(account.email, "sandbox", getFamilyName(request.model), {

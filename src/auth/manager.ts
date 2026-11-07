@@ -37,6 +37,21 @@ export async function initManager() {
 }
 
 export function getAccounts() { return accounts; }
+export async function setAccountDisabled(
+  email: string,
+  disabled: boolean,
+  suspension?: Omit<NonNullable<AntigravityAccount['suspension']>, 'detectedAt'>,
+): Promise<boolean> {
+  const account = accounts.find(candidate => candidate.email === email);
+  if (!account) return false;
+  account.disabled = disabled;
+  if (disabled && suspension) account.suspension = { ...suspension, detectedAt: Date.now() };
+  if (!disabled) delete account.suspension;
+  if (disabled) deleteSessionBindingsForAccount(email, 'sandbox');
+  await saveAccounts(accounts);
+  return true;
+}
+
 export async function saveAccounts(newAccounts: AntigravityAccount[]) {
   accounts = newAccounts;
   await saveConfig({ accounts });
@@ -153,6 +168,8 @@ function getPidOffset(): number {
 
 export type AccountSelectionFailure =
   | "no_accounts"
+  | "accounts_disabled"
+  | "account_suspended"
   | "model_not_found"
   | "account_verification_required"
   | "insufficient_quota"
@@ -165,7 +182,10 @@ export function getAccountSelectionFailure(pool: "sandbox", model: string): Acco
   if (configured.length === 0) return "no_accounts";
   const supported = configured.filter(account => account.capabilities?.[model] !== false);
   if (supported.length === 0) return "model_not_found";
-  const usable = supported.filter(account => !account.challenge);
+  const enabled = supported.filter(account => !account.disabled);
+  if (enabled.length === 0) return supported.every(account => account.suspension?.reason === "tos_violation")
+    ? "account_suspended" : "accounts_disabled";
+  const usable = enabled.filter(account => !account.challenge);
   if (usable.length === 0) return "account_verification_required";
   if (usable.every(account => isAccountQuotaExhausted(account, model))) return "insufficient_quota";
   const now = Date.now();
@@ -188,7 +208,7 @@ export async function getBestAccount(
 ): Promise<AntigravityAccount | null> {
   if (accounts.length === 0) return null;
   const now = Date.now();
-  const usable = accounts.filter(a => a.refreshToken && !a.challenge && !excludeEmails.includes(a.email));
+  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !excludeEmails.includes(a.email));
   const family = model ? getFamilyName(model) : 'Other';
   
   if (pool) {
@@ -288,6 +308,7 @@ export async function prepareAccountForRequest(email: string, forceRefresh = fal
 }
 
 async function ensureAccountReady(account: AntigravityAccount, forceRefresh = false): Promise<AntigravityAccount | null> {
+  if (account.disabled) return null;
   const now = Date.now();
   const config = getProxyConfig();
   const needsRefresh = forceRefresh || !account.accessToken || (account.expiresAt && account.expiresAt < now + config.tokens.expiryBufferMs);
@@ -303,7 +324,7 @@ async function ensureAccountReady(account: AntigravityAccount, forceRefresh = fa
         account.expiresAt = now + (tokens.expires_in * 1000);
         if (!account.projectId) account.projectId = await getProjectId(account.accessToken) || "rising-fact-p41fc";
         await saveAccounts(accounts);
-        return account;
+        return account.disabled ? null : account;
       } catch (e) {
         account.consecutiveFailures = (account.consecutiveFailures || 0) + 1;
         account.healthScore = Math.max(0, account.healthScore - 20);
@@ -405,7 +426,7 @@ export async function updateAccountProject(email: string, projectId: string) {
 }
 
 export function getEarliestReset(pool: 'sandbox'): string | null {
-  const usable = accounts.filter(a => a.refreshToken && a.quota);
+  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && a.quota);
   if (usable.length === 0) return null;
   let resetTimes: number[] = [];
   for (const acc of usable) {
