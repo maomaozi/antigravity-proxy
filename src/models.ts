@@ -7,7 +7,9 @@ export interface SupportedModel {
   defaultThinkingLevel: string;
   recommended?: boolean;
 }
-export const ANTIGRAVITY_CLIENT_VERSION = "2.26.0";
+export const ANTIGRAVITY_CLIENT_VERSION = "2.29.0";
+// Official 2.29.0 Linux ARM language_server build, verified against native requests.
+export const ANTIGRAVITY_CLIENT_BUILD = "1013064288";
 export const GEMINI_CHAT_MODELS: readonly SupportedModel[] = [
   { id: "antigravity-gemini-3.8-flash", name: "Gemini 3.8 Flash", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "high", recommended: true },
   { id: "antigravity-gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "low" },

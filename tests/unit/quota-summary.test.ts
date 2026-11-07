@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { fetchQuota, fetchQuotaWindows } from '../../src/api/quota';
 import type { AntigravityAccount } from '../../src/auth/types';
+import { getAntigravityNativeHeaders } from '../../src/utils/headers';
 
 const account = (): AntigravityAccount => ({
   email: 'quota@example.com', refreshToken: 'refresh', accessToken: 'access',
@@ -27,7 +28,7 @@ describe('Antigravity quota summary', () => {
     const result = await fetchQuotaWindows(account(), fakeFetch);
     expect(sent?.url).toBe('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary');
     expect(JSON.parse(String(sent?.init?.body))).toEqual({ project: 'aicode-consumers' });
-    expect(new Headers(sent?.init?.headers).get('user-agent')).toContain('cl=1005016104');
+    expect(sent?.init?.headers).toEqual(getAntigravityNativeHeaders('access'));
     expect(result?.map(({ groupName, window, remainingFraction }) => ({ groupName, window, remainingFraction }))).toEqual([
       { groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.25 },
       { groupName: 'Gemini Models', window: '5h', remainingFraction: 0.8 },

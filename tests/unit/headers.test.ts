@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
-import { generateFingerprint, getImpersonationHeaders } from "../../src/utils/headers";
+import { generateFingerprint, getImpersonationHeaders, getAntigravityNativeHeaders } from "../../src/utils/headers";
 
 describe("Antigravity Hub request headers", () => {
+  test("matches the official 2.29.0 Linux ARM discovery request without legacy IDE headers", () => {
+    expect(getAntigravityNativeHeaders("test-token")).toEqual({
+      "Authorization": "Bearer test-token",
+      "Content-Type": "application/json",
+      "User-Agent": "antigravity/hub/2.29.0 (aidev_client; os_type=linux; arch=arm64; cl=1013064288)",
+    });
+  });
   test.each(["darwin/arm64", "darwin/x64"])("updates persisted client versions while preserving device identity on %s", platform => {
     const fingerprint = {
       ...generateFingerprint("test@example.com"),

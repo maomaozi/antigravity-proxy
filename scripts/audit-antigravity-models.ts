@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { refreshAccessToken } from "../src/auth/oauth";
 import type { AntigravityAccount } from "../src/auth/types";
-import { generateFingerprint, getImpersonationHeaders } from "../src/utils/headers";
+import { getAntigravityNativeHeaders } from "../src/utils/headers";
+import { ANTIGRAVITY_CLIENT_VERSION } from "../src/models";
 
 // Read-only discovery: refresh tokens in memory and leave proxy account/config files untouched.
 const manifestUrl = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
@@ -17,10 +18,13 @@ if (!manifestResponse.ok) throw new Error(`Manifest HTTP ${manifestResponse.stat
 const manifest = await manifestResponse.text();
 const version = manifest.match(/^version:\s*["']?([\d.]+)/m)?.[1];
 if (!version) throw new Error("Manifest has no version");
-const userAgent = `antigravity/hub/${version} darwin/arm64`;
+if (version !== ANTIGRAVITY_CLIENT_VERSION) {
+  throw new Error(`Latest Hub is ${version}; verify its native protocol and update the client version/build before auditing (configured: ${ANTIGRAVITY_CLIENT_VERSION}).`);
+}
+const userAgent = getAntigravityNativeHeaders("")["User-Agent"];
 await writeFile(`${output}/latest-arm64-mac.yml`, manifest, { mode: 0o600 });
 const stored = await Bun.file("antigravity-accounts.json").json();
-const accounts: AntigravityAccount[] = structuredClone(stored.accounts || stored);
+const accounts: AntigravityAccount[] = structuredClone(stored.accounts || stored).filter((account: AntigravityAccount) => !account.disabled);
 const secrets = accounts.flatMap(account => [account.accessToken, account.refreshToken]).filter((value): value is string => Boolean(value));
 function redact(value: string): string {
   for (const secret of secrets) value = value.replaceAll(secret, "[REDACTED]");
@@ -35,12 +39,11 @@ const catalogs = await Promise.all(accounts.map(async (account, index) => {
       secrets.push(token.access_token);
     }
     if (!account.accessToken || (account.expiresAt || 0) < Date.now() + 60_000) await refresh();
-    account.fingerprint ||= generateFingerprint(account.email);
     if (!account.projectId) throw new Error("Missing projectId");
     async function send() {
       return fetch(endpoint, {
         method: "POST",
-        headers: { ...getImpersonationHeaders(account.accessToken!, account.fingerprint), "User-Agent": userAgent },
+        headers: getAntigravityNativeHeaders(account.accessToken!),
         body: JSON.stringify({ project: account.projectId }),
         signal: AbortSignal.timeout(25_000),
       });

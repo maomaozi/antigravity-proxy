@@ -1,9 +1,9 @@
-import { getImpersonationHeaders, generateFingerprint } from "../utils/headers";
+import { getAntigravityNativeHeaders } from "../utils/headers";
 import { type AntigravityAccount } from "../auth/types";
 import { getAccounts, saveAccounts, setAccountDisabled } from "../auth/manager";
 import { parseGoogleError } from "../utils/errors";
 import { refreshAccessToken } from "../auth/oauth";
-import { ANTIGRAVITY_CLIENT_VERSION, getUnavailableModelError, normalizeModelId, findAccountModel, getModelFamilyName, updateQuotaFamilies, type DiscoveredModel } from "../models";
+import { getUnavailableModelError, normalizeModelId, findAccountModel, getModelFamilyName, updateQuotaFamilies, type DiscoveredModel } from "../models";
 
 export async function fetchQuotaWindows(
   account: AntigravityAccount,
@@ -13,11 +13,7 @@ export async function fetchQuotaWindows(
   try {
     const response = await fetchImpl('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${account.accessToken}`,
-        'Content-Type': 'application/json',
-        'User-Agent': `antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} (aidev_client; os_type=linux; arch=arm64; cl=1005016104)`,
-      },
+      headers: getAntigravityNativeHeaders(account.accessToken),
       body: JSON.stringify({ project: 'aicode-consumers' }),
       signal: AbortSignal.timeout(15000),
     });
@@ -58,14 +54,10 @@ export async function fetchQuota(
 ): Promise<AntigravityAccount['quota'] | null> {
   if (account.disabled || !account.projectId || !account.accessToken) return null;
 
-  if (!account.fingerprint || !account.fingerprint.clientMetadata?.sqmId) {
-    account.fingerprint = generateFingerprint(account.email);
-  }
-
   try {
     const res = await fetchImpl(`https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, {
       method: "POST",
-      headers: getImpersonationHeaders(account.accessToken, account.fingerprint),
+      headers: getAntigravityNativeHeaders(account.accessToken),
       body: JSON.stringify({
         project: account.projectId
       }),

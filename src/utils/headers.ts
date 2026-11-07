@@ -1,5 +1,14 @@
 import { type DeviceFingerprint } from "../auth/types";
-import { ANTIGRAVITY_CLIENT_VERSION } from "../models";
+import { ANTIGRAVITY_CLIENT_BUILD, ANTIGRAVITY_CLIENT_VERSION } from "../models";
+
+/** Headers observed on the official Hub's model discovery and quota requests. */
+export function getAntigravityNativeHeaders(accessToken: string): Record<string, string> {
+  return {
+    "Authorization": `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    "User-Agent": `antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} (aidev_client; os_type=linux; arch=arm64; cl=${ANTIGRAVITY_CLIENT_BUILD})`,
+  };
+}
 
 export const OAUTH_CONFIG = {
   clientId: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",

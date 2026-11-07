@@ -466,6 +466,8 @@ The old `gemini-2.5-flash`, `gemini-2.5-flash-lite`, and
 `gemini-2.5-flash-thinking` IDs are labeled **Gemini 3.5 Flash Lite** upstream.
 They remain accepted as upstream aliases and are not listed as separate models.
 The proxy discovers each account's current public models when refreshing quotas.
+Model discovery and quota queries use the verified Antigravity Hub 2.29.0 native
+request headers (Linux ARM build `1013064288`).
 Enabled account-specific models, including Gemini 4 Argon and newer Claude models,
 appear in `/v1/models` and Playground automatically. Tiered models also get a base
 alias (for example `antigravity-gemini-4-argon`) with available thinking levels.
