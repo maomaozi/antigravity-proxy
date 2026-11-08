@@ -61,14 +61,6 @@ const DEFAULT_CONFIG: ProxyConfig = {
     refreshIntervalMs: 300000,
     initialDelayMs: 10000
   },
-    endpoints: {
-      sandbox: [
-        'https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse',
-        'https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse',
-        'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse',
-        'https://autopush-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse'
-      ]
-    },
   logging: {
     maxBufferSize: 200,
     enableConsoleCapture: true
@@ -99,7 +91,9 @@ const DEFAULT_CONFIG: ProxyConfig = {
 
 function decodeConfig(value: unknown): Partial<ProxyConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid proxy configuration');
-  return value as Partial<ProxyConfig>;
+  // Discard legacy endpoint lists, including those sent by older dashboard tabs.
+  const { endpoints: _legacyEndpoints, ...current } = value as Partial<ProxyConfig> & { endpoints?: unknown };
+  return current;
 }
 
 export async function loadProxyConfig(): Promise<ProxyConfig> {
@@ -129,8 +123,9 @@ export async function loadProxyConfig(): Promise<ProxyConfig> {
 
 export async function saveProxyConfig(newConfig: ProxyConfig): Promise<void> {
   try {
-    await writeDurableJson(CONFIG_PATH, newConfig, decodeConfig);
-    config = newConfig;
+    const normalized = decodeConfig(newConfig) as ProxyConfig;
+    await writeDurableJson(CONFIG_PATH, normalized, decodeConfig);
+    config = normalized;
     configEventBus.emit('update', config);
     console.log('[Config] Configuration saved successfully');
   } catch (e) {
@@ -146,7 +141,7 @@ export function getProxyConfig(): ProxyConfig {
 export async function updateProxyConfig(updates: Partial<ProxyConfig>): Promise<ProxyConfig> {
   const merged = deepMerge(config, updates);
   await saveProxyConfig(merged);
-  return merged;
+  return config;
 }
 
 function deepMerge(target: any, source: any): any {

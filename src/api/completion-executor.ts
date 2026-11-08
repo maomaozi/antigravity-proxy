@@ -1,4 +1,5 @@
 import { findAccountModel } from "../models";
+import { ANTIGRAVITY_STREAM_URL } from "./endpoints";
 import {
   emitAccountFlash,
   ensureFingerprint,
@@ -14,7 +15,6 @@ import {
   updateAccountUsage,
 } from "../auth/manager";
 import { getProxyConfig } from "../config/manager";
-import type { AntigravityAccount } from "../auth/types";
 import type { CompletionRequest, CompletionResult, CompletionStreamEvent } from "../core/completion";
 import { collectCompletionStream } from "../core/completion";
 import type { SessionIdentity } from "../session/identity";
@@ -117,7 +117,11 @@ export function buildCompletionFailure(
   let type = "server_error";
   let code = reason;
   let message = `No available accounts for model '${model}'. Check account authentication and availability.`;
-  if (reason === "model_not_found") {
+  if (reason === "invalid_argument") {
+    status = 400;
+    type = "invalid_request_error";
+    message = `Upstream rejected the request for model '${model}' as invalid.`;
+  } else if (reason === "model_not_found") {
     status = 404;
     type = "invalid_request_error";
     message = `Model '${model}' is unavailable for the configured accounts. Select another model.`;
@@ -162,7 +166,6 @@ export async function executeCompletion({
   signal,
 }: CompletionExecutionInput): Promise<CompletionExecution> {
   const modelLower = request.model.toLowerCase();
-  const isClaudeModel = modelLower.includes("claude");
   let attempts = 0;
   let aggressive = false;
   const config = getProxyConfig();
@@ -170,20 +173,17 @@ export async function executeCompletion({
   const maxAttempts = Math.max(config.retry.maxAttempts, availableAccountsCount);
   const triedEmails: string[] = [];
   const attemptLogs: CompletionAttempt[] = [];
-  let systemicErrorCount = 0;
   let invalidArgumentRetried = false;
-  let invalidArgumentRetry: { account: AntigravityAccount; endpoint: string } | undefined;
 
   const sessionId = sessionIdentity.key;
   const routingKey = sessionIdentity.source === "thread-id" ? sessionIdentity.id : undefined;
   const existingBinding = getSessionBinding(sessionIdentity.key, request.model);
+  const googleUrl = ANTIGRAVITY_STREAM_URL;
   console.log(
     `[Session] ${sessionIdentity.source} ${sessionIdentity.id.slice(0, 24)}`
       + `${sessionIdentity.id.length > 24 ? "..." : ""}`
       + `${existingBinding ? ` bound to ${existingBinding.accountEmail}/${existingBinding.pool}` : " (new)"}`,
   );
-
-  let lastStatus = 0;
 
   while (attempts < maxAttempts) {
     if (signal?.aborted) {
@@ -196,9 +196,7 @@ export async function executeCompletion({
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
-    const pendingInvalidArgumentRetry = invalidArgumentRetry;
-    invalidArgumentRetry = undefined;
-    let account = pendingInvalidArgumentRetry?.account ?? await getBestAccount(
+    let account = await getBestAccount(
       "sandbox",
       request.model,
       sessionIdentity.key,
@@ -227,33 +225,7 @@ export async function executeCompletion({
       break;
     }
 
-    const sandboxEndpoints = Array.isArray(config.endpoints.sandbox)
-      ? config.endpoints.sandbox
-      : [config.endpoints.sandbox];
-
-    let googleUrl: string;
-    const boundEndpointIsUsable = attempts === 1
-      && existingBinding?.pool === "sandbox"
-      && !!existingBinding.endpoint
-      && sandboxEndpoints.includes(existingBinding.endpoint);
-    if (pendingInvalidArgumentRetry) {
-      googleUrl = pendingInvalidArgumentRetry.endpoint;
-    } else if (boundEndpointIsUsable) {
-      googleUrl = existingBinding.endpoint!;
-    } else {
-      const sandboxEndpointIndex = Math.min(attempts - 1, sandboxEndpoints.length - 1);
-      googleUrl = sandboxEndpoints[sandboxEndpointIndex];
-    }
-
-    if (lastStatus === 503) {
-      console.log(`[Capacity] Retrying account ${account.email} on next endpoint ${googleUrl.split("/")[2]}...`);
-    } else {
-      triedEmails.push(account.email);
-    }
-
-    if (isClaudeModel && !googleUrl.includes("v1internal")) {
-      console.warn(`[Warning] Claude model ${request.model} is being routed to a non-v1internal endpoint: ${googleUrl}`);
-    }
+    triedEmails.push(account.email);
 
     const effectiveProjectId = account.projectId!;
     ensureFingerprint(account);
@@ -337,7 +309,6 @@ export async function executeCompletion({
         const errText = await googleRes.text();
         const parsedError = parseGoogleError(errText);
         const status = googleRes.status;
-        lastStatus = status;
 
         console.error(`[Error] Google API (${account.email}) returned ${status} (${parsedError.reason}):`, errText);
         emitAccountFlash(account.email, "error");
@@ -374,14 +345,6 @@ export async function executeCompletion({
           return jsonError(status, {
             error: { message: `Access denied: ${parsedError.reason}`, type: "access_denied", code: status.toString() },
           }, attempts);
-        }
-
-        if (status === 500 || status === 503) {
-          systemicErrorCount++;
-          if (systemicErrorCount > 2) {
-            console.log(`[Systemic] Detected systemic outage (${systemicErrorCount} errors), breaking retry loop.`);
-            break;
-          }
         }
 
         let resetSeconds = 0;
@@ -432,7 +395,7 @@ export async function executeCompletion({
               + ` | UpstreamRootKeys: ${JSON.stringify(Object.keys(declaration?.parametersJsonSchema ?? declaration?.parameters ?? {}))}`);
           }
           // Some Gemini failures contain only this generic message. Retry the
-          // same request once before failing; detailed validation errors still
+          // request once on another account; detailed validation errors still
           // return immediately, and the configured attempt limit still applies.
           let genericInvalidArgument = false;
           try {
@@ -443,8 +406,7 @@ export async function executeCompletion({
           } catch {}
           if (modelLower.includes("gemini") && genericInvalidArgument && !invalidArgumentRetried && attempts < maxAttempts) {
             invalidArgumentRetried = true;
-            invalidArgumentRetry = { account, endpoint: googleUrl };
-            console.warn(`[Retry] Gemini returned a generic INVALID_ARGUMENT; retrying the same account and endpoint once (request ${requestId}).`);
+            console.warn(`[Retry] Gemini returned a generic INVALID_ARGUMENT; trying another account once (request ${requestId}).`);
             continue;
           }
           console.warn(`[InvalidRequest] Request: ${requestId} | Model: ${googleBody.model} | Contents: ${googleBody.request.contents.length} | Tools: ${request.tools?.length || 0} | Bytes: ${Buffer.byteLength(JSON.stringify(googleBody))}`);

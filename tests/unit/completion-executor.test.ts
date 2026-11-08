@@ -9,6 +9,7 @@ import * as storage from "../../src/auth/storage";
 import { getProxyConfig } from "../../src/config/manager";
 import { fetchQuota, fetchQuotaWindows } from "../../src/api/quota";
 import { activateGoogleGeminiWindow, activateGoogleModelWindow } from "../../src/api/window-activation";
+import { ANTIGRAVITY_STREAM_URL } from "../../src/api/endpoints";
 
 describe("completion executor timeouts resolution", () => {
   test("defaults to 120s for first byte and 900s for stream when no config provided", () => {
@@ -126,7 +127,7 @@ describe("completion failure classification", () => {
     }
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     for (const [url, init] of fetchSpy.mock.calls) {
-      expect(url).toBe(getProxyConfig().endpoints.sandbox[0]!);
+      expect(url).toBe(ANTIGRAVITY_STREAM_URL);
       expect(JSON.parse(String(init?.body))).toMatchObject({ project: "project", model: upstreamModel });
       const headers = new Headers(init?.headers);
       expect(headers.get("Authorization")).toBe("Bearer access");
@@ -311,6 +312,53 @@ describe("completion failure classification", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  test.each([false, true])("Sonnet 5.5 quota failover ignores legacy endpoints and updates affinity (stream=%s)", async stream => {
+    const sonnet = "antigravity-claude-sonnet-5-5";
+    const first = getAccounts()[0]!;
+    const healthy = account("sonnet-fallback@example.com");
+    healthy.lastUsed = Date.now();
+    for (const a of [first, healthy]) {
+      a.availableModels = [{ id: "claude-sonnet-5-5-high", name: "Claude Sonnet 5.5 (High)" }];
+    }
+    getAccounts().push(healthy);
+    for (const endpoint of [ANTIGRAVITY_STREAM_URL, "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"]) {
+      const identity = { key: "sonnet-failover", id: "sonnet-failover", source: "test", inferred: false };
+      recordSessionBinding({ identity, accountEmail: first.email, model: sonnet,
+        modelFamily: "Claude Sonnet 5.5", pool: "sandbox", endpoint });
+      fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const token = new Headers(init?.headers).get("Authorization");
+        if (token === "Bearer access") return Response.json({ error: {
+          code: 429, status: "RESOURCE_EXHAUSTED", message: "Individual quota reached.",
+          details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "3856.218183766s" }],
+        } }, { status: 429 });
+        if (url !== ANTIGRAVITY_STREAM_URL) return Response.json({ error: {
+          code: 429, status: "RESOURCE_EXHAUSTED", message: "Resource has been exhausted (e.g. check quota).",
+        } }, { status: 429 });
+        return new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`);
+      }) as unknown as typeof fetch);
+      healthy.accessToken = "healthy-access";
+      try {
+        const execution = await executeCompletion({
+          request: { model: sonnet, messages: [{ role: "user", content: "OK" }], stream },
+          sessionIdentity: identity, requestId: "sonnet-failover-test", requestStartedAt: Date.now(),
+        });
+        const result = execution.kind === "stream" ? await collectCompletionStream(execution.stream)
+          : execution.kind === "result" ? execution.result : null;
+        expect(result?.text).toBe("OK");
+        expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => call[0])).toEqual([ANTIGRAVITY_STREAM_URL, ANTIGRAVITY_STREAM_URL]);
+        expect(getSessionBinding(identity.key, sonnet)).toMatchObject({ accountEmail: healthy.email, endpoint: ANTIGRAVITY_STREAM_URL });
+        expect(healthy.cooldowns?.["sandbox|Claude Sonnet 5.5"]).toBeUndefined();
+      } finally {
+        for (const a of [first, healthy]) {
+          clearCooldown(a.email, "sandbox", "Claude Sonnet 5.5");
+          deleteSessionBindingsForAccount(a.email);
+        }
+        fetchSpy.mockRestore();
+        fetchSpy = undefined;
+      }
+    }
+  });
+
   test("quota state and temporary cooldowns have distinct error codes", async () => {
     getAccounts()[0].quota = [{
       groupName: "Gemini Models", limit: "100", usage: "100", limitName: "gemini",
@@ -322,6 +370,44 @@ describe("completion failure classification", () => {
     const result = await run();
     expect(result.status).toBe(429);
     expect(result.body.error).toMatchObject({ type: "rate_limit_error", code: "rate_limit_exceeded" });
+  });
+
+  test.each(["server", "network"])("rotates accounts after a %s failure and quota exhaustion using only the default endpoint", async failure => {
+    const second = account("endpoint-second@example.com");
+    const third = account("endpoint-third@example.com");
+    second.accessToken = "second-access";
+    third.accessToken = "third-access";
+    second.projectId = "second-project";
+    third.projectId = "third-project";
+    second.lastUsed = Date.now();
+    third.lastUsed = second.lastUsed + 1;
+    getAccounts().push(second, third);
+    const identity = { key: "endpoint-failover", id: "endpoint-failover", source: "test", inferred: false };
+    fetchSpy = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network request"));
+    if (failure === "server") {
+      fetchSpy.mockResolvedValueOnce(Response.json({ error: { status: "UNAVAILABLE" } }, { status: 503 }));
+    } else {
+      fetchSpy.mockRejectedValueOnce(new Error("Connection refused"));
+    }
+    fetchSpy
+      .mockResolvedValueOnce(Response.json({ error: { status: "RESOURCE_EXHAUSTED" } }, { status: 429 }))
+      .mockResolvedValueOnce(new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`));
+    try {
+      const execution = await executeCompletion({
+        request: { model, messages: [{ role: "user", content: "OK" }], stream: false },
+        sessionIdentity: identity, requestId: "endpoint-failover-test", requestStartedAt: Date.now(),
+      });
+      expect(execution.kind).toBe("result");
+      expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => call[0])).toEqual(Array(3).fill(ANTIGRAVITY_STREAM_URL));
+      expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => new Headers(call[1]?.headers).get("Authorization")))
+        .toEqual(["Bearer access", "Bearer second-access", "Bearer third-access"]);
+      expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => JSON.parse(String(call[1]?.body)).project))
+        .toEqual(getAccounts().map(a => a.projectId));
+      expect(getSessionBinding(identity.key, model)).toMatchObject({ accountEmail: third.email, endpoint: ANTIGRAVITY_STREAM_URL });
+    } finally {
+      clearCooldown(second.email, "sandbox", "Gemini Models");
+      for (const a of getAccounts()) deleteSessionBindingsForAccount(a.email);
+    }
   });
 
   test("does not declare a model missing when a supporting account requires verification", () => {
@@ -414,8 +500,12 @@ describe("completion failure classification", () => {
     }, { status: 400 });
   }
 
-  test("recovers a generic Gemini 400 on the same account, endpoint, and payload", async () => {
+  test("recovers a generic Gemini 400 on another account using the default endpoint", async () => {
     getProxyConfig().retry.maxAttempts = 3;
+    const healthy = account("generic-400-fallback@example.com");
+    healthy.accessToken = "healthy-access";
+    healthy.lastUsed = Date.now();
+    getAccounts().push(healthy);
     fetchSpy = spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(genericInvalidArgument())
       .mockResolvedValueOnce(new Response(
@@ -440,11 +530,13 @@ describe("completion failure classification", () => {
     expect(secondBody.request).toEqual(firstBody.request);
     expect(secondBody.project).toBe(firstBody.project);
     expect(secondBody.model).toBe(firstBody.model);
-    expect(new Headers(second![1]?.headers).get("Authorization")).toBe("Bearer access");
+    expect(new Headers(second![1]?.headers).get("Authorization")).toBe("Bearer healthy-access");
+    deleteSessionBindingsForAccount(healthy.email);
   });
 
   test("retries a persistent generic Gemini 400 only once and preserves the error", async () => {
     getProxyConfig().retry.maxAttempts = 5;
+    getAccounts().push(account("generic-400-second@example.com"));
     fetchSpy = spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(genericInvalidArgument([]))
       .mockResolvedValueOnce(genericInvalidArgument([]));

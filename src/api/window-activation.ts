@@ -19,6 +19,7 @@ import { getProxyConfig } from "../config/manager";
 import { getImpersonationHeaders } from "../utils/headers";
 import { parseGoogleError } from "../utils/errors";
 import { fetchQuota, fetchQuotaWindows, refreshAllQuotas } from "./quota";
+import { ANTIGRAVITY_STREAM_URL } from "./endpoints";
 
 export const WINDOW_ACTIVATION_INTERVAL_MS = 10 * 60_000;
 
@@ -125,10 +126,7 @@ export async function activateGoogleModelWindow(
     const ready = await prepareAccountForRequest(account.email, forceRefresh);
     if (!ready?.accessToken || !ready.projectId) return null;
     ensureFingerprint(ready);
-    const configured = getProxyConfig().endpoints.sandbox;
-    const endpoint = (Array.isArray(configured) ? configured : [configured])[0];
-    if (!endpoint) return null;
-    return fetchImpl(endpoint, {
+    return fetchImpl(ANTIGRAVITY_STREAM_URL, {
       method: "POST",
       headers: getImpersonationHeaders(ready.accessToken, ready.fingerprint, model),
       body: JSON.stringify(googleActivationBody(ready, model)),

@@ -13,12 +13,23 @@ async function tempDirectory() {
   return dir;
 }
 async function loadConfigInChild(cwd: string) {
-  const child = Bun.spawn([process.execPath, "-e", `const {loadProxyConfig} = await import(${JSON.stringify(modulePath)}); const config = await loadProxyConfig(); console.log(JSON.stringify({refreshIntervalMs: config.quota.refreshIntervalMs}));`], { cwd, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, "-e", `const {loadProxyConfig} = await import(${JSON.stringify(modulePath)}); const config = await loadProxyConfig(); console.log(JSON.stringify({refreshIntervalMs: config.quota.refreshIntervalMs, hasEndpoints: Object.hasOwn(config, "endpoints")}));`], { cwd, stdout: "pipe", stderr: "pipe" });
   const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   return { exitCode, stdout, stderr };
 }
 
 describe("proxy configuration recovery", () => {
+  test("removes legacy endpoint lists while preserving other settings", async () => {
+    const dir = await tempDirectory();
+    await writeFile(join(dir, "config.json"), JSON.stringify({
+      quota: { refreshIntervalMs: 12345 }, endpoints: { sandbox: ["https://old.example/upstream"] },
+    }));
+    const result = await loadConfigInChild(dir);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('"hasEndpoints":false');
+    expect(JSON.parse(await readFile(join(dir, "config.json"), "utf8"))).toEqual({ quota: { refreshIntervalMs: 12345 } });
+  });
+
   test("restores a valid backup and keeps the configured values", async () => {
     const dir = await tempDirectory();
     await writeFile(join(dir, "config.json"), Buffer.alloc(500));

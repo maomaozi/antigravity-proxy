@@ -17,7 +17,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for unused Google quota pools and Codex 5-hour windows. Google activation selects an advertised chat model per independent pool, including Claude/Opus and dedicated model quotas such as Argon. Shared pools receive one request, exhausted pools are skipped, and quotas are refreshed after activation. The first check runs 10 minutes after server startup.
 - **Antigravity Routing**: Accesses Antigravity Gemini, Claude, and GPT-OSS models through the Sandbox Pool, including account-specific Gemini 4 Argon and Claude Sonnet/Opus 5.5 models.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
-- **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account, pool, and endpoint in SQLite.
+- **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account and pool in SQLite. Google requests always use `daily-cloudcode-pa.googleapis.com`; retries switch accounts on that host.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
 
 ## Local Deployment
@@ -100,7 +100,9 @@ Each request uniformly chooses a random Google OAuth account, excluding
 accounts with an active authentication challenge. Expired tokens are refreshed
 before use; accounts that cannot be prepared are skipped. Chat session
 affinity and health-based account ranking do not affect image selection.
-Endpoint fallback and a single 401 OAuth refresh stay on the selected account.
+Image requests use only `daily-cloudcode-pa.googleapis.com`. Retryable failures
+try another account without replacement; a 401 first refreshes the selected
+account once before moving on.
 The generation timeout uses `models.timeouts.image`, falling back to
 `models.timeouts.stream` (900 seconds by default).
 

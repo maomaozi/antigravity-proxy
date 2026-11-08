@@ -5,7 +5,6 @@ export interface ProxyConfig {
   retry: RetryConfig;
   tokens: TokensConfig;
   quota: QuotaConfig;
-  endpoints: EndpointsConfig;
   logging: LoggingConfig;
   features: FeaturesConfig;
   scheduling: SchedulingConfig;
@@ -61,10 +60,6 @@ export interface TokensConfig {
 export interface QuotaConfig {
   refreshIntervalMs: number;
   initialDelayMs: number;
-}
-
-export interface EndpointsConfig {
-  sandbox: string[];
 }
 
 export interface LoggingConfig {

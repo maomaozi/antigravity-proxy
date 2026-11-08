@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { handleImageGeneration, imageGenerationEndpoints, type ImageGenerationRuntime } from "../../src/api/openai/images";
+import { handleImageGeneration, type ImageGenerationRuntime } from "../../src/api/openai/images";
+import { ANTIGRAVITY_IMAGE_URL } from "../../src/api/endpoints";
 import type { AntigravityAccount } from "../../src/auth/types";
 
 function account(name: string): AntigravityAccount {
@@ -28,9 +29,8 @@ function fixture() {
       prepared.push({ email, forceRefresh });
       return accounts.find(a => a.email === email) || null;
     },
-    getEndpoints: () => ["https://first.googleapis.com/v1internal:streamGenerateContent?alt=sse", "https://second.googleapis.com/v1internal:streamGenerateContent?alt=sse"],
     getTimeoutMs: () => 5000,
-    randomIndex: () => 1,
+    randomIndex: length => Math.min(1, length - 1),
     fetch: (async (url, options) => {
       calls.push({ url: String(url), headers: new Headers(options?.headers), body: JSON.parse(String(options?.body)) });
       return success();
@@ -87,7 +87,7 @@ describe("Images API", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("X-Antigravity-Attempts")).toBe("1");
     expect(f.prepared).toEqual([{ email: "b@example.com", forceRefresh: false }]);
-    expect(f.calls[0]!.url).toBe("https://first.googleapis.com/v1internal:generateContent");
+    expect(f.calls[0]!.url).toBe(ANTIGRAVITY_IMAGE_URL);
     expect(f.calls[0]!.headers.get("Authorization")).toBe("Bearer access-b");
     expect(f.calls[0]!.body).toMatchObject({ model: "custom/Future-Image-9.1", project: "project-b", requestType: "image_gen", request: {
       contents: [{ role: "user", parts: [{ text: "a cat" }] }],
@@ -147,29 +147,36 @@ describe("Images API", () => {
     expect(f.prepared).toHaveLength(0);
   });
 
-  test("falls back across endpoints on 404/429 using the same account and model", async () => {
+  test.each([403, 404, 429, 500, 503, "network"])("switches accounts on %s using the default endpoint and the same model", async status => {
     const f = fixture();
     const capture = f.runtime.fetch;
     f.runtime.fetch = (async (...args) => {
       await capture(...args);
-      return f.calls.length === 1 ? Response.json({ error: { message: "Not found", status: "NOT_FOUND" } }, { status: 404 }) : success();
+      if (f.calls.length > 1) return success();
+      if (status === "network") throw new Error("Connection refused");
+      return Response.json({ error: { message: "Unavailable",
+        ...(status === 403 ? { details: [{ reason: "TOS_VIOLATION" }] } : {}),
+      } }, { status: Number(status) });
     }) as ImageGenerationRuntime["fetch"];
     const response = await handleImageGeneration(request({ model: "unknown-experimental", prompt: "x" }), f.runtime);
     expect(response.status).toBe(200);
     expect(response.headers.get("X-Antigravity-Attempts")).toBe("2");
-    expect(f.prepared).toHaveLength(1);
-    expect(f.calls.map(c => c.headers.get("Authorization"))).toEqual(["Bearer access-b", "Bearer access-b"]);
+    expect(f.prepared.map(p => p.email)).toEqual(["b@example.com", "c@example.com"]);
+    expect(f.calls.map(c => c.url)).toEqual([ANTIGRAVITY_IMAGE_URL, ANTIGRAVITY_IMAGE_URL]);
+    expect(f.calls.map(c => c.headers.get("Authorization"))).toEqual(["Bearer access-b", "Bearer access-c"]);
     expect(f.calls.map(c => c.body.model)).toEqual(["unknown-experimental", "unknown-experimental"]);
+    expect(f.calls.map(c => c.body.project)).toEqual(["project-b", "project-c"]);
+    if (status === 403) expect(f.accounts[1]!.disabled).toBe(true);
   });
 
-  test("preserves unavailable-model errors and does not switch accounts", async () => {
+  test("preserves unavailable-model errors after trying each account once", async () => {
     const f = fixture();
     f.runtime.fetch = (async () => Response.json({ error: { message: "Requested entity was not found.", status: "NOT_FOUND" } }, { status: 404 })) as ImageGenerationRuntime["fetch"];
     const response = await handleImageGeneration(request({ model: "unknown", prompt: "x" }), f.runtime);
     expect(response.status).toBe(404);
-    expect(response.headers.get("X-Antigravity-Attempts")).toBe("2");
+    expect(response.headers.get("X-Antigravity-Attempts")).toBe("3");
     expect(await response.json()).toMatchObject({ error: { code: "NOT_FOUND", message: "Requested entity was not found." } });
-    expect(f.prepared).toHaveLength(1);
+    expect(f.prepared.map(p => p.email)).toEqual(["b@example.com", "c@example.com", "a@example.com"]);
     expect(f.usage).toHaveLength(0);
   });
 
@@ -193,12 +200,12 @@ describe("Images API", () => {
     expect(f.calls[1]!.headers.get("Authorization")).toBe("Bearer new-access");
   });
 
-  test("does not loop on repeated 401s", async () => {
+  test("bounds repeated 401s to one refresh per account", async () => {
     const f = fixture();
     let calls = 0;
     f.runtime.fetch = (async () => { calls++; return new Response("Expired", { status: 401 }); }) as ImageGenerationRuntime["fetch"];
     expect((await handleImageGeneration(request({ model: "x", prompt: "y" }), f.runtime)).status).toBe(401);
-    expect(calls).toBe(2);
+    expect(calls).toBe(6);
   });
 
   test("reports no-image responses without repeating a successful upstream call", async () => {
@@ -237,7 +244,4 @@ describe("Images API", () => {
     expect(f.prepared).toHaveLength(0);
   });
 
-  test("converts configured stream endpoints and deduplicates them", () => {
-    expect(imageGenerationEndpoints(["https://host/v1internal:streamGenerateContent?alt=sse", "https://host/v1internal:generateContent"])).toEqual(["https://host/v1internal:generateContent"]);
-  });
 });

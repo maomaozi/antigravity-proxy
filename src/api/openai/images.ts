@@ -4,6 +4,7 @@ import type { AntigravityAccount } from "../../auth/types";
 import { getProxyConfig } from "../../config/manager";
 import { generateFingerprint, getImpersonationHeaders } from "../../utils/headers";
 import { parseGoogleError } from "../../utils/errors";
+import { ANTIGRAVITY_IMAGE_URL } from "../endpoints";
 
 const IMAGE_SIZES = new Set(["512", "1K", "2K", "4K"]);
 const ASPECT_RATIOS = new Set(["1:1", "1:4", "4:1", "1:8", "8:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]);
@@ -43,7 +44,6 @@ function referenceImageParts(value: unknown): { parts: Array<{ inlineData: { mim
 export interface ImageGenerationRuntime {
   getAccounts(): AntigravityAccount[];
   prepareAccount(email: string, forceRefresh?: boolean): Promise<AntigravityAccount | null>;
-  getEndpoints(): string[];
   getTimeoutMs(): number;
   randomIndex(length: number): number;
   fetch(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response>;
@@ -54,7 +54,6 @@ export interface ImageGenerationRuntime {
 const defaultRuntime: ImageGenerationRuntime = {
   getAccounts,
   prepareAccount: prepareAccountForRequest,
-  getEndpoints: () => getProxyConfig().endpoints.sandbox,
   getTimeoutMs: () => getProxyConfig().models.timeouts.image || getProxyConfig().models.timeouts.stream || 900_000,
   randomIndex: randomInt,
   fetch: (...args) => fetch(...args),
@@ -78,16 +77,7 @@ function error(message: string, status: number, code: string, attempts = 0, para
   return json({ error: { message, type: status >= 500 ? "api_error" : "invalid_request_error", code, ...(param ? { param } : {}) } }, status, attempts);
 }
 
-export function imageGenerationEndpoints(endpoints: string[]): string[] {
-  return [...new Set(endpoints.map(endpoint => {
-    const url = new URL(endpoint);
-    url.pathname = url.pathname.replace(/:(?:streamGenerateContent|generateContent)$/, ":generateContent");
-    url.searchParams.delete("alt");
-    return url.toString();
-  }))];
-}
-
-/** Each request selects one random Google account; endpoint fallback stays on it. */
+/** Try random Google accounts without replacement on the official endpoint. */
 export async function handleImageGeneration(req: Request, runtime: ImageGenerationRuntime = defaultRuntime): Promise<Response> {
   let body: any;
   try { body = await req.json(); } catch { return error("Invalid JSON in request body", 400, "invalid_json"); }
@@ -112,100 +102,99 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
   if (references.error) return error(references.error, 400, "invalid_request", 0, "images");
 
   let attempts = 0;
-  let account: AntigravityAccount | null = null;
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(runtime.getTimeoutMs())]);
   try {
     signal.throwIfAborted();
     const candidates = runtime.getAccounts().filter(a => a.refreshToken && !a.disabled && !a.challenge);
+    const requestId = `img-${crypto.randomUUID()}`;
+    let lastError = error("No ready Google OAuth accounts with a project ID", 503, "no_accounts");
     while (candidates.length) {
       signal.throwIfAborted();
       const selected = candidates.splice(runtime.randomIndex(candidates.length), 1)[0]!;
-      const ready = await runtime.prepareAccount(selected.email);
-      if (ready?.accessToken && ready.projectId) { account = ready; break; }
-    }
-    if (!account) return error("No ready Google OAuth accounts with a project ID", 503, "no_accounts");
-    account.fingerprint ||= generateFingerprint(account.email);
-    const endpoints = imageGenerationEndpoints(runtime.getEndpoints());
-    if (!endpoints.length) return error("No Antigravity endpoints configured", 503, "no_endpoints");
-    const requestId = `img-${crypto.randomUUID()}`;
-    const upstreamBody = {
-      project: account.projectId,
-      // Arbitrary upstream IDs are passed verbatim, with no chat-model aliasing.
-      model: body.model,
-      userAgent: "antigravity",
-      requestType: "image_gen",
-      requestId,
-      request: {
-        contents: [{ role: "user", parts: [{ text: body.prompt }, ...references.parts] }],
-        generationConfig: {
-          responseModalities: ["TEXT", "IMAGE"],
-          imageConfig: { aspectRatio, imageSize },
-          ...(body.thinking_level ? { thinkingConfig: { thinkingLevel: body.thinking_level, includeThoughts: false } } : {}),
+      let account = await runtime.prepareAccount(selected.email);
+      if (!account?.accessToken || !account.projectId) continue;
+      account.fingerprint ||= generateFingerprint(account.email);
+      const upstreamBody = {
+        project: account.projectId,
+        // Arbitrary upstream IDs are passed verbatim, with no chat-model aliasing.
+        model: body.model,
+        userAgent: "antigravity",
+        requestType: "image_gen",
+        requestId,
+        request: {
+          contents: [{ role: "user", parts: [{ text: body.prompt }, ...references.parts] }],
+          generationConfig: {
+            responseModalities: ["TEXT", "IMAGE"],
+            imageConfig: { aspectRatio, imageSize },
+            ...(body.thinking_level ? { thinkingConfig: { thinkingLevel: body.thinking_level, includeThoughts: false } } : {}),
+          },
         },
-      },
-    };
-    console.log(`[Images] ${requestId} | Model: ${body.model} | Account: ${account.email} | Size: ${imageSize} | Ratio: ${aspectRatio}`);
-    let refreshed = false;
-    let lastError = error("Image generation failed", 502, "upstream_error");
-    for (let index = 0; index < endpoints.length; index++) {
-      signal.throwIfAborted();
-      let response: Response;
-      try {
-        attempts++;
-        response = await runtime.fetch(endpoints[index]!, {
-          method: "POST",
-          headers: getImpersonationHeaders(account.accessToken!, account.fingerprint, body.model),
-          body: JSON.stringify(upstreamBody),
-          signal,
-        });
-      } catch (failure) {
-        if (signal.aborted) throw failure;
-        lastError = error("Unable to reach Antigravity upstream", 502, "upstream_unavailable", attempts);
-        continue;
-      }
-      const text = await response.text();
-      if (response.status === 401 && !refreshed) {
-        refreshed = true;
-        const ready = await runtime.prepareAccount(account.email, true);
-        if (!ready?.accessToken || !ready.projectId) return error("Google OAuth refresh failed", 401, "oauth_refresh_failed", attempts);
-        account = ready;
-        upstreamBody.project = ready.projectId;
-        index--;
-        continue;
-      }
-      let data: any;
-      try { data = JSON.parse(text); } catch { data = null; }
-      if (!response.ok) {
-        const parsed = parseGoogleError(text);
-        if (response.status === 403 && parsed.isAccountSuspended) {
-          await runtime.onSuspended(account, {
-            reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
+      };
+      console.log(`[Images] ${requestId} | Model: ${body.model} | Account: ${account.email} | Size: ${imageSize} | Ratio: ${aspectRatio}`);
+      let refreshed = false;
+      while (true) {
+        signal.throwIfAborted();
+        let response: Response;
+        let text: string;
+        try {
+          attempts++;
+          response = await runtime.fetch(ANTIGRAVITY_IMAGE_URL, {
+            method: "POST",
+            headers: getImpersonationHeaders(account.accessToken!, account.fingerprint, body.model),
+            body: JSON.stringify(upstreamBody),
+            signal,
           });
-          return error("Upstream service access is suspended for this account. The account has been disabled; retry with another account.", 403, "account_suspended", attempts);
+          text = await response.text();
+        } catch (failure) {
+          if (signal.aborted) throw failure;
+          lastError = error("Unable to reach Antigravity upstream", 502, "upstream_unavailable", attempts);
+          break;
         }
-        let message = typeof data?.error?.message === "string" ? data.error.message : `Antigravity returned HTTP ${response.status}`;
-        for (const secret of [account.accessToken, account.refreshToken]) if (secret) message = message.replaceAll(secret, "[REDACTED]");
-        lastError = error(message.slice(0, 1600), response.status, typeof data?.error?.status === "string" ? data.error.status : "upstream_error", attempts);
-        // A successful generation is never retried. Retry only endpoint failures,
-        // retaining the same random account for the entire incoming request.
-        if (![404, 429, 500, 502, 503, 504].includes(response.status)) return lastError;
-        continue;
-      }
-      if (!data) return error("Antigravity returned invalid JSON", 502, "invalid_upstream_response", attempts);
-      const result = data.response || data;
-      const images: Array<{ b64_json: string; mime_type: string }> = [];
-      for (const candidate of result.candidates || []) {
-        for (const part of candidate.content?.parts || []) {
-          const inline = part.inlineData || part.inline_data;
-          const mime = inline?.mimeType || inline?.mime_type;
-          if (!part.thought && typeof mime === "string" && mime.startsWith("image/") && typeof inline?.data === "string" && inline.data.length) {
-            images.push({ b64_json: inline.data, mime_type: mime });
+        if (response.status === 401 && !refreshed) {
+          refreshed = true;
+          const ready = await runtime.prepareAccount(account.email, true);
+          if (!ready?.accessToken || !ready.projectId) {
+            lastError = error("Google OAuth refresh failed", 401, "oauth_refresh_failed", attempts);
+            break;
+          }
+          account = ready;
+          upstreamBody.project = ready.projectId;
+          continue;
+        }
+        let data: any;
+        try { data = JSON.parse(text); } catch { data = null; }
+        if (!response.ok) {
+          const parsed = parseGoogleError(text);
+          if (response.status === 403 && parsed.isAccountSuspended) {
+            await runtime.onSuspended(account, {
+              reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
+            });
+            lastError = error("Upstream service access is suspended for this account. The account has been disabled; retry with another account.", 403, "account_suspended", attempts);
+            break;
+          }
+          let message = typeof data?.error?.message === "string" ? data.error.message : `Antigravity returned HTTP ${response.status}`;
+          for (const secret of [account.accessToken, account.refreshToken]) if (secret) message = message.replaceAll(secret, "[REDACTED]");
+          lastError = error(message.slice(0, 1600), response.status, typeof data?.error?.status === "string" ? data.error.status : "upstream_error", attempts);
+          // Account/service failures use another account on the same endpoint.
+          if (![401, 403, 404, 429, 500, 502, 503, 504].includes(response.status)) return lastError;
+          break;
+        }
+        if (!data) return error("Antigravity returned invalid JSON", 502, "invalid_upstream_response", attempts);
+        const result = data.response || data;
+        const images: Array<{ b64_json: string; mime_type: string }> = [];
+        for (const candidate of result.candidates || []) {
+          for (const part of candidate.content?.parts || []) {
+            const inline = part.inlineData || part.inline_data;
+            const mime = inline?.mimeType || inline?.mime_type;
+            if (!part.thought && typeof mime === "string" && mime.startsWith("image/") && typeof inline?.data === "string" && inline.data.length) {
+              images.push({ b64_json: inline.data, mime_type: mime });
+            }
           }
         }
+        if (!images.length) return error("Antigravity returned no generated image", 502, "no_image", attempts);
+        try { await runtime.onSuccess(account, body.model); } catch { console.warn("[Images] Could not persist account usage"); }
+        return json({ created: Math.floor(Date.now() / 1000), model: body.model, ...(result.modelVersion ? { model_version: result.modelVersion } : {}), data: images.slice(0, 1) }, 200, attempts);
       }
-      if (!images.length) return error("Antigravity returned no generated image", 502, "no_image", attempts);
-      try { await runtime.onSuccess(account, body.model); } catch { console.warn("[Images] Could not persist account usage"); }
-      return json({ created: Math.floor(Date.now() / 1000), model: body.model, ...(result.modelVersion ? { model_version: result.modelVersion } : {}), data: images.slice(0, 1) }, 200, attempts);
     }
     return lastError;
   } catch {

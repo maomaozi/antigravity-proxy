@@ -3,6 +3,7 @@ import { type AntigravityAccount } from "../auth/types";
 import { getAccounts, saveAccounts, setAccountDisabled } from "../auth/manager";
 import { parseGoogleError } from "../utils/errors";
 import { refreshAccessToken } from "../auth/oauth";
+import { ANTIGRAVITY_BASE_URL } from "./endpoints";
 import { getUnavailableModelError, normalizeModelId, findAccountModel, getModelFamilyName, updateQuotaFamilies, type DiscoveredModel } from "../models";
 
 export async function fetchQuotaWindows(
@@ -11,7 +12,7 @@ export async function fetchQuotaWindows(
 ): Promise<AntigravityAccount['quotaWindows'] | null> {
   if (account.disabled || !account.accessToken) return null;
   try {
-    const response = await fetchImpl('https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary', {
+    const response = await fetchImpl(`${ANTIGRAVITY_BASE_URL}/v1internal:retrieveUserQuotaSummary`, {
       method: 'POST',
       headers: getAntigravityNativeHeaders(account.accessToken),
       body: JSON.stringify({ project: 'aicode-consumers' }),
@@ -55,7 +56,7 @@ export async function fetchQuota(
   if (account.disabled || !account.projectId || !account.accessToken) return null;
 
   try {
-    const res = await fetchImpl(`https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels`, {
+    const res = await fetchImpl(`${ANTIGRAVITY_BASE_URL}/v1internal:fetchAvailableModels`, {
       method: "POST",
       headers: getAntigravityNativeHeaders(account.accessToken),
       body: JSON.stringify({
