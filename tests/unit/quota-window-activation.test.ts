@@ -142,6 +142,7 @@ describe("quota window activation", () => {
       ],
       activateGoogle: async account => {
         activatedGoogle.push(account.email);
+        account.quota![0].remainingFraction = 0.9999; // the window is now running
         return true;
       },
       activateCodex: async email => {
@@ -163,5 +164,26 @@ describe("quota window activation", () => {
       codexActivated: 1,
       failures: 0,
     });
+  });
+
+  test("activation prefers 3.8 Flash and only counts a window once the refreshed quota shows it running", async () => {
+    const account = googleAccount("fallback@example.com", 1);
+    account.quota = [
+      { ...account.quota![0], groupName: "Gemini 3 Flash", limitName: "gemini", modelId: "gemini-3-flash" },
+      { ...account.quota![0], groupName: "Gemini 3.8 Flash", limitName: "gemini", modelId: "gemini-3.8-flash-low" },
+    ];
+    const tried: string[] = [];
+    const summary = await runQuotaWindowActivationCheck({
+      refreshGoogleQuotas: async () => {}, listGoogleAccounts: () => [account],
+      getCodexUsageSnapshots: async () => [], activateCodex: async () => true, refreshCodexUsage: async () => {},
+      activateGoogle: async (current, model) => {
+        tried.push(model);
+        if (model.includes("3.8")) current.quota!.forEach(q => { q.remainingFraction = 0.9999; });
+        return true; // gemini-3-flash answers 200 but never counts against the pool
+      },
+    });
+    expect(tried[0]).toBe("gemini-3.8-flash-low");
+    expect(summary.googleActivated).toBe(1);
+    expect(summary.failures).toBe(0);
   });
 });

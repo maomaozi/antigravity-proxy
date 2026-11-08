@@ -48,10 +48,12 @@ export interface GoogleActivationTarget {
 
 /** Flash models are cheapest and rarely capacity-limited; Pro/Opus-class are last. */
 function activationModelRank(model: string): number {
-  if (/flash(?!.*(image|lite))/i.test(model)) return 0;
-  if (/lite/i.test(model)) return 1;
-  if (/sonnet|gpt-oss|haiku/i.test(model)) return 2;
-  return 3;
+  // Some models (e.g. gemini-3-flash) answer successfully but never start the pool's window.
+  if (/3\.8-flash/i.test(model)) return 0;
+  if (/flash(?!.*(image|lite))/i.test(model)) return 1;
+  if (/lite/i.test(model)) return 2;
+  if (/sonnet|gpt-oss|haiku/i.test(model)) return 3;
+  return 4;
 }
 
 /** One request per independent pool, never one hard-coded model per account. */
@@ -271,6 +273,11 @@ export async function runQuotaWindowActivationCheck(
       for (const model of target.models) {
         try {
           if (await runtime.activateGoogle(account, model)) {
+            // A 2xx is not proof: only count it once the refreshed quota shows the window running.
+            if (getGoogleActivationTargets(account).some(current => current.key === target.key)) {
+              console.warn(`[WindowActivation] ${model} answered but ${target.key} is still inactive for ${account.email}.`);
+              continue;
+            }
             activated = true;
             summary.googleActivated++;
             console.log(`[WindowActivation] Activated ${target.key} (${model}) for ${account.email}.`);
