@@ -109,7 +109,7 @@ describe("account-specific models and quotas", () => {
     expect(getGoogleActivationTargets(a).map(t => t.key)).toEqual(["Gemini 3 Special"]);
   });
 
-  test("activates unused Opus and Argon pools independently and deduplicates shared pools", async () => {
+  test("activates unused Claude/GPT and Argon pools independently, preferring GPT-OSS over Opus", async () => {
     const a = await discover({
       "gemini-3-flash": model("Gemini-3-Flash", 0.8),
       "gemini-4-argon-high": model("Gemini-4-Argon"),
@@ -129,7 +129,7 @@ describe("account-specific models and quotas", () => {
       activateGoogle: async (_, id) => { activated.push(id); return true; },
       activateCodex: async () => true, refreshCodexUsage: async () => {},
     });
-    expect(activated).toEqual(["claude-opus-4-6-thinking", "gemini-4-argon-high"]);
+    expect(activated).toEqual(["gpt-oss-120b-medium", "gemini-4-argon-high"]);
     expect(summary.googleActivated).toBe(2);
     a.quotaWindows[2]!.remainingFraction = 0.99;
     a.quotaWindows[1]!.remainingFraction = 0;

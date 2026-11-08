@@ -42,6 +42,16 @@ export interface WindowActivationRuntime {
 export interface GoogleActivationTarget {
   key: string;
   model: string;
+  /** Ordered fallbacks from the same pool, used when `model` has no capacity. */
+  models: string[];
+}
+
+/** Flash models are cheapest and rarely capacity-limited; Pro/Opus-class are last. */
+function activationModelRank(model: string): number {
+  if (/flash(?!.*(image|lite))/i.test(model)) return 0;
+  if (/lite/i.test(model)) return 1;
+  if (/sonnet|gpt-oss|haiku/i.test(model)) return 2;
+  return 3;
 }
 
 /** One request per independent pool, never one hard-coded model per account. */
@@ -62,7 +72,13 @@ export function getGoogleActivationTargets(account: AntigravityAccount): GoogleA
     // Weekly-only dedicated pools (e.g. Argon) can be activated when unused too.
     const activationWindows = shortWindows.length ? shortWindows : windows;
     if (activationWindows.some(window => window.remainingFraction < 1)) continue;
-    if (!targets.has(key)) targets.set(key, { key, model });
+    const target = targets.get(key) || { key, model, models: [] };
+    if (!target.models.includes(model)) target.models.push(model);
+    targets.set(key, target);
+  }
+  for (const target of targets.values()) {
+    target.models.sort((a, b) => activationModelRank(a) - activationModelRank(b));
+    target.model = target.models[0];
   }
   return [...targets.values()].filter(target => !active.has(target.key));
 }
@@ -251,18 +267,22 @@ export async function runQuotaWindowActivationCheck(
       if (account.disabled || account.challenge) break;
       // The previous activation refreshes this account, and may activate shared quotas.
       if (!getGoogleActivationTargets(account).some(current => current.key === target.key)) continue;
-      try {
-        if (await runtime.activateGoogle(account, target.model)) {
-          summary.googleActivated++;
-          console.log(`[WindowActivation] Activated ${target.key} (${target.model}) for ${account.email}.`);
-        } else {
-          summary.failures++;
-          console.warn(`[WindowActivation] Could not prepare ${target.model} for ${account.email}.`);
+      let activated = false;
+      for (const model of target.models) {
+        try {
+          if (await runtime.activateGoogle(account, model)) {
+            activated = true;
+            summary.googleActivated++;
+            console.log(`[WindowActivation] Activated ${target.key} (${model}) for ${account.email}.`);
+            break;
+          }
+          console.warn(`[WindowActivation] Could not prepare ${model} for ${account.email}.`);
+        } catch (error: any) {
+          console.warn(`[WindowActivation] ${model} activation failed for ${account.email}: ${String(error?.message || error).slice(0, 200)}`);
+          if (account.disabled || account.challenge) break;
         }
-      } catch (error: any) {
-        summary.failures++;
-        console.warn(`[WindowActivation] ${target.model} activation failed for ${account.email}: ${error?.message || error}`);
       }
+      if (!activated) summary.failures++;
     }
   }
 

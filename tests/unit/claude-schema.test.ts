@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { ClaudeToolSchemaError, normalizeClaudeToolSchema } from "../../src/utils/claude-schema";
+import { ClaudeToolSchemaError, normalizeClaudeToolSchema, toClaudeJSONSchema } from "../../src/utils/claude-schema";
 import { cleanJSONSchemaForAntigravity } from "../../src/utils/schema";
 import { loadProxyConfig } from "../../src/config/manager";
 import { adaptResponsesRequest, createResponsesStreamEncoder, encodeResponsesResult } from "../../src/api/openai/responses";
@@ -17,6 +17,100 @@ const variants = {
   ],
 };
 const request = (schema: any, model = "antigravity-claude-sonnet-5-5"): CompletionRequest => ({ model, messages: [{ role: "user", content: "Look up the URL." }], tools: [{ name: "lookup", description: "Look up an item.", parameters: schema }], stream: false });
+
+// Reduced capture_browser_scenario shape: nested discriminated object unions,
+// action arrays, and scalar constraints must reach Claude without Google Schema.
+const browserSchema = {
+  type: "object", additionalProperties: false,
+  properties: {
+    browser: { oneOf: [
+      { type: "object", properties: { mode: { const: "launch" }, executable_path: { type: "string" } }, required: ["mode", "executable_path"], additionalProperties: false },
+      { type: "object", properties: { mode: { const: "connect" }, target_id: { type: "string" } }, required: ["mode", "target_id"], additionalProperties: false },
+    ] },
+    actions: { type: "array", minItems: 1, items: { oneOf: [
+      { type: "object", properties: { action: { const: "click" }, count: { type: "integer", enum: [1, 2] } }, required: ["action", "count"] },
+      { type: "object", properties: { action: { const: "fill" }, value: { anyOf: [{ type: "string" }, { type: "null" }] } }, required: ["action", "value"] },
+    ] } },
+    enabled: { type: "boolean", enum: [true, false] },
+    value: { anyOf: [{ type: "string" }, { type: "integer" }] },
+  }, required: ["browser", "actions"],
+};
+
+describe("Claude native parameter JSON Schema", () => {
+  test("preserves nested unions, closed objects, literal enums, and scalar types on retries", () => {
+    const original = structuredClone(browserSchema);
+    for (const aggressive of [false, true]) {
+      const tool = transformCompletionToGoogleBody(request(browserSchema), "p", "", "s", aggressive).request.tools[0].functionDeclarations[0];
+      expect(tool.parameters).toBeUndefined();
+      expect(tool.parametersJsonSchema).toEqual(original);
+    }
+    expect(browserSchema).toEqual(original);
+    const gemini = transformCompletionToGoogleBody(request(browserSchema, "antigravity-gemini-3.8-flash"), "p", "", "s").request.tools[0].functionDeclarations[0];
+    expect(gemini.parametersJsonSchema).toBeUndefined();
+    expect(gemini.parameters.properties.browser.anyOf).toHaveLength(2);
+  });
+
+  test("uses native schemas for Responses namespace tools loaded after client search", () => {
+    const body = { model: "antigravity-claude-sonnet-5-5", input: [{ role: "user", content: "Capture the page." }, { type: "additional_tools", role: "developer", tools: [{ type: "namespace", name: "mcp__rea", tools: [{ type: "function", name: "capture_browser_scenario", parameters: browserSchema }] }] }] };
+    const adapted = adaptResponsesRequest(body);
+    expect(validateCompletionRequestForGoogle(adapted)).toBeUndefined();
+    const tool = transformCompletionToGoogleBody(adapted, "p", "", "s").request.tools[0].functionDeclarations[0];
+    expect(tool.parameters).toBeUndefined();
+    expect(tool.parametersJsonSchema).toEqual(browserSchema);
+    expect(adapted.tools![0]!.parameters).toEqual(browserSchema);
+  });
+
+  test("preserves recursive definitions and references on the native path", () => {
+    const schema = { type: "object", properties: { tree: { $ref: "#/$defs/node" } }, $defs: { node: { type: "object", properties: { children: { type: "array", items: { $ref: "#/$defs/node" } } } } } };
+    const tool = transformCompletionToGoogleBody(request(schema), "p", "", "s").request.tools[0].functionDeclarations[0];
+    expect(tool.parametersJsonSchema).toEqual(schema);
+  });
+
+  test("upgrades tuple schemas and their references without modifying literal data or property names", () => {
+    const literal = { items: [{ type: "string" }], additionalItems: false, $ref: "#/$defs/pair/items/0" };
+    const schema = {
+      $schema: "http://json-schema.org/draft-07/schema#", type: "object",
+      properties: {
+        pair: { $ref: "#/$defs/pair" }, first: { $ref: "#/$defs/pair/items/0" }, tail: { $ref: "#/$defs/pair/additionalItems" },
+        items: { type: "string" }, additionalItems: { type: "boolean" },
+        payload: { type: "object", default: literal, const: literal, enum: [literal] },
+        literalReference: { $ref: "#/properties/payload/default/items/0" },
+        variants: { anyOf: [{ type: "array", items: [{ type: "boolean" }] }, { type: "array", items: [], additionalItems: false }] },
+      },
+      $defs: { pair: { type: "array", items: [{ type: "string" }, { type: "integer" }], additionalItems: false, minItems: 2, maxItems: 2 } },
+    };
+    const original = structuredClone(schema);
+    const result = toClaudeJSONSchema(schema);
+    expect(result.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(result.$defs.pair).toEqual({ type: "array", prefixItems: [{ type: "string" }, { type: "integer" }], items: false, minItems: 2, maxItems: 2 });
+    expect(result.properties.first.$ref).toBe("#/$defs/pair/prefixItems/0");
+    expect(result.properties.tail.$ref).toBe("#/$defs/pair/items");
+    expect(result.properties.items).toEqual(schema.properties.items);
+    expect(result.properties.additionalItems).toEqual(schema.properties.additionalItems);
+    expect(result.properties.payload).toEqual(schema.properties.payload);
+    expect(result.properties.literalReference).toEqual(schema.properties.literalReference);
+    expect(result.properties.variants.anyOf).toEqual([
+      { type: "array", prefixItems: [{ type: "boolean" }], items: true },
+      { type: "array", items: false },
+    ]);
+    expect(schema).toEqual(original);
+  });
+
+  test("retains 2020-12 prefixItems and boolean schemas", () => {
+    const schema = { type: "object", properties: { tuple: { type: "array", prefixItems: [true, false], items: false }, anything: true, nothing: false }, additionalProperties: false };
+    expect(toClaudeJSONSchema(schema)).toEqual(schema);
+  });
+
+  test("rewrites nested tuple pointers with escaped names and local schema IDs", () => {
+    const schema = { type: "object", $defs: {
+      "a/b~c": { type: "array", items: [{ type: "array", items: [{ type: "string" }] }] },
+      local: { $id: "https://example.test/local", type: "array", items: [{ type: "integer" }], $defs: { first: { $ref: "#/items/0" } } },
+    }, properties: { first: { $ref: "#/$defs/a~1b~0c/items/0/items/0" } } };
+    const result = toClaudeJSONSchema(schema);
+    expect(result.properties.first.$ref).toBe("#/$defs/a~1b~0c/prefixItems/0/prefixItems/0");
+    expect(result.$defs.local.$defs.first.$ref).toBe("#/prefixItems/0");
+  });
+});
 
 describe("Claude tool root schema normalization", () => {
   test("keeps every union branch, parent requirements, shared requirements, and discriminator guidance", () => {
@@ -154,10 +248,11 @@ describe("Claude schema integration", () => {
     for (const aggressive of [false, true]) {
       const upstream = transformCompletionToGoogleBody(request(variants), "p", "", "s", aggressive).request;
       const tool = upstream.tools[0].functionDeclarations[0];
-      expect(tool.parameters.type).toBe("OBJECT");
-      expect(tool.parameters.oneOf).toBeUndefined();
-      expect(tool.parameters.anyOf).toBeUndefined();
-      expect(tool.parameters.properties.mode).toEqual({ type: "STRING", enum: ["path", "url"] });
+      expect(tool.parameters).toBeUndefined();
+      expect(tool.parametersJsonSchema.type).toBe("object");
+      expect(tool.parametersJsonSchema.oneOf).toBeUndefined();
+      expect(tool.parametersJsonSchema.anyOf).toBeUndefined();
+      expect(tool.parametersJsonSchema.properties.mode).toEqual({ type: "string", enum: ["path", "url"] });
       expect(tool.description).toContain("Satisfy exactly one parameter group");
     }
     const gemini = transformCompletionToGoogleBody(request(variants, "antigravity-gemini-3.8-flash"), "p", "", "s").request.tools[0].functionDeclarations[0];
@@ -166,7 +261,7 @@ describe("Claude schema integration", () => {
     const body = { model: "antigravity-claude-opus-5-5", input: [{ role: "user", content: "Use lookup." }, { type: "additional_tools", role: "developer", tools: [{ type: "namespace", name: "inventory", tools: [{ type: "function", name: "lookup", parameters: variants }] }] }] };
     const adapted = adaptResponsesRequest(body);
     expect(validateCompletionRequestForGoogle(adapted)).toBeUndefined();
-    expect(transformCompletionToGoogleBody(adapted, "p", "", "s").request.tools[0].functionDeclarations[0].parameters.properties.url.type).toBe("STRING");
+    expect(transformCompletionToGoogleBody(adapted, "p", "", "s").request.tools[0].functionDeclarations[0].parametersJsonSchema.properties.url.type).toBe("string");
   });
 
   test("keeps flat arguments and namespace identity through JSON, SSE, and tool-result history", async () => {

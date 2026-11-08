@@ -429,7 +429,7 @@ export async function executeCompletion({
             const declaration = googleBody.request.tools?.find((group: any) => group.functionDeclarations)?.functionDeclarations?.[index];
             console.warn(`[InvalidToolSchema] Request: ${requestId} | Index: ${index} | Name: ${JSON.stringify(tool?.name ?? declaration?.name ?? "unknown")}`
               + ` | OriginalRootKeys: ${JSON.stringify(Object.keys(tool?.parameters || {}))}`
-              + ` | UpstreamRootKeys: ${JSON.stringify(Object.keys(declaration?.parameters || {}))}`);
+              + ` | UpstreamRootKeys: ${JSON.stringify(Object.keys(declaration?.parametersJsonSchema ?? declaration?.parameters ?? {}))}`);
           }
           // Some Gemini failures contain only this generic message. Retry the
           // same request once before failing; detailed validation errors still

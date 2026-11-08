@@ -7,6 +7,56 @@ const ROOT_FIELDS = new Set([
   "description", "title", "default", "examples", "example", "$schema", "$id", "$comment",
 ]);
 
+/** Upgrade draft-7 tuple syntax for Claude's draft 2020-12 schema validator.
+ * Visit schema positions only: defaults, consts, and enum values are literal data.
+ */
+export function toClaudeJSONSchema(schema: any): any {
+  const object = (value: any): value is Schema => value !== null && typeof value === "object" && !Array.isArray(value);
+  const maps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
+  const arrays = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+  const singles = new Set(["items", "additionalItems", "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "propertyNames", "contains", "not", "if", "then", "else", "contentSchema"]);
+  const tuplePaths = new Set<string>();
+  const references: { node: Schema; ref: string; scope: string }[] = [];
+  const escape = (key: string): string => key.replace(/~/g, "~0").replace(/\//g, "~1");
+  const rewriteRef = (ref: string, scope: string): string => {
+    if (!ref.startsWith("#/")) return ref;
+    let path = scope;
+    const parts = ref.slice(2).split("/").map(key => {
+      const rewritten = tuplePaths.has(path) && key === "items" ? "prefixItems"
+        : tuplePaths.has(path) && key === "additionalItems" ? "items" : key;
+      path += `/${key}`;
+      return rewritten;
+    });
+    return `#/${parts.join("/")}`;
+  };
+  const visit = (node: any, path: string = "#", scope: string = "#"): any => {
+    if (!object(node)) return node;
+    const result: Schema = Object.create(null);
+    const tuple = Array.isArray(node.items);
+    if (tuple) tuplePaths.add(path);
+    if (typeof node.$id === "string") scope = path;
+    for (const [key, value] of Object.entries(node)) {
+      if (tuple && (key === "items" || key === "additionalItems")) continue;
+      const childPath = `${path}/${key}`;
+      if (maps.has(key) && object(value)) result[key] = Object.fromEntries(Object.entries(value).map(([name, part]) => [name, visit(part, `${childPath}/${escape(name)}`, scope)]));
+      else if (arrays.has(key) && Array.isArray(value)) result[key] = value.map((part, index) => visit(part, `${childPath}/${index}`, scope));
+      else if (singles.has(key)) result[key] = visit(value, childPath, scope);
+      else result[key] = value;
+    }
+    if (typeof node.$ref === "string") references.push({ node: result, ref: node.$ref, scope });
+    if (tuple) {
+      if (node.items.length) result.prefixItems = node.items.map((part: any, index: number) => visit(part, `${path}/items/${index}`, scope));
+      result.items = visit(node.additionalItems ?? true, `${path}/additionalItems`, scope);
+    }
+    // The output uses 2020-12 tuple syntax even when the client advertised draft-7.
+    if (typeof result.$schema === "string" && /draft[-/]07/.test(result.$schema)) result.$schema = "https://json-schema.org/draft/2020-12/schema";
+    return result;
+  };
+  const result = visit(schema);
+  for (const { node, ref, scope } of references) node.$ref = rewriteRef(ref, scope);
+  return result;
+}
+
 export class ClaudeToolSchemaError extends Error {
   constructor(toolName: string, detail: string) {
     super(`Claude tool ${JSON.stringify(toolName)} has an unsupported input schema: ${detail}`);

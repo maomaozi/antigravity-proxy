@@ -1,6 +1,6 @@
 import { getSignature, cacheSignature } from "./cache";
 import { cleanJSONSchemaForAntigravity } from "./schema";
-import { ClaudeToolSchemaError, normalizeClaudeToolSchema } from "./claude-schema";
+import { ClaudeToolSchemaError, normalizeClaudeToolSchema, toClaudeJSONSchema } from "./claude-schema";
 import { getProxyConfig } from "../config/manager";
 import { getUnavailableModelError, isModernGeminiModel, type DiscoveredModel } from "../models";
 import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
@@ -543,9 +543,12 @@ export function transformCompletionToGoogleBody(
       functionDeclarations: request.tools.map(t => {
         const parameters = t.parameters || { type: "object", properties: {} };
         const claudeSchema = googleModel.includes("claude") ? normalizeClaudeToolSchema(parameters, t.name) : undefined;
-        // Generic aggressive cleaning chooses a single union branch. Claude's
-        // explicit normalization must preserve every alternative on retries too.
-        const cleanParams = cleanJSONSchemaForAntigravity(claudeSchema?.schema ?? parameters, claudeSchema ? false : aggressive);
+        // The Google Schema -> Claude bridge corrupts nested compositions.
+        // Native JSON Schema preserves their branches, consts, and argument types
+        // on retries too; only other models use Google's restricted Schema.
+        const cleanParams = claudeSchema
+          ? toClaudeJSONSchema(claudeSchema.schema)
+          : cleanJSONSchemaForAntigravity(parameters, aggressive);
         
         let funcName = t.name;
         if (sanitize) {
@@ -564,7 +567,9 @@ export function transformCompletionToGoogleBody(
         return {
           name: funcName,
           description: description.trim() || `Call ${funcName}.`,
-          ...(hasParameterSchema ? { parameters: cleanParams } : {})
+          ...(hasParameterSchema
+            ? claudeSchema ? { parametersJsonSchema: cleanParams } : { parameters: cleanParams }
+            : {})
         };
       })
     }];
