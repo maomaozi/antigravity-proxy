@@ -20,6 +20,15 @@ export interface DeviceFingerprint {
   createdAt?: number;
 }
 
+export interface PoolSuspension {
+  reason: string;
+  message?: string;
+  appealUrl?: string;
+  detectedAt: number;
+  retryAt: number;
+  model: string;
+}
+
 export interface AntigravityAccount {
   email: string;
   refreshToken: string;
@@ -28,6 +37,8 @@ export interface AntigravityAccount {
   projectId?: string;
   managedProjectId?: string;
   disabled?: boolean;
+  poolSuspensions?: Record<string, PoolSuspension>;
+  /** Legacy account-wide detection, migrated on load. */
   suspension?: {
     reason: string;
     message?: string;

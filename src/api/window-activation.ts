@@ -1,4 +1,4 @@
-import { accountSupportsModel, findAccountModel, getAccountQuotaWindows, getModelFamilyName, updateQuotaFamilies } from "../models";
+import { accountSupportsModel, findAccountModel, getAccountQuotaWindows, getModelFamilyName, updateQuotaFamilies, isAccountPoolSuspended } from "../models";
 import { transformCompletionToGoogleBody } from "../utils/transform";
 import { randomUUID } from "node:crypto";
 import {
@@ -6,7 +6,8 @@ import {
   getAccounts,
   prepareAccountForRequest,
   saveAccounts,
-  setAccountDisabled,
+  suspendAccountPool,
+  clearAccountPoolSuspension,
 } from "../auth/manager";
 import type { AntigravityAccount } from "../auth/types";
 import { callCodexResponsesAPI } from "../codex/api";
@@ -66,7 +67,7 @@ export function getGoogleActivationTargets(account: AntigravityAccount): GoogleA
     const model = (quota.modelIds || (quota.modelId ? [quota.modelId] : []))
       .find(id => !/image/i.test(id) && accountSupportsModel(account, id))
       || (!account.availableModels && !quota.modelId && /gemini/i.test(quota.groupName) ? "gemini-3.8-flash-tiered" : undefined);
-    if (!model) continue;
+    if (!model || isAccountPoolSuspended(account, model)) continue;
     const windows = getAccountQuotaWindows(account, model);
     const key = windows[0]?.groupName || quota.limitName;
     if (quota.remainingFraction < 1) active.add(key);
@@ -121,7 +122,7 @@ export async function activateGoogleModelWindow(
   model: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
-  if (!accountSupportsModel(account, model) || account.disabled || account.challenge) return false;
+  if (!accountSupportsModel(account, model) || account.disabled || account.challenge || isAccountPoolSuspended(account, model)) return false;
   const send = async (forceRefresh: boolean): Promise<Response | null> => {
     const ready = await prepareAccountForRequest(account.email, forceRefresh);
     if (!ready?.accessToken || !ready.projectId) return null;
@@ -143,8 +144,8 @@ export async function activateGoogleModelWindow(
   const responseBody = await response.text().catch(() => "");
   if (!response.ok) {
     const parsed = parseGoogleError(responseBody);
-    if (response.status === 403 && parsed.isAccountSuspended) {
-      await setAccountDisabled(account.email, true, {
+    if (response.status === 403 && parsed.isServiceSuspended) {
+      await suspendAccountPool(account.email, model, {
         reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
       });
     }
@@ -154,6 +155,7 @@ export async function activateGoogleModelWindow(
   if (/"error"\s*:|"response.failed"/.test(responseBody)) {
     throw new Error(`Google activation stream failed: ${responseBody.slice(0, 300)}`);
   }
+  await clearAccountPoolSuspension(account.email, model);
   const ready = getAccounts().find(candidate => candidate.email === account.email);
   if (ready) {
     const quota = await fetchQuota(ready, true, fetchImpl);
@@ -263,12 +265,26 @@ export async function runQuotaWindowActivationCheck(
 
   for (const account of runtime.listGoogleAccounts()) {
     summary.googleChecked++;
+    if (account.disabled || account.challenge) continue;
+    const recoveryModels = new Set<string>();
+    for (const suspension of Object.values(account.poolSuspensions || {})) {
+      // Image generation has a separate request format and is retried on demand.
+      if (suspension.retryAt > Date.now() || /image/i.test(suspension.model)) continue;
+      recoveryModels.add(suspension.model);
+      try {
+        await runtime.activateGoogle(account, suspension.model);
+      } catch (error: any) {
+        summary.failures++;
+        console.warn(`[PoolRecovery] ${account.email}/${suspension.model}: ${String(error?.message || error).slice(0, 200)}`);
+      }
+    }
     for (const target of getGoogleActivationTargets(account)) {
       if (account.disabled || account.challenge) break;
       // The previous activation refreshes this account, and may activate shared quotas.
       if (!getGoogleActivationTargets(account).some(current => current.key === target.key)) continue;
       let activated = false;
       for (const model of target.models) {
+        if (recoveryModels.has(model) || isAccountPoolSuspended(account, model)) continue;
         try {
           if (await runtime.activateGoogle(account, model)) {
             // A 2xx is not proof: only count it once the refreshed quota shows the window running.

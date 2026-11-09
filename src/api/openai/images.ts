@@ -1,9 +1,10 @@
 import { randomInt } from "node:crypto";
-import { emitAccountFlash, getAccounts, prepareAccountForRequest, setAccountDisabled, updateAccountUsage } from "../../auth/manager";
-import type { AntigravityAccount } from "../../auth/types";
+import { emitAccountFlash, getAccounts, prepareAccountForRequest, suspendAccountPool, clearAccountPoolSuspension, updateAccountUsage } from "../../auth/manager";
+import type { AntigravityAccount, PoolSuspension } from "../../auth/types";
 import { getProxyConfig } from "../../config/manager";
 import { generateFingerprint, getImpersonationHeaders } from "../../utils/headers";
 import { parseGoogleError } from "../../utils/errors";
+import { isAccountPoolSuspended } from "../../models";
 import { ANTIGRAVITY_IMAGE_URL } from "../endpoints";
 
 const IMAGE_SIZES = new Set(["512", "1K", "2K", "4K"]);
@@ -48,7 +49,7 @@ export interface ImageGenerationRuntime {
   randomIndex(length: number): number;
   fetch(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response>;
   onSuccess(account: AntigravityAccount, model: string): Promise<void>;
-  onSuspended(account: AntigravityAccount, suspension: Omit<NonNullable<AntigravityAccount['suspension']>, 'detectedAt'>): Promise<void>;
+  onSuspended(account: AntigravityAccount, model: string, suspension: Pick<PoolSuspension, 'reason' | 'message' | 'appealUrl'>): Promise<void>;
 }
 
 const defaultRuntime: ImageGenerationRuntime = {
@@ -57,10 +58,11 @@ const defaultRuntime: ImageGenerationRuntime = {
   getTimeoutMs: () => getProxyConfig().models.timeouts.image || getProxyConfig().models.timeouts.stream || 900_000,
   randomIndex: randomInt,
   fetch: (...args) => fetch(...args),
-  async onSuspended(account, suspension) {
-    await setAccountDisabled(account.email, true, suspension);
+  async onSuspended(account, model, suspension) {
+    await suspendAccountPool(account.email, model, suspension);
   },
   async onSuccess(account, model) {
+    await clearAccountPoolSuspension(account.email, model);
     await updateAccountUsage(account.email, true, model, "image");
     emitAccountFlash(account.email);
   },
@@ -105,7 +107,9 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(runtime.getTimeoutMs())]);
   try {
     signal.throwIfAborted();
-    const candidates = runtime.getAccounts().filter(a => a.refreshToken && !a.disabled && !a.challenge);
+    const enabled = runtime.getAccounts().filter(a => a.refreshToken && !a.disabled && !a.challenge);
+    const candidates = enabled.filter(a => !isAccountPoolSuspended(a, body.model));
+    if (enabled.length && !candidates.length) return error("Access to this image model pool is suspended. Other pools remain available.", 403, "pool_suspended");
     const requestId = `img-${crypto.randomUUID()}`;
     let lastError = error("No ready Google OAuth accounts with a project ID", 503, "no_accounts");
     while (candidates.length) {
@@ -165,11 +169,11 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
         try { data = JSON.parse(text); } catch { data = null; }
         if (!response.ok) {
           const parsed = parseGoogleError(text);
-          if (response.status === 403 && parsed.isAccountSuspended) {
-            await runtime.onSuspended(account, {
+          if (response.status === 403 && parsed.isServiceSuspended) {
+            await runtime.onSuspended(account, body.model, {
               reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
             });
-            lastError = error("Upstream service access is suspended for this account. The account has been disabled; retry with another account.", 403, "account_suspended", attempts);
+            lastError = error("Access to this image model pool is suspended; retry with another account or pool.", 403, "pool_suspended", attempts);
             break;
           }
           let message = typeof data?.error?.message === "string" ? data.error.message : `Antigravity returned HTTP ${response.status}`;

@@ -1,6 +1,6 @@
 import { getAntigravityNativeHeaders } from "../utils/headers";
 import { type AntigravityAccount } from "../auth/types";
-import { getAccounts, saveAccounts, setAccountDisabled } from "../auth/manager";
+import { getAccounts, saveAccounts } from "../auth/manager";
 import { parseGoogleError } from "../utils/errors";
 import { refreshAccessToken } from "../auth/oauth";
 import { ANTIGRAVITY_BASE_URL } from "./endpoints";
@@ -19,7 +19,7 @@ export async function fetchQuotaWindows(
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
-      await detectSuspension(account, response);
+      await logQuotaAccessFailure(account, response);
       return null;
     }
     const data = await response.json() as any;
@@ -80,7 +80,7 @@ export async function fetchQuota(
     }
 
     if (!res.ok) {
-        await detectSuspension(account, res);
+        await logQuotaAccessFailure(account, res);
         console.error(`Quota fetch failed for ${account.email}: ${res.status}`);
         return null;
     }
@@ -119,13 +119,13 @@ function getNextMidnightPT(): string {
     return new Date(now.getTime() + diffMs).toISOString();
 }
 
-async function detectSuspension(account: AntigravityAccount, response: Response): Promise<void> {
+async function logQuotaAccessFailure(account: AntigravityAccount, response: Response): Promise<void> {
   if (response.status !== 403) return;
   const parsed = parseGoogleError(await response.text());
-  if (parsed.isAccountSuspended) {
-    await setAccountDisabled(account.email, true, {
-      reason: parsed.reason, message: parsed.message, appealUrl: parsed.appealUrl,
-    });
+  if (parsed.isServiceSuspended) {
+    // These endpoints have no target model: a failure is not evidence that any
+    // particular generation pool is suspended. Keep prior quota data and retry.
+    console.warn(`[Quota] Access denied for ${account.email}; no model pool can be inferred: ${parsed.reason}`);
   }
 }
 

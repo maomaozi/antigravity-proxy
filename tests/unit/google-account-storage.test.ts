@@ -18,21 +18,28 @@ function account(): AntigravityAccount {
 }
 
 describe("Google account storage", () => {
-  test("disabled accounts survive restart and lost runtime state until explicitly enabled", async () => {
-    const { path, storage } = await fixture();
+  test("pool suspensions and manual disables survive missing runtime state", async () => {
+    const {path,storage} = await fixture();
     const saved = account();
-    saved.disabled = true;
-    saved.suspension = { reason: "tos_violation", message: "Service suspended", detectedAt: 123 };
-    await storage.save({ accounts: [saved] });
-    // A corrupt metrics file must never resurrect a suspended account.
-    await writeFile(`${path}.state.json`, "invalid");
-    await writeFile(`${path}.state.json.bak`, "invalid");
-    const reloaded = new GoogleAccountStorage(path);
-    const loaded = await reloaded.load();
-    expect(loaded.accounts[0]).toMatchObject({ disabled: true, suspension: saved.suspension });
-    loaded.accounts[0]!.disabled = false;
-    delete loaded.accounts[0]!.suspension;
-    await reloaded.save(loaded);
+    saved.poolSuspensions = {'Claude and GPT models':{reason:'tos_violation',model:'claude-sonnet-4-6',detectedAt:123,retryAt:600123}};
+    const manual = {...account(), email:'manual@example.com', disabled:true};
+    await storage.save({accounts:[saved,manual]});
+    await writeFile(`${path}.state.json`, 'invalid');
+    await writeFile(`${path}.state.json.bak`, 'invalid');
+    const loaded = await new GoogleAccountStorage(path).load();
+    expect(loaded.accounts[0]!.poolSuspensions).toEqual(saved.poolSuspensions);
+    expect(loaded.accounts[0]!.disabled).not.toBe(true);
+    expect(loaded.accounts[1]!.disabled).toBe(true);
+  });
+
+  test("migrates old account-wide TOS detections without changing manual disables", async () => {
+    const {path,storage} = await fixture();
+    const legacy = {...account(),disabled:true,suspension:{reason:'tos_violation',detectedAt:123}};
+    await storage.save({accounts:[legacy,{...account(),email:'manual@example.com',disabled:true}]});
+    const loaded = await storage.load();
+    expect(loaded.accounts[0]!.disabled).toBe(false);
+    expect(loaded.accounts[0]!.suspension).toBeUndefined();
+    expect(loaded.accounts[1]!.disabled).toBe(true);
     expect((await new GoogleAccountStorage(path).load()).accounts[0]!.disabled).toBe(false);
   });
 

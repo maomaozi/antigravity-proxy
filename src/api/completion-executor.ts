@@ -11,7 +11,8 @@ import {
   getEarliestReset,
   getFamilyName,
   markCooldown,
-  setAccountDisabled,
+  suspendAccountPool,
+  clearAccountPoolSuspension,
   updateAccountUsage,
 } from "../auth/manager";
 import { getProxyConfig } from "../config/manager";
@@ -109,10 +110,11 @@ export function buildCompletionFailure(
   pool: "sandbox",
   attempts: number,
   attemptLogs: CompletionAttempt[],
+  reasoningEffort?: string,
 ): CompletionExecution {
   // An upstream failure is stronger evidence than the resulting account cooldown.
   const lastFailure = attemptLogs.at(-1);
-  const reason = lastFailure?.reason || getAccountSelectionFailure(pool, model);
+  const reason = lastFailure?.reason || getAccountSelectionFailure(pool, model, reasoningEffort);
   let status = 503;
   let type = "server_error";
   let code = reason;
@@ -127,11 +129,11 @@ export function buildCompletionFailure(
     message = `Model '${model}' is unavailable for the configured accounts. Select another model.`;
   } else if (reason === "no_accounts") {
     message = "No accounts with credentials are configured. Add or authenticate an account.";
-  } else if (["tos_violation", "account_suspended"].includes(reason)) {
+  } else if (["tos_violation", "pool_suspended"].includes(reason)) {
     status = 403;
     type = "access_denied";
-    code = "account_suspended";
-    message = "Upstream service access is suspended for the available accounts due to a Terms of Service violation. Check the account dashboard for appeal details.";
+    code = "pool_suspended";
+    message = `Access to the model pool for '${model}' is suspended for the available accounts. Other pools remain available. Check the account dashboard for appeal details.`;
   } else if (reason === "accounts_disabled") {
     message = "All accounts supporting this model are disabled. Enable an account in the dashboard.";
   } else if (["account_verification_required", "validation_required", "subscription_required"].includes(reason)) {
@@ -315,14 +317,13 @@ export async function executeCompletion({
         attemptLogs.push({ email: account.email, status, reason: parsedError.reason });
 
         if (status === 403 || status === 404) {
-          if (status === 403 && parsedError.isAccountSuspended) {
-            await setAccountDisabled(account.email, true, {
+          if (status === 403 && parsedError.isServiceSuspended) {
+            await suspendAccountPool(account.email, googleBody.model, {
               reason: parsedError.reason,
               message: parsedError.message,
               appealUrl: parsedError.appealUrl,
             });
-            console.warn(`[Auth] Suspended account ${account.email} disabled (${parsedError.reason}); switching accounts.`);
-            await updateAccountUsage(account.email, false, request.model, "sandbox", status);
+            console.warn(`[Auth] Suspended model pool for ${googleBody.model} on ${account.email} (${parsedError.reason}); switching accounts.`);
             continue;
           }
           if (parsedError.isChallengeRequired) {
@@ -436,6 +437,8 @@ export async function executeCompletion({
         }
         throw new Error("No response body");
       }
+
+      await clearAccountPoolSuspension(account.email, googleBody.model);
 
       streamTimer = setTimeout(() => {
         isStreamTimedOut = true;
@@ -571,5 +574,5 @@ export async function executeCompletion({
     }
   }
 
-  return buildCompletionFailure(request.model, "sandbox", attempts, attemptLogs);
+  return buildCompletionFailure(request.model, "sandbox", attempts, attemptLogs, request.reasoningEffort);
 }

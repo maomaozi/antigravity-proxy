@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { buildCompletionFailure, executeCompletion, resolveTimeouts } from "../../src/api/completion-executor";
-import { getAccounts, getAccountSelectionFailure, markCooldown, clearCooldown, getBestAccount, prepareAccountForRequest, resetAccount, setAccountDisabled } from "../../src/auth/manager";
+import { getAccounts, getAccountSelectionFailure, markCooldown, clearCooldown, getBestAccount, prepareAccountForRequest, resetAccount, setAccountDisabled, suspendAccountPool } from "../../src/auth/manager";
 import { collectCompletionStream } from "../../src/core/completion";
-import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
+import { ANTIGRAVITY_CLIENT_VERSION, getAccountModelPool, isAccountPoolSuspended } from "../../src/models";
 import { deleteSessionBindingsForAccount, getSessionBinding, recordSessionBinding } from "../../src/session/store";
 import type { AntigravityAccount } from "../../src/auth/types";
 import * as storage from "../../src/auth/storage";
@@ -221,6 +221,66 @@ describe("completion failure classification", () => {
     expect(result.body.error.code).toBe("account_verification_required");
   });
 
+  test("third-party pool suspension blocks aliases and siblings but preserves Gemini and dedicated pools", async () => {
+    const first = getAccounts()[0]!;
+    first.quotaWindows = [
+      {groupName: 'Gemini Models', window: 'weekly', remainingFraction: 1},
+      {groupName: 'Claude and GPT models', window: 'weekly', remainingFraction: 1},
+    ];
+    recordSessionBinding({ identity: {key:'pool-sticky', id:'pool-sticky', source:'test', inferred:false},
+      accountEmail:first.email, model:'antigravity-claude-opus-4-6-thinking', modelFamily:'Claude Opus 4.6', pool:'sandbox' });
+    await suspendAccountPool(first.email, 'claude-sonnet-4-6', {reason:'tos_violation'});
+    expect(getAccountModelPool(first, 'antigravity-claude-opus-4-6-thinking')).toBe('Claude and GPT models');
+    for (const blocked of ['antigravity-claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'antigravity-gpt-oss-120b']) {
+      expect(await getBestAccount('sandbox', blocked, 'pool-sticky')).toBeNull();
+      expect(getAccountSelectionFailure('sandbox', blocked)).toBe('pool_suspended');
+    }
+    expect((await getBestAccount('sandbox', model))?.email).toBe(first.email);
+    // Suspensions cannot be erased by a health reset or a successful catalog refresh.
+    await resetAccount(first.email);
+    expect(isAccountPoolSuspended(first, 'claude-sonnet-4-6')).toBe(true);
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({models:{'claude-sonnet-4-6':{}}}));
+    await fetchQuota(first);
+    expect(isAccountPoolSuspended(first, 'claude-sonnet-4-6')).toBe(true);
+  });
+
+  test("a dedicated Argon pool remains independent from Gemini's shared pool", async () => {
+    const first = getAccounts()[0]!;
+    first.availableModels = [{id:'gemini-4-argon-high',name:'Gemini 4 Argon (High)'}, {id:'gemini-3.8-flash-tiered',name:'Gemini 3.8 Flash'}];
+    first.quota = [{groupName:'Gemini 4 Argon (High)',modelId:'gemini-4-argon-high',limitName:'Gemini 4 Argon',limit:'',usage:'',quotaLeft:'100%',resetIn:'Ready',remainingFraction:1}];
+    first.quotaWindows = [{groupName:'Gemini Models',window:'weekly',remainingFraction:1}, {groupName:'Gemini 4 Argon',window:'weekly',remainingFraction:1}];
+    await suspendAccountPool(first.email, 'gemini-4-argon-high', {reason:'tos_violation'});
+    expect(getAccountModelPool(first, 'antigravity-gemini-4-argon')).toBe('Gemini 4 Argon');
+    expect(await getBestAccount('sandbox', 'antigravity-gemini-4-argon',undefined,[],true,undefined,undefined,'high')).toBeNull();
+    expect((await getBestAccount('sandbox', model))?.email).toBe(first.email);
+  });
+
+  test("a failed recovery renews only that pool's retry deadline", async () => {
+    const first = getAccounts()[0]!;
+    await suspendAccountPool(first.email, model, {reason:'tos_violation'});
+    first.poolSuspensions!['Gemini Models']!.retryAt = 0;
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(suspensionResponse());
+    await expect(activateGoogleModelWindow(first, model)).rejects.toThrow('403');
+    expect(first.poolSuspensions!['Gemini Models']!.retryAt).toBeGreaterThan(Date.now());
+    expect(first.disabled).not.toBe(true);
+    expect((await getBestAccount('sandbox', 'claude-sonnet-4-6'))?.email).toBe(first.email);
+  });
+
+  test("expired suspension is retried and cleared by a successful generation", async () => {
+    const first = getAccounts()[0]!;
+    await suspendAccountPool(first.email, model, {reason:'tos_violation'});
+    first.poolSuspensions!['Gemini Models']!.retryAt = Date.now() - 1;
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      `data: ${JSON.stringify({candidates:[{content:{role:'model',parts:[{text:'OK'}]},finishReason:'STOP'}]})}\n\n`,
+      {headers:{'Content-Type':'text/event-stream'}},
+    ));
+    const result = await executeCompletion({request:{model,messages:[{role:'user',content:'OK'}],stream:false},
+      sessionIdentity:{key:'pool-recovery',id:'pool-recovery',source:'test',inferred:false},requestId:'pool-recovery',requestStartedAt:Date.now()});
+    expect(result.kind).toBe('result');
+    expect(first.poolSuspensions).toEqual({});
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   function suspensionResponse() {
     return Response.json({ error: {
       code: 403, status: "PERMISSION_DENIED", message: "Service disabled for violation of Terms of Service.",
@@ -228,21 +288,22 @@ describe("completion failure classification", () => {
     } }, { status: 403 });
   }
 
-  test("suspension is persisted and subsequent requests do not contact the account", async () => {
+  test("pool suspension is persisted and subsequent requests skip only that pool", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(suspensionResponse());
-    expect((await run()).body.error.code).toBe("account_suspended");
-    expect(getAccounts()[0]).toMatchObject({ disabled: true, suspension: {
-      reason: "tos_violation", appealUrl: "https://forms.gle/appeal",
-    } });
+    expect((await run()).body.error.code).toBe("pool_suspended");
+    expect(getAccounts()[0]!.disabled).not.toBe(true);
+    expect(getAccounts()[0]!.poolSuspensions?.['Gemini Models']).toMatchObject({
+      reason: "tos_violation", appealUrl: "https://forms.gle/appeal", model: 'gemini-3.8-flash-tiered',
+    });
     expect(saveSpy).toHaveBeenCalled();
     const cached = await run();
     expect(cached.status).toBe(403);
-    expect(cached.body.error.code).toBe("account_suspended");
+    expect(cached.body.error.code).toBe("pool_suspended");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("suspended accounts are skipped during selection, preparation, and health reset", async () => {
-    await setAccountDisabled(getAccounts()[0].email, true, { reason: "tos_violation" });
+  test("manually disabled accounts are skipped during selection, preparation, and health reset", async () => {
+    await setAccountDisabled(getAccounts()[0].email, true);
     await resetAccount(getAccounts()[0].email);
     expect(await getBestAccount("sandbox", model)).toBeNull();
     expect(await getBestAccount()).toBeNull();
@@ -266,14 +327,19 @@ describe("completion failure classification", () => {
     expect((await getBestAccount("sandbox", model, "disabled-affinity"))?.email).toBe(healthy.email);
   });
 
-  test.each(["catalog", "summary", "activation"])("suspension detected during %s disables the account", async stage => {
+  test.each(["catalog", "summary", "activation"])("suspension during %s never disables the account", async stage => {
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(suspensionResponse());
     const first = getAccounts()[0];
     if (stage === "catalog") await fetchQuota(first);
     else if (stage === "summary") await fetchQuotaWindows(first);
     else await expect(activateGoogleGeminiWindow(first)).rejects.toThrow("403");
-    expect(first).toMatchObject({ disabled: true, suspension: { reason: "tos_violation" } });
-    expect(saveSpy).toHaveBeenCalled();
+    expect(first.disabled).not.toBe(true);
+    if (stage === 'activation') {
+      expect(first.poolSuspensions?.['Gemini Models']?.reason).toBe('tos_violation');
+      expect(saveSpy).toHaveBeenCalled();
+    } else {
+      expect(first.poolSuspensions).toBeUndefined();
+    }
   });
 
   test.each([false, true])("switches from a suspended account to a healthy account (stream=%s)", async stream => {
@@ -294,7 +360,8 @@ describe("completion failure classification", () => {
       const result = execution.kind === "stream" ? await collectCompletionStream(execution.stream)
         : execution.kind === "result" ? execution.result : null;
       expect(result?.text).toBe("OK");
-      expect(first.disabled).toBe(true);
+      expect(first.disabled).not.toBe(true);
+      expect(isAccountPoolSuspended(first, model)).toBe(true);
       expect(healthy.disabled).toBeUndefined();
       expect(getSessionBinding("suspension-fallback", model)?.accountEmail).toBe(healthy.email);
       expect(fetchSpy).toHaveBeenCalledTimes(2);

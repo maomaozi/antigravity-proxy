@@ -1,5 +1,5 @@
-import { accountSupportsModel, getAccountModelQuotas, getAccountQuotaWindows, getModelFamilyName, getAccountModelFamily } from "../models";
-import { type AntigravityAccount } from "./types";
+import { accountSupportsModel, getAccountModelQuotas, getAccountQuotaWindows, getModelFamilyName, getAccountModelFamily, getAccountModelPool, isAccountPoolSuspended } from "../models";
+import { type AntigravityAccount, type PoolSuspension } from "./types";
 import { loadConfig, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
 import { generateFingerprint } from "../utils/headers";
@@ -28,16 +28,40 @@ export function getAccounts() { return accounts; }
 export async function setAccountDisabled(
   email: string,
   disabled: boolean,
-  suspension?: Omit<NonNullable<AntigravityAccount['suspension']>, 'detectedAt'>,
 ): Promise<boolean> {
   const account = accounts.find(candidate => candidate.email === email);
   if (!account) return false;
   account.disabled = disabled;
-  if (disabled && suspension) account.suspension = { ...suspension, detectedAt: Date.now() };
-  if (!disabled) delete account.suspension;
+  delete account.suspension;
   if (disabled) deleteSessionBindingsForAccount(email, 'sandbox');
   await saveAccounts(accounts);
   return true;
+}
+
+export const POOL_SUSPENSION_RETRY_MS = 10 * 60_000;
+
+export async function suspendAccountPool(
+  email: string,
+  model: string,
+  suspension: Pick<PoolSuspension, 'reason' | 'message' | 'appealUrl'>,
+): Promise<void> {
+  const account = accounts.find(candidate => candidate.email === email);
+  if (!account) return;
+  const detectedAt = Date.now();
+  account.poolSuspensions ||= {};
+  account.poolSuspensions[getAccountModelPool(account, model)] = {
+    ...suspension, model, detectedAt, retryAt: detectedAt + POOL_SUSPENSION_RETRY_MS,
+  };
+  await saveAccounts(accounts);
+}
+
+export async function clearAccountPoolSuspension(email: string, model: string): Promise<void> {
+  const account = accounts.find(candidate => candidate.email === email);
+  if (!account?.poolSuspensions) return;
+  const pool = getAccountModelPool(account, model);
+  if (!account.poolSuspensions[pool]) return;
+  delete account.poolSuspensions[pool];
+  await saveAccounts(accounts);
 }
 
 export async function saveAccounts(newAccounts: AntigravityAccount[]) {
@@ -152,7 +176,7 @@ function getPidOffset(): number {
 export type AccountSelectionFailure =
   | "no_accounts"
   | "accounts_disabled"
-  | "account_suspended"
+  | "pool_suspended"
   | "model_not_found"
   | "account_verification_required"
   | "insufficient_quota"
@@ -160,20 +184,23 @@ export type AccountSelectionFailure =
   | "no_available_accounts";
 
 /** Explain failed selection using the same capability, quota and cooldown state. */
-export function getAccountSelectionFailure(pool: "sandbox", model: string): AccountSelectionFailure {
+export function getAccountSelectionFailure(pool: "sandbox", model: string, reasoningEffort?: string): AccountSelectionFailure {
+  const routingModel = model && reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort) && !/-(low|medium|high)$/.test(model)
+    ? `${model}-${reasoningEffort}` : model;
   const configured = accounts.filter(account => account.refreshToken);
   if (configured.length === 0) return "no_accounts";
-  const supported = configured.filter(account => accountSupportsModel(account, model));
+  const supported = configured.filter(account => accountSupportsModel(account, model, reasoningEffort));
   if (supported.length === 0) return "model_not_found";
   const enabled = supported.filter(account => !account.disabled);
-  if (enabled.length === 0) return supported.every(account => account.suspension?.reason === "tos_violation")
-    ? "account_suspended" : "accounts_disabled";
-  const usable = enabled.filter(account => !account.challenge);
-  if (usable.length === 0) return "account_verification_required";
-  if (usable.every(account => isAccountQuotaExhausted(account, model))) return "insufficient_quota";
+  if (enabled.length === 0) return "accounts_disabled";
+  const verified = enabled.filter(account => !account.challenge);
+  if (verified.length === 0) return "account_verification_required";
+  const usable = verified.filter(account => !isAccountPoolSuspended(account, routingModel));
+  if (usable.length === 0) return "pool_suspended";
+  if (usable.every(account => isAccountQuotaExhausted(account, routingModel))) return "insufficient_quota";
   const now = Date.now();
-  if (usable.every(account => isAccountQuotaExhausted(account, model)
-    || (cooldownMap.get(`${account.email}|${pool}|${getFamilyName(model, account)}`) || 0) > now)) {
+  if (usable.every(account => isAccountQuotaExhausted(account, routingModel)
+    || (cooldownMap.get(`${account.email}|${pool}|${getFamilyName(routingModel, account)}`) || 0) > now)) {
     return "rate_limit_exceeded";
   }
   return "no_available_accounts";
@@ -191,9 +218,10 @@ export async function getBestAccount(
 ): Promise<AntigravityAccount | null> {
   if (accounts.length === 0) return null;
   const now = Date.now();
-  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !excludeEmails.includes(a.email));
   const routingModel = model && reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort) && !/-(low|medium|high)$/.test(model)
     ? `${model}-${reasoningEffort}` : model;
+  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !excludeEmails.includes(a.email)
+    && (!routingModel || !isAccountPoolSuspended(a, routingModel, now)));
   
   if (pool) {
     let candidates = usable.filter(a => {

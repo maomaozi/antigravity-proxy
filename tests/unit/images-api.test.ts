@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { handleImageGeneration, type ImageGenerationRuntime } from "../../src/api/openai/images";
 import { ANTIGRAVITY_IMAGE_URL } from "../../src/api/endpoints";
+import {getAccountModelPool} from "../../src/models";
 import type { AntigravityAccount } from "../../src/auth/types";
 
 function account(name: string): AntigravityAccount {
@@ -36,13 +37,13 @@ function fixture() {
       return success();
     }) as ImageGenerationRuntime["fetch"],
     onSuccess: async a => { usage.push(a.email); },
-    onSuspended: async (a, suspension) => { a.disabled = true; a.suspension = { ...suspension, detectedAt: Date.now() }; },
+    onSuspended: async (a, model, suspension) => { a.poolSuspensions ||= {}; a.poolSuspensions[getAccountModelPool(a, model)] = { ...suspension, model, detectedAt: Date.now(), retryAt: Date.now()+600000 }; },
   };
   return { runtime, accounts, calls, prepared, usage };
 }
 
 describe("Images API", () => {
-  test("skips disabled accounts and disables newly suspended image accounts", async () => {
+  test("skips manual disables and isolates image pool suspensions", async () => {
     const f = fixture();
     f.accounts[0]!.disabled = true;
     f.accounts[1]!.disabled = true;
@@ -52,10 +53,13 @@ describe("Images API", () => {
     } }, { status: 403 })) as ImageGenerationRuntime['fetch'];
     const response = await handleImageGeneration(request({ model: "image-model", prompt: "test" }), f.runtime);
     expect(f.prepared.map(item => item.email)).toEqual(["c@example.com"]);
-    expect(await response.json()).toMatchObject({ error: { code: "account_suspended" } });
-    expect(f.accounts[2]!.disabled).toBe(true);
-    expect((await handleImageGeneration(request({ model: "image-model", prompt: "test" }), f.runtime)).status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: { code: "pool_suspended" } });
+    expect(f.accounts[2]!.disabled).not.toBe(true);
+    expect((await handleImageGeneration(request({ model: "image-model", prompt: "test" }), f.runtime)).status).toBe(403);
     expect(f.prepared).toHaveLength(1);
+    f.runtime.fetch = (async () => success()) as ImageGenerationRuntime['fetch'];
+    expect((await handleImageGeneration(request({model:'another-image-model',prompt:'test'}), f.runtime)).status).toBe(200);
+    expect(f.prepared).toHaveLength(2);
   });
 
   test("sends text and multiple reference images to the existing upstream endpoint in order", async () => {
@@ -166,7 +170,10 @@ describe("Images API", () => {
     expect(f.calls.map(c => c.headers.get("Authorization"))).toEqual(["Bearer access-b", "Bearer access-c"]);
     expect(f.calls.map(c => c.body.model)).toEqual(["unknown-experimental", "unknown-experimental"]);
     expect(f.calls.map(c => c.body.project)).toEqual(["project-b", "project-c"]);
-    if (status === 403) expect(f.accounts[1]!.disabled).toBe(true);
+    if (status === 403) {
+      expect(f.accounts[1]!.disabled).not.toBe(true);
+      expect(f.accounts[1]!.poolSuspensions?.[getAccountModelPool(f.accounts[1]!, "unknown-experimental")]?.reason).toBe("tos_violation");
+    }
   });
 
   test("preserves unavailable-model errors after trying each account once", async () => {

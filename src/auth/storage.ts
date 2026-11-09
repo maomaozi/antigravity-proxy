@@ -41,6 +41,13 @@ export class GoogleAccountStorage {
       const state = states.find(candidate => candidate.email === account.email);
       const merged = { ...account, healthScore: account.healthScore ?? 100, lastUsed: account.lastUsed ?? 0, tokenUsage: account.tokenUsage ?? 0 };
       if (state) for (const key of runtimeKeys) if (Object.hasOwn(state, key)) (merged as any)[key] = state[key];
+      // Old detections have no model/pool evidence and cannot justify blocking
+      // every pool. Leave manual disables intact and rediscover access normally.
+      if (merged.suspension?.reason === "tos_violation") {
+        merged.disabled = false;
+        delete merged.suspension;
+        console.log(`[Storage] Cleared legacy account-wide suspension for ${merged.email}; pool access will be checked independently.`);
+      }
       return merged;
     }) };
     // Migrate legacy combined files and establish backups before serving requests.
@@ -51,8 +58,8 @@ export class GoogleAccountStorage {
   save(config: StorageFormat): Promise<void> {
     const snapshot = decodeAccounts(JSON.parse(JSON.stringify(config)));
     const credentials = { accounts: snapshot.accounts.map(account => {
-      // Keep disabled/suspension with credentials so resetting runtime metrics
-      // or recovering a corrupt state file cannot re-enable an account.
+      // Keep manual disables and pool suspensions with credentials so losing
+      // runtime metrics cannot clear access restrictions.
       const credential = { ...account };
       for (const key of runtimeKeys) delete (credential as any)[key];
       return credential;

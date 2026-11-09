@@ -161,6 +161,20 @@ export function getAccountModelFamily(account: AntigravityAccount, id: string): 
   return getAccountModelQuotas(account, id)[0]?.familyName || getModelFamilyName(id);
 }
 
+/** Use the pool declared by the upstream summary, including dedicated pools. */
+export function getAccountModelPool(account: AntigravityAccount, id: string): string {
+  const windows = getAccountQuotaWindows(account, id);
+  if (windows.length) return windows[0]!.groupName;
+  if (/image/i.test(id)) return modelBaseId(id);
+  const family = getAccountModelFamily(account, id);
+  return /^Claude |^GPT/.test(family) ? "Claude and GPT models" : family === "Other" ? modelBaseId(id) : family;
+}
+
+export function isAccountPoolSuspended(account: AntigravityAccount, id: string, now = Date.now()): boolean {
+  const suspension = account.poolSuspensions?.[getAccountModelPool(account, id)];
+  return !!suspension && suspension.retryAt > now;
+}
+
 export function updateQuotaFamilies(account: AntigravityAccount): void {
   for (const quota of account.quota || []) {
     if (!quota.modelId) continue;

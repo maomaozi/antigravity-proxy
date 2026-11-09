@@ -13,7 +13,7 @@ describe("parseGoogleError", () => {
         metadata: { appeal_url: "https://forms.gle/appeal" },
       }],
     } }));
-    expect(result).toMatchObject({ reason: "tos_violation", status: 403, isAccountSuspended: true,
+    expect(result).toMatchObject({ reason: "tos_violation", status: 403, isServiceSuspended: true,
       isChallengeRequired: false, isQuotaExhausted: false, isModelUnsupported: false });
     if (kind !== "message") expect(result.appealUrl).toBe("https://forms.gle/appeal");
   });
@@ -24,7 +24,7 @@ describe("parseGoogleError", () => {
     { code: 403, status: "PERMISSION_DENIED", message: "Gemini Code Assist license required" },
     { code: 429, status: "RESOURCE_EXHAUSTED", message: "quota exhausted" },
   ])("does not treat ordinary access or quota errors as suspension: %j", error => {
-    expect(parseGoogleError(JSON.stringify({ error })).isAccountSuspended).toBe(false);
+    expect(parseGoogleError(JSON.stringify({ error })).isServiceSuspended).toBe(false);
   });
 
   test("classifies INVALID_ARGUMENT responses", () => {

@@ -33,6 +33,20 @@ function createCodexQuotaHarness() {
 }
 
 describe("dashboard account provider layout", () => {
+  test('shows suspended pools while leaving the account and other pools available', () => {
+    const html = createCodexQuotaHarness().renderGoogle([{
+      email:'pool@example.com', healthScore:100,
+      quota:[{groupName:'Gemini 3 Flash',remainingFraction:1},{groupName:'Claude Sonnet 4.6',remainingFraction:1}],
+      poolSuspensions:{'Claude and GPT models':{reason:'tos_violation',message:'<service disabled>',retryAt:Date.now()+600000,appealUrl:'javascript:alert(1)'}},
+    }]);
+    expect(html).toContain('1 POOL(S) SUSPENDED');
+    expect(html).toContain('Status: SUSPENDED');
+    expect(html).toContain('Status: OK');
+    expect(html).toContain('&lt;service disabled&gt;');
+    expect(html).not.toContain('javascript:alert');
+    expect(html).not.toContain('>DISABLED</span>');
+  });
+
   test('aggregates each Google family over the same accounts shown in its expanded card', () => {
     const accounts = Array.from({ length: 6 }, (_, index) => ({
       email: `account-${index}@example.com`, healthScore: 100,

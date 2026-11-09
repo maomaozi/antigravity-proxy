@@ -126,7 +126,12 @@ describe("account-specific models and quotas", () => {
     const activated: string[] = [];
     const summary = await runQuotaWindowActivationCheck({
       refreshGoogleQuotas: async () => {}, listGoogleAccounts: () => [a], getCodexUsageSnapshots: async () => [],
-      activateGoogle: async (_, id) => { activated.push(id); return true; },
+      activateGoogle: async (_, id) => {
+        activated.push(id);
+        // A successful activation includes refreshed quota evidence.
+        a.quotaWindows![id.startsWith('gpt-oss') ? 2 : 1]!.remainingFraction = 0.99;
+        return true;
+      },
       activateCodex: async () => true, refreshCodexUsage: async () => {},
     });
     expect(activated).toEqual(["gpt-oss-120b-medium", "gemini-4-argon-high"]);

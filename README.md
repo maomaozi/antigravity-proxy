@@ -149,7 +149,7 @@ Chat and Responses failures preserve their cause in `error.code`:
 | --- | --- | --- |
 | 404 | `model_not_found` | The upstream rejected the model, or all configured accounts have cached that rejection. Select another model. |
 | 403 | `account_verification_required` | Supporting accounts need verification or a subscription. |
-| 403 | `account_suspended` | Upstream reported a Terms of Service suspension. Affected accounts are automatically disabled. |
+| 403 | `pool_suspended` | Upstream reported a Terms of Service suspension for this model pool. Other pools on the account remain eligible. |
 | 429 | `insufficient_quota` | Upstream quota exhaustion or the configured quota threshold was reached. |
 | 429 | `rate_limit_exceeded` | Accounts are temporarily rate limited or cooling down. Retry later. |
 | 503 | `no_accounts` | No accounts with credentials are configured. |
@@ -161,10 +161,19 @@ Google accounts can be temporarily disabled or enabled from the dashboard, or
 with `POST /api/accounts/{email}/disabled` and JSON `{ "disabled": true }` (use
 `false` to enable). Disabled accounts retain their credentials and are excluded
 from chat, image generation, quota refresh, and automatic window activation.
-Upstream `TOS_VIOLATION` errors automatically disable the account, preserve the
-reason and appeal link, and let chat/Responses retry another account within the
-request's attempt budget. Restarting or resetting health does not re-enable
-disabled accounts; enable them explicitly after resolving the restriction.
+Upstream `TOS_VIOLATION` errors suspend only the affected account's model pool,
+using the upstream quota summary's groups (for example, Gemini Models, Claude
+and GPT models, or a dedicated Argon pool). The reason and appeal link are saved
+per pool, and requests can retry another account within their attempt budget.
+Other pools remain eligible. Suspensions persist across restarts and health
+resets. After 10 minutes, requests can retry the pool; the periodic activation
+check also probes expired chat-pool suspensions, including already active windows.
+Image pools retry on the next image request. A successful generation clears the
+pool suspension; discovery or quota responses alone do not. A repeated suspension
+renews its 10-minute retry delay. Quota API errors have no target model and never
+disable an account or infer a suspended pool. Legacy account-wide TOS detections
+are cleared on upgrade so pools can be checked independently. Manual disables
+remain in effect until explicitly enabled.
 
 Cached model rejections retain the same 404 response on later requests rather
 than becoming quota errors. `error.message` identifies the model and next action;

@@ -71,6 +71,28 @@ describe("quota window activation", () => {
     expect(summary.failures).toBe(0);
   });
 
+  test("rechecks expired pool suspensions even when quota windows are already active", async () => {
+    const account = googleAccount('recover@example.com', 0.5);
+    const pool = 'Gemini Models';
+    account.poolSuspensions = {[pool]: {reason:'tos_violation',model:'gemini-3.8-flash-tiered',detectedAt:1,retryAt:0}};
+    const calls:string[] = [];
+    const runtime:WindowActivationRuntime = {
+      refreshGoogleQuotas:async()=>{}, listGoogleAccounts:()=>[account], getCodexUsageSnapshots:async()=>[],
+      activateGoogle:async(a,model)=>{calls.push(model); delete a.poolSuspensions![pool]; return true;},
+      activateCodex:async()=>true, refreshCodexUsage:async()=>{},
+    };
+    await runQuotaWindowActivationCheck(runtime);
+    expect(calls).toEqual(['gemini-3.8-flash-tiered']);
+    expect(account.poolSuspensions).toEqual({});
+    account.poolSuspensions = {[pool]: {reason:'tos_violation',model:'gemini-3.8-flash-tiered',detectedAt:Date.now(),retryAt:Date.now()+600000}};
+    await runQuotaWindowActivationCheck(runtime);
+    expect(calls).toHaveLength(1);
+    account.disabled = true;
+    account.poolSuspensions[pool]!.retryAt = 0;
+    await runQuotaWindowActivationCheck(runtime);
+    expect(calls).toHaveLength(1);
+  });
+
   test("does not turn Google's full unused duration into an active reset countdown", async () => {
     const now = Date.now();
     let requestedUrl = "";
