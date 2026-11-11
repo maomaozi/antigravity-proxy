@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { consumeEvents, outputText, readAttachment, userContent } from '../../src/frontend/js/playground-api.js';
+import { buildCurlSnippet, classifyModel, consumeEvents, formatBytes, outputText, readAttachment, userContent } from '../../src/frontend/js/playground-api.js';
 import { validateResponsesRequest } from '../../src/api/openai/responses';
+
+const playgroundHtml = await Bun.file(new URL('../../src/frontend/playground.html', import.meta.url)).text();
 
 describe('playground existing API compatibility', () => {
     test('text files and images produce supported multi-turn Responses input', async () => {
@@ -36,5 +38,65 @@ describe('playground existing API compatibility', () => {
     });
     test('extracts only assistant output text', () => {
         expect(outputText({ output: [{ type: 'reasoning', content: [{ type: 'reasoning_text', text: 'hidden' }] }, { type: 'message', content: [{ type: 'output_text', text: 'answer' }] }] })).toBe('answer');
+    });
+    test('classifies models across Antigravity families, Codex pool, and Image studio', () => {
+        expect(classifyModel({ id: 'antigravity-gemini-3.8-flash', name: 'Gemini 3.8 Flash', owned_by: 'antigravity' })).toMatchObject({
+            family: 'Gemini',
+            providerKey: 'antigravity',
+            isTierAlias: false,
+        });
+        expect(classifyModel({ id: 'antigravity-claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)', owned_by: 'antigravity' })).toMatchObject({
+            family: 'Claude',
+            providerKey: 'antigravity',
+            isTierAlias: true,
+            tierLabel: 'high',
+        });
+        expect(classifyModel({ id: 'gpt-6.1-sol', name: 'gpt-6.1-sol', owned_by: 'codex' })).toMatchObject({
+            family: 'Codex',
+            providerKey: 'codex',
+        });
+        expect(classifyModel({ id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image' }, 'image')).toMatchObject({
+            family: 'Image',
+            providerKey: 'image',
+        });
+    });
+    test('formats attachment byte counts and builds reproducible cURL snippets', () => {
+        expect(formatBytes(512)).toBe('512 B');
+        expect(formatBytes(2048)).toBe('2 KB');
+        expect(formatBytes(5 * 1024 * 1024)).toBe('5 MB');
+
+        const chatCurl = buildCurlSnippet({
+            mode: 'chat',
+            model: 'antigravity-claude-sonnet-5-5',
+            prompt: 'Hello world',
+            effort: 'high',
+            sessionId: 'session-test-1',
+            origin: 'http://127.0.0.1:3001',
+        });
+        expect(chatCurl).toContain("http://127.0.0.1:3001/v1/responses");
+        expect(chatCurl).toContain("'session-id: session-test-1'");
+        expect(chatCurl).toContain('"effort": "high"');
+
+        const imageCurl = buildCurlSnippet({
+            mode: 'image',
+            model: 'gemini-3.1-flash-image',
+            prompt: 'Render a cube',
+            size: '2K',
+            ratio: '16:9',
+            origin: 'http://127.0.0.1:3001',
+        });
+        expect(imageCurl).toContain("http://127.0.0.1:3001/v1/images/generations");
+        expect(imageCurl).toContain('"image_size": "2K"');
+        expect(imageCurl).toContain('"aspect_ratio": "16:9"');
+    });
+    test('renders structured workspace onboarding, model catalog controls, and attachment staging UI', () => {
+        expect(playgroundHtml).toContain('id="model-search"');
+        expect(playgroundHtml).toContain('id="model-family-tabs"');
+        expect(playgroundHtml).toContain('id="model-cards"');
+        expect(playgroundHtml).toContain('id="empty-state"');
+        expect(playgroundHtml).toContain('id="starter-grid"');
+        expect(playgroundHtml).toContain('id="attachments-panel"');
+        expect(playgroundHtml).toContain('id="drop-overlay"');
+        expect(playgroundHtml).toContain('id="code-modal"');
     });
 });

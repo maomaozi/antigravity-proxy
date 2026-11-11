@@ -17,52 +17,395 @@
     <script src="js/tailwind-config.js"></script>
     <link rel="stylesheet" href="css/styles.css">
     <link rel="stylesheet" href="css/playground.css">
-    <script type="module" src="js/playground.js?v=5"></script>
+    <script type="module" src="js/playground.js?v=6"></script>
 </head>
-<body class="min-h-full lg:h-full flex flex-col bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-200 font-mono text-xs transition-colors lg:overflow-hidden">
-    <header class="sticky top-0 z-40 h-14 shrink-0 bg-white dark:bg-black border-b border-zinc-200 dark:border-zinc-800">
-        <div class="h-full px-4 sm:px-6 flex items-center justify-between gap-4">
-            <div class="flex items-center gap-4 min-w-0">
-                <a href="/frontend/index.html" class="flex shrink-0 items-center justify-center w-8 h-8 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 font-bold text-lg hover:border-emerald-500/50" aria-label="Back to accounts">A</a>
-                <h1 class="text-sm font-bold text-zinc-900 dark:text-white">Playground</h1>
+<body class="min-h-full lg:h-full flex flex-col bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-200 font-mono text-xs transition-colors lg:overflow-hidden selection:bg-emerald-500/30 selection:text-emerald-700 dark:selection:text-emerald-200">
+    <header class="sticky top-0 z-40 h-14 shrink-0 bg-white/95 dark:bg-black/95 backdrop-blur border-b border-zinc-200 dark:border-zinc-800 transition-colors">
+        <div class="h-full px-4 sm:px-6 flex items-center justify-between gap-4 max-w-[1800px] mx-auto">
+            <div class="flex items-center gap-3 sm:gap-4 min-w-0">
+                <a href="/frontend/index.html" class="flex shrink-0 items-center justify-center w-8 h-8 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 font-bold text-lg text-zinc-900 dark:text-white hover:border-emerald-500/50 transition-colors" aria-label="Back to accounts">A</a>
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2.5">
+                        <h1 class="text-sm font-bold tracking-tight text-zinc-900 dark:text-white truncate">Playground</h1>
+                        <span id="endpoint-badge" class="hidden md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium bg-zinc-50 dark:bg-zinc-900 text-emerald-600 dark:text-emerald-400 border border-zinc-200 dark:border-zinc-800">POST /v1/responses</span>
+                    </div>
+                    <p class="hidden sm:block text-[9px] uppercase tracking-widest text-zinc-400 dark:text-zinc-500">Interactive Responses &amp; Multimodal Image Studio</p>
+                </div>
             </div>
-            <nav class="flex items-center gap-2 sm:gap-4" aria-label="Navigation">
-                <button id="theme" type="button" class="p-1.5 w-8 h-8 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-900 dark:hover:text-white" title="Change theme" aria-label="Change theme">
+            <nav class="flex items-center gap-2 sm:gap-3" aria-label="Navigation">
+                <div id="catalog-pill" class="hidden xl:flex items-center gap-2 px-2.5 py-1 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/50 text-[10px] text-zinc-500 dark:text-zinc-400">
+                    <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                    <span id="catalog-summary">Loading catalog…</span>
+                </div>
+                <button id="open-code-modal" type="button" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-zinc-200 dark:border-zinc-800 text-[10px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300 hover:border-emerald-500/50 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors" title="Inspect API request &amp; copy cURL">
+                    <svg class="w-3.5 h-3.5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    <span class="hidden sm:inline">API / cURL</span>
+                </button>
+                <button id="theme" type="button" class="p-1.5 w-8 h-8 flex items-center justify-center rounded border border-transparent hover:border-zinc-200 dark:hover:border-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition-colors" title="Change theme" aria-label="Change theme">
                     <svg id="icon-sun" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
                     <svg id="icon-moon" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 008.354-5.646z"/></svg>
                     <svg id="icon-system" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
                 </button>
-                <a href="/frontend/usage.html" class="hidden sm:inline text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400">Usage</a>
-                <a href="/frontend/sessions.html" class="hidden sm:inline text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400">Sessions</a>
-                <a href="/frontend/index.html" class="px-2.5 py-1.5 rounded border border-zinc-200 dark:border-zinc-800 text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400">Accounts</a>
+                <a href="/frontend/usage.html" class="hidden sm:inline-flex items-center px-2.5 py-1.5 rounded border border-zinc-200 dark:border-zinc-800 text-[10px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300 hover:border-emerald-500/50 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors">Usage</a>
+                <a href="/frontend/sessions.html" class="hidden sm:inline-flex items-center px-2.5 py-1.5 rounded border border-zinc-200 dark:border-zinc-800 text-[10px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300 hover:border-emerald-500/50 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors">Sessions</a>
+                <a href="/frontend/index.html" class="inline-flex items-center px-2.5 py-1.5 rounded border border-zinc-200 dark:border-zinc-800 text-[10px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300 hover:border-emerald-500/50 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors">Accounts</a>
             </nav>
         </div>
     </header>
+
     <main class="flex flex-col lg:flex-row lg:flex-1 min-h-0 w-full max-w-[1800px] mx-auto">
-        <aside class="lg:w-80 lg:shrink-0 lg:overflow-y-auto p-4 sm:p-6 bg-white dark:bg-[#0a0a0a] border-b lg:border-b-0 lg:border-r border-zinc-200 dark:border-zinc-800">
-            <label for="mode">Mode</label><select id="mode"><option value="chat">Chat</option><option value="image">Images</option></select>
-            <label for="model-select">Model</label><select id="model-select" aria-label="Select model"><option value="">Loading…</option></select>
-            <div id="model-custom" hidden><label for="model">Custom model</label><input id="model" placeholder="Model ID" autocomplete="off"></div>
-            <button id="reload" type="button" class="subtle">Refresh</button>
-            <p id="model-status" class="muted" role="status" hidden></p>
-            <label for="effort">Reasoning</label><select id="effort"><option value="">Default</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
-            <div id="chat-options"><label for="instructions">Instructions</label><textarea id="instructions" rows="4" placeholder="Optional"></textarea></div>
-            <div id="image-options" hidden>
-                <label for="size">Image size</label><select id="size"><option>512</option><option selected>1K</option><option>2K</option><option>4K</option></select>
-                <label for="ratio">Aspect ratio</label><select id="ratio"><option>1:1</option><option>1:4</option><option>4:1</option><option>1:8</option><option>8:1</option><option>2:3</option><option>3:2</option><option>3:4</option><option>4:3</option><option>4:5</option><option>5:4</option><option>9:16</option><option>16:9</option><option>21:9</option></select>
+        <!-- Left Configuration Sidebar -->
+        <aside id="config-panel" class="lg:w-[370px] xl:w-[390px] lg:shrink-0 lg:overflow-y-auto bg-white dark:bg-[#0a0a0a] border-b lg:border-b-0 lg:border-r border-zinc-200 dark:border-zinc-800 flex flex-col divide-y divide-zinc-200 dark:divide-zinc-800/80">
+            <!-- Section 1: Mode Switcher -->
+            <div class="p-4 sm:p-5">
+                <div class="flex items-center justify-between mb-2.5">
+                    <label for="mode" class="!m-0 text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">01 // Workspace Mode</label>
+                    <span id="mode-protocol-tag" class="text-[9px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-bold">SSE Stream</span>
+                </div>
+                <select id="mode" class="sr-only" aria-label="Mode">
+                    <option value="chat">Chat</option>
+                    <option value="image">Images</option>
+                </select>
+                <div class="grid grid-cols-2 gap-2" role="group" aria-label="Workspace mode selector">
+                    <button type="button" id="mode-btn-chat" data-mode-value="chat" class="mode-card active text-left p-2.5 rounded border transition-all">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-900 dark:text-white">
+                                <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+                                Chat
+                            </span>
+                            <span class="mode-dot w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        </div>
+                        <div class="mt-1 text-[9px] text-zinc-500 dark:text-zinc-400 truncate">Multi-turn &amp; reasoning</div>
+                    </button>
+                    <button type="button" id="mode-btn-image" data-mode-value="image" class="mode-card text-left p-2.5 rounded border transition-all">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-900 dark:text-white">
+                                <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                Images
+                            </span>
+                            <span class="mode-dot w-1.5 h-1.5 rounded-full bg-zinc-300 dark:bg-zinc-700"></span>
+                        </div>
+                        <div class="mt-1 text-[9px] text-zinc-500 dark:text-zinc-400 truncate">Nano Banana Studio</div>
+                    </button>
+                </div>
             </div>
-            <button id="clear" type="button" class="mt-6 w-full">New chat</button>
+
+            <!-- Section 2: Model Selector & Catalog -->
+            <div class="p-4 sm:p-5 space-y-3">
+                <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                        <label for="model-select" class="!m-0 text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500 whitespace-nowrap">02 // Model Routing</label>
+                        <span id="model-count-badge" class="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-[9px] font-bold text-zinc-500 whitespace-nowrap tabular-nums" title="Total available models in current mode">0</span>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        <button id="toggle-variants" type="button" class="!px-2 !py-0.5 rounded border border-zinc-200 dark:border-zinc-800 text-[9px] font-bold uppercase tracking-wider text-zinc-500 hover:border-emerald-500/50 hover:text-emerald-600 dark:hover:text-emerald-400 whitespace-nowrap transition-colors" title="Show or hide explicit tier alias IDs (-low, -medium, -high)">
+                            + Tier IDs
+                        </button>
+                        <button id="reload" type="button" class="subtle inline-flex items-center gap-1 !m-0 !px-1.5 !py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 whitespace-nowrap hover:underline">
+                            <svg id="reload-icon" class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                            <span>Refresh</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Search & Family Filter -->
+                <div id="model-filter-controls" class="space-y-2">
+                    <div class="relative">
+                        <svg class="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                        <input id="model-search" type="search" placeholder="Search model name or ID..." autocomplete="off" class="!pl-8 !py-1.5 !text-[11px] w-full rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950">
+                    </div>
+                    <div id="model-family-tabs" class="flex flex-wrap gap-1" role="tablist" aria-label="Filter models by family">
+                        <button type="button" data-family="all" class="family-tab active">All</button>
+                        <button type="button" data-family="Gemini" class="family-tab">Gemini</button>
+                        <button type="button" data-family="Claude" class="family-tab">Claude</button>
+                        <button type="button" data-family="GPT" class="family-tab">GPT</button>
+                        <button type="button" data-family="Codex" class="family-tab">Codex</button>
+                        <button type="button" data-family="custom" class="family-tab">Custom</button>
+                    </div>
+                </div>
+
+                <!-- Synchronized Accessible Select (kept for form semantics & direct selection) -->
+                <select id="model-select" aria-label="Select model" class="sr-only"><option value="">Loading…</option></select>
+
+                <!-- Rich Visual Model Cards List -->
+                <div id="model-cards" class="model-cards-list space-y-1.5 max-h-60 overflow-y-auto pr-0.5" role="listbox" aria-label="Available models"></div>
+
+                <!-- Custom Model Input -->
+                <div id="model-custom" class="pt-2 space-y-1.5" hidden>
+                    <label for="model" class="!mt-0 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Custom Model Identifier</label>
+                    <input id="model" placeholder="e.g. antigravity-gemini-3.8-flash or gpt-6.1-sol" autocomplete="off">
+                    <p class="text-[10px] text-zinc-400 leading-relaxed">Passed verbatim to the upstream router. Supports any discovered Antigravity or Codex model ID.</p>
+                </div>
+
+                <p id="model-status" class="muted" role="status" hidden></p>
+
+                <!-- Selected Model Capability Inspector -->
+                <div id="model-inspector" class="rounded border border-zinc-200 dark:border-zinc-800/90 bg-zinc-50/80 dark:bg-zinc-900/40 p-2.5 space-y-1.5">
+                    <div class="flex items-center justify-between gap-2">
+                        <span id="inspector-provider" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20">Antigravity Pool</span>
+                        <code id="inspector-id" class="text-[10px] text-zinc-500 dark:text-zinc-400 truncate max-w-[190px]" title="">antigravity-gemini-3.8-flash</code>
+                    </div>
+                    <p id="inspector-summary" class="text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">Fast multimodal reasoning &amp; general agent tasks</p>
+                </div>
+            </div>
+
+            <!-- Section 3: Parameters (Reasoning, Instructions, Image Config) -->
+            <div class="p-4 sm:p-5 space-y-4">
+                <div class="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">03 // Generation Parameters</div>
+
+                <!-- Reasoning Effort -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between gap-2">
+                        <label for="effort" class="!m-0 text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">Reasoning Effort</label>
+                        <span id="effort-status-badge" class="text-[9px] font-medium text-emerald-600 dark:text-emerald-400">Default</span>
+                    </div>
+                    <select id="effort" class="sr-only"><option value="">Default</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
+                    <div id="effort-pills" class="grid grid-cols-4 gap-1.5" role="group" aria-label="Reasoning effort"></div>
+                    <p id="effort-hint" class="text-[10px] text-zinc-400 dark:text-zinc-500 leading-relaxed">Controls internal thinking budget before streaming final answer.</p>
+                </div>
+
+                <!-- Chat-Specific Options -->
+                <div id="chat-options" class="space-y-2 pt-1">
+                    <div class="flex items-center justify-between gap-2">
+                        <label for="instructions" class="!m-0 text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">System Instructions</label>
+                        <span class="text-[9px] text-zinc-400">Optional</span>
+                    </div>
+                    <div id="instruction-presets" class="flex flex-wrap gap-1">
+                        <button type="button" data-preset="architect" class="preset-chip">Code Architect</button>
+                        <button type="button" data-preset="concise" class="preset-chip">Concise CLI</button>
+                        <button type="button" data-preset="json" class="preset-chip">Strict JSON</button>
+                        <button type="button" data-preset="clear" class="preset-chip text-zinc-400">Clear</button>
+                    </div>
+                    <textarea id="instructions" rows="3" placeholder="Define persona, output format, or constraints..."></textarea>
+                </div>
+
+                <!-- Image-Specific Options -->
+                <div id="image-options" class="space-y-4 pt-1" hidden>
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between">
+                            <label for="size" class="!m-0 text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">Output Resolution</label>
+                            <span id="size-label-badge" class="text-[9px] font-bold text-emerald-600 dark:text-emerald-400">1K Standard</span>
+                        </div>
+                        <select id="size" class="sr-only"><option>512</option><option selected>1K</option><option>2K</option><option>4K</option></select>
+                        <div id="size-pills" class="grid grid-cols-4 gap-1.5" role="group" aria-label="Image resolution">
+                            <button type="button" data-size="512" class="param-pill"><span>512</span><small>Fast</small></button>
+                            <button type="button" data-size="1K" class="param-pill active"><span>1K</span><small>Std</small></button>
+                            <button type="button" data-size="2K" class="param-pill"><span>2K</span><small>HD</small></button>
+                            <button type="button" data-size="4K" class="param-pill"><span>4K</span><small>Ultra</small></button>
+                        </div>
+                    </div>
+
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between">
+                            <label for="ratio" class="!m-0 text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">Aspect Ratio</label>
+                            <span class="text-[9px] text-zinc-400">14 presets</span>
+                        </div>
+                        <div id="ratio-quick-grid" class="grid grid-cols-3 gap-1.5">
+                            <button type="button" data-ratio="1:1" class="ratio-card active"><span class="ratio-box w-3.5 h-3.5"></span><span>1:1</span></button>
+                            <button type="button" data-ratio="16:9" class="ratio-card"><span class="ratio-box w-4 h-2.5"></span><span>16:9</span></button>
+                            <button type="button" data-ratio="9:16" class="ratio-card"><span class="ratio-box w-2.5 h-4"></span><span>9:16</span></button>
+                            <button type="button" data-ratio="4:3" class="ratio-card"><span class="ratio-box w-4 h-3"></span><span>4:3</span></button>
+                            <button type="button" data-ratio="3:4" class="ratio-card"><span class="ratio-box w-3 h-4"></span><span>3:4</span></button>
+                            <button type="button" data-ratio="21:9" class="ratio-card"><span class="ratio-box w-5 h-2"></span><span>21:9</span></button>
+                        </div>
+                        <select id="ratio" aria-label="All aspect ratios">
+                            <option value="1:1">1:1 — Square</option>
+                            <option value="16:9">16:9 — Landscape Widescreen</option>
+                            <option value="9:16">9:16 — Vertical Story</option>
+                            <option value="4:3">4:3 — Standard Landscape</option>
+                            <option value="3:4">3:4 — Standard Portrait</option>
+                            <option value="3:2">3:2 — Classic Photo</option>
+                            <option value="2:3">2:3 — Classic Vertical</option>
+                            <option value="5:4">5:4 — Editorial</option>
+                            <option value="4:5">4:5 — Social Portrait</option>
+                            <option value="21:9">21:9 — Cinema Ultrawide</option>
+                            <option value="4:1">4:1 — Panoramic Banner</option>
+                            <option value="1:4">1:4 — Vertical Strip</option>
+                            <option value="8:1">8:1 — Super Header</option>
+                            <option value="1:8">1:8 — Tall Column</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section 4: Session Affinity & Reset -->
+            <div class="p-4 sm:p-5 mt-auto space-y-3 bg-zinc-50/50 dark:bg-zinc-950/40">
+                <div class="flex items-center justify-between gap-2">
+                    <span class="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500 whitespace-nowrap">04 // Session Affinity</span>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        <button id="copy-session" type="button" class="!px-2 !py-0.5 rounded border border-zinc-200 dark:border-zinc-800 text-[9px] font-bold uppercase text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400 whitespace-nowrap" title="Copy session-id header">Copy ID</button>
+                        <button id="rotate-session" type="button" class="!px-2 !py-0.5 rounded border border-zinc-200 dark:border-zinc-800 text-[9px] font-bold uppercase text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400 whitespace-nowrap" title="Rotate session ID without clearing screen">Rotate</button>
+                    </div>
+                </div>
+                <div class="px-2.5 py-1.5 rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-black flex items-center justify-between gap-2">
+                    <span class="text-[9px] uppercase tracking-wider text-zinc-400 shrink-0">session-id</span>
+                    <code id="session-id-display" class="text-[10px] text-zinc-700 dark:text-zinc-300 truncate" title="">—</code>
+                </div>
+                <button id="clear" type="button" class="w-full py-2 px-3 rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:border-emerald-500 dark:hover:border-emerald-500 text-zinc-800 dark:text-zinc-200 font-bold uppercase tracking-wider text-[10px] flex items-center justify-center gap-2 transition-colors">
+                    <svg class="w-3.5 h-3.5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    <span id="clear-label">New chat</span>
+                </button>
+            </div>
         </aside>
-        <section class="workspace flex flex-col flex-1 min-h-0 min-w-0 bg-zinc-50 dark:bg-black" aria-label="Conversation">
-            <div class="workspace-heading"><strong id="heading" class="uppercase tracking-wider">Chat</strong><span id="status" role="status">Ready</span></div>
-            <div id="messages" role="log" aria-label="Conversation"></div>
-            <form id="composer">
-                <div id="attachments" aria-label="Attachments"></div>
-                <label class="sr-only" for="prompt">Message</label><textarea id="prompt" rows="3" placeholder="Message"></textarea>
-                <p id="error" role="alert" hidden></p>
-                <div class="actions"><label id="upload" for="files" class="upload-button" tabindex="0">+ Attach</label><input id="files" class="file-input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql"><span class="spacer"></span><button id="stop" type="button" hidden>Stop</button><button id="send" class="primary" type="submit">Send</button></div>
+
+        <!-- Right Conversation & Studio Workspace -->
+        <section class="workspace flex flex-col flex-1 min-h-0 min-w-0 bg-zinc-50 dark:bg-black relative" aria-label="Conversation">
+            <!-- Workspace Header Bar -->
+            <div class="workspace-heading">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <span id="workspace-mode-pill" class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                        <span id="status-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        <strong id="heading" class="uppercase tracking-wider">Chat</strong>
+                    </span>
+                    <span id="active-model-badge" class="truncate text-xs font-bold text-zinc-800 dark:text-zinc-200">Gemini 3.8 Flash</span>
+                    <span id="active-effort-badge" class="hidden sm:inline-flex px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-[9px] uppercase text-zinc-500">Default (high)</span>
+                </div>
+                <div class="flex items-center gap-3 shrink-0">
+                    <span id="turn-counter" class="hidden sm:inline text-[10px] text-zinc-400 tabular-nums">0 turns</span>
+                    <span id="status" role="status" class="px-2 py-0.5 rounded bg-zinc-100 dark:bg-zinc-900 text-[10px] font-bold uppercase tracking-wider">Ready</span>
+                </div>
+            </div>
+
+            <!-- Drag and Drop Overlay -->
+            <div id="drop-overlay" class="drop-overlay" hidden>
+                <div class="drop-overlay-card">
+                    <svg class="w-8 h-8 text-emerald-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                    <div class="text-xs font-bold uppercase tracking-wider text-zinc-900 dark:text-white">Drop files to attach</div>
+                    <p id="drop-overlay-hint" class="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">Up to 8 attachments (10 MB total) · Images &amp; UTF-8 text/code files</p>
+                </div>
+            </div>
+
+            <!-- Scrollable Conversation Canvas -->
+            <div id="workspace-scroll" class="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-6 scroll-smooth">
+                <!-- Empty State Onboarding & Starter Prompts -->
+                <div id="empty-state" class="max-w-[950px] mx-auto space-y-6">
+                    <div class="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#0a0a0a] p-5 sm:p-6">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-200 dark:border-zinc-800">
+                            <div>
+                                <div class="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">
+                                    <span>// Interactive Console</span>
+                                    <span>·</span>
+                                    <span id="guide-mode-tag">Responses Stream API</span>
+                                </div>
+                                <h2 id="guide-title" class="mt-1 text-base sm:text-lg font-bold text-zinc-900 dark:text-white">Test multi-turn reasoning, multimodal inputs &amp; pool routing</h2>
+                                <p id="guide-subtitle" class="mt-1 text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">Requests route through your active Antigravity and Codex OAuth pools with automatic failover and sticky session cache affinity.</p>
+                            </div>
+                        </div>
+
+                        <!-- 3-Step Workflow Guide -->
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+                            <div class="p-3 rounded border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-900/30">
+                                <div class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-zinc-900 dark:text-white">
+                                    <span class="w-4 h-4 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-[9px]">1</span>
+                                    <span>Select Model &amp; Effort</span>
+                                </div>
+                                <p class="mt-1.5 text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">Filter by Gemini, Claude, GPT, or Codex in the left catalog and tune thinking effort (<code class="text-zinc-700 dark:text-zinc-300">low</code> / <code class="text-zinc-700 dark:text-zinc-300">medium</code> / <code class="text-zinc-700 dark:text-zinc-300">high</code>).</p>
+                            </div>
+                            <div class="p-3 rounded border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-900/30">
+                                <div class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-zinc-900 dark:text-white">
+                                    <span class="w-4 h-4 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-[9px]">2</span>
+                                    <span>Attach Context Files</span>
+                                </div>
+                                <p class="mt-1.5 text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">Drag &amp; drop, paste from clipboard (<code class="text-zinc-700 dark:text-zinc-300">Ctrl+V</code>), or click <strong class="text-zinc-700 dark:text-zinc-300">+ Attach</strong> for up to 8 images or code/text files (max 10 MB).</p>
+                            </div>
+                            <div class="p-3 rounded border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-900/30">
+                                <div class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-zinc-900 dark:text-white">
+                                    <span class="w-4 h-4 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-[9px]">3</span>
+                                    <span>Inspect Live Telemetry</span>
+                                </div>
+                                <p class="mt-1.5 text-[10px] text-zinc-500 dark:text-zinc-400 leading-relaxed">Stream live thinking traces, token usage accounting, E2E latency, or export the exact <code class="text-zinc-700 dark:text-zinc-300">curl</code> payload.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Curated Starter Prompts -->
+                    <div class="space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">// Quick Starter Prompts</span>
+                            <span class="text-[10px] text-zinc-400">Click a card to load into composer</span>
+                        </div>
+                        <div id="starter-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+                    </div>
+                </div>
+
+                <!-- Conversation Log -->
+                <div id="messages" role="log" aria-label="Conversation"></div>
+            </div>
+
+            <!-- Composer Dock -->
+            <form id="composer" class="composer-dock">
+                <div class="max-w-[950px] mx-auto space-y-2.5">
+                    <!-- Attachments Header & List -->
+                    <div id="attachments-panel" class="rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-2.5 space-y-2" hidden>
+                        <div class="flex items-center justify-between gap-3 text-[10px]">
+                            <div class="flex items-center gap-2 min-w-0">
+                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+                                <span id="attachments-title" class="font-bold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">Staged Context Files</span>
+                                <span id="attachments-quota" class="px-1.5 py-0.5 rounded bg-white dark:bg-black border border-zinc-200 dark:border-zinc-800 text-[9px] text-zinc-500 tabular-nums">0 / 8 files · 0 B / 10 MB</span>
+                            </div>
+                            <div class="flex items-center gap-3 shrink-0">
+                                <div class="hidden sm:block w-24 h-1.5 rounded-full bg-zinc-200 dark:bg-zinc-800 overflow-hidden" title="10 MB attachment payload budget">
+                                    <div id="attachments-progress" class="h-full bg-emerald-500 transition-all duration-200" style="width: 0%"></div>
+                                </div>
+                                <button id="clear-attachments" type="button" class="text-[9px] font-bold uppercase tracking-wider text-rose-500 hover:underline !border-0 !p-0 !bg-transparent">Remove all</button>
+                            </div>
+                        </div>
+                        <div id="attachments" aria-label="Attachments"></div>
+                    </div>
+
+                    <!-- Composer Input Box -->
+                    <div class="composer-box rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-[#09090b] focus-within:border-emerald-500 dark:focus-within:border-emerald-500 transition-colors">
+                        <label class="sr-only" for="prompt">Message</label>
+                        <textarea id="prompt" rows="3" placeholder="Ask anything, paste screenshots (Ctrl+V), or drop code/text files here..."></textarea>
+
+                        <!-- Upload Guidance & Format Hints Bar -->
+                        <div class="px-3 py-1.5 border-t border-zinc-200/70 dark:border-zinc-800/70 flex flex-wrap items-center justify-between gap-2 text-[10px] text-zinc-400 dark:text-zinc-500 bg-white/60 dark:bg-black/40">
+                            <div class="flex items-center gap-1.5 min-w-0">
+                                <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+                                <span id="attachment-hint-text" class="truncate">Drop files, paste images, or attach: PNG, JPG, WebP, GIF &amp; code/text (.md, .json, .ts, .py, .log…) · Max 8 files / 10 MB</span>
+                            </div>
+                            <div class="flex items-center gap-2 shrink-0">
+                                <span id="prompt-stats" class="tabular-nums">0 chars</span>
+                                <span class="hidden sm:inline text-zinc-300 dark:text-zinc-700">|</span>
+                                <span class="hidden sm:inline"><kbd class="px-1 py-0.5 rounded bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-[9px]">Enter</kbd> send · <kbd class="px-1 py-0.5 rounded bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-[9px]">Shift+Enter</kbd> newline</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p id="error" role="alert" class="error-banner" hidden></p>
+
+                    <div class="actions">
+                        <label id="upload" for="files" class="upload-button" tabindex="0">+ Attach</label>
+                        <input id="files" class="file-input" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.jsonl,.log,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.sh,.sql">
+                        <button id="Quick-curl" type="button" class="hidden sm:inline-flex items-center gap-1.5 text-[10px] text-zinc-500 hover:text-emerald-600 dark:hover:text-emerald-400" title="View cURL for current state">
+                            <span>{ } Inspect Payload</span>
+                        </button>
+                        <span class="spacer"></span>
+                        <button id="stop" type="button" class="stop-button" hidden>Stop</button>
+                        <button id="send" class="primary" type="submit">Send</button>
+                    </div>
+                </div>
             </form>
         </section>
     </main>
+
+    <!-- API / cURL Inspector Modal -->
+    <div id="code-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" hidden>
+        <div class="w-full max-w-2xl rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#050505] shadow-2xl overflow-hidden font-mono">
+            <div class="px-5 py-3.5 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-4 bg-zinc-50 dark:bg-zinc-900/40">
+                <div>
+                    <h2 class="text-xs font-bold uppercase tracking-wider text-zinc-900 dark:text-white">API Request Inspector</h2>
+                    <p id="code-modal-subtitle" class="text-[10px] text-zinc-500 mt-0.5">Reproducible cURL command for the current Playground configuration</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="copy-curl-modal" type="button" class="px-2.5 py-1 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-wider hover:bg-emerald-500/20 transition-colors">Copy cURL</button>
+                    <button id="close-code-modal" type="button" class="w-7 h-7 rounded border border-zinc-200 dark:border-zinc-800 text-zinc-400 hover:text-zinc-900 dark:hover:text-white flex items-center justify-center" aria-label="Close modal">✕</button>
+                </div>
+            </div>
+            <div class="p-5 space-y-3 max-h-[75vh] overflow-y-auto">
+                <pre id="code-modal-content" class="p-4 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 text-[11px] leading-relaxed text-zinc-800 dark:text-zinc-200 overflow-x-auto whitespace-pre-wrap break-all"></pre>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
