@@ -1,4 +1,4 @@
-import { readAttachment, userContent, outputText, consumeEvents, formatBytes, classifyModel, buildCurlSnippet } from './playground-api.js';
+import { readAttachment, userContent, outputText, consumeEvents, formatBytes, classifyModel, buildCurlSnippet, isVisibleModel } from './playground-api.js';
 
 const $ = id => document.getElementById(id);
 
@@ -259,7 +259,7 @@ function renderModelCards() {
     const filtered = options.filter(item => {
         const meta = classifyModel(item, mode);
         const idLower = String(item.id).toLowerCase();
-        const baseCandidate = idLower.replace(/-(low|medium|high)$/, '');
+        const baseCandidate = idLower.replace(/-(low|medium|high|xhigh)$/, '');
         const hasBaseSibling = baseCandidate !== idLower && options.some(other => String(other.id).toLowerCase() === baseCandidate);
 
         if (mode === 'chat' && selectedFamily !== 'all' && selectedFamily !== 'custom') {
@@ -604,12 +604,15 @@ async function loadModels() {
     try {
         const response = await fetch('/v1/models', { cache: 'no-store' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const displayResponse = await fetch('/api/model-display', { cache: 'no-store' });
+        if (!displayResponse.ok) throw new Error(`Display configuration HTTP ${displayResponse.status}`);
+        globalThis.AntigravityModelDisplay.configure(await displayResponse.json());
         const result = await response.json();
         if (!Array.isArray(result.data)) throw new Error('Invalid model list');
         const preferred = currentModel();
         const wasListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
-        models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && !item.disabled);
-        if (Array.isArray(result.antigravity?.imageModels)) imageModels = result.antigravity.imageModels;
+        models = result.data.filter(item => typeof item?.id === 'string' && item.id.trim() && !item.disabled && isVisibleModel(item));
+        if (Array.isArray(result.antigravity?.imageModels)) imageModels = result.antigravity.imageModels.filter(isVisibleModel);
         const stillListed = (mode === 'image' ? imageModels : models).some(item => item.id === preferred);
         populate(wasListed && !stillListed ? '' : preferred);
         if ($('catalog-summary')) {

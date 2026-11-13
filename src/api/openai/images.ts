@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import { emitAccountFlash, getAccounts, prepareAccountForRequest, suspendAccountPool, clearAccountPoolSuspension, updateAccountUsage } from "../../auth/manager";
 import type { AntigravityAccount, PoolSuspension } from "../../auth/types";
 import { getProxyConfig } from "../../config/manager";
-import { generateFingerprint, getImpersonationHeaders } from "../../utils/headers";
+import { generateFingerprint, getAntigravityNativeHeaders } from "../../utils/headers";
 import { parseGoogleError } from "../../utils/errors";
 import { isAccountPoolSuspended } from "../../models";
 import { ANTIGRAVITY_IMAGE_URL } from "../endpoints";
@@ -144,7 +144,7 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
           attempts++;
           response = await runtime.fetch(ANTIGRAVITY_IMAGE_URL, {
             method: "POST",
-            headers: getImpersonationHeaders(account.accessToken!, account.fingerprint, body.model),
+            headers: getAntigravityNativeHeaders(account.accessToken!),
             body: JSON.stringify(upstreamBody),
             signal,
           });

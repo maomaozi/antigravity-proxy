@@ -94,6 +94,8 @@ export async function fetchQuota(
       name: model.displayMetadata?.label || model.displayName || id,
       supportsThinking: model.supportsThinking === true,
       maxOutputTokens: typeof model.maxOutputTokens === "number" ? model.maxOutputTokens : undefined,
+      modelEnum: typeof model.model === "string" ? model.model : undefined,
+      thinkingLevel: typeof model.thinkingLevel === "number" ? model.thinkingLevel : undefined,
     } satisfies DiscoveredModel));
     // A successful discovery supersedes old unsupported responses for advertised models.
     for (const key of Object.keys(account.capabilities || {})) {

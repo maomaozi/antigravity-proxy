@@ -46,7 +46,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     }, "p", "us-central1");
 
     expect(result.model).toBe("gemini-3.8-flash-tiered");
-    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("medium");
+    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe("MEDIUM");
     expect(result.request.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
     expect(result.request.generationConfig.temperature).toBeUndefined();
     expect(result.request.generationConfig.topP).toBeUndefined();
@@ -285,7 +285,7 @@ describe("Unit Tests: transformToGoogleBody", () => {
     }, "p", "us-central1");
 
     expect(result.model).toBe(runtimeModel);
-    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe(thinkingLevel);
+    expect(result.request.generationConfig.thinkingConfig.thinkingLevel).toBe(thinkingLevel!.toUpperCase());
   });
 
   test.each([
@@ -322,14 +322,14 @@ describe("Unit Tests: transformToGoogleBody", () => {
     expect(result.request.generationConfig.thinkingConfig.includeThoughts).toBe(true);
   });
 
-  test("maps GPT-OSS without provider-specific thinking config", () => {
+  test("maps GPT-OSS with the native medium thinking budget", () => {
     const result = transformToGoogleBody({
       model: "antigravity-gpt-oss-120b",
       messages: [{ role: "user", content: "Hi" }]
     }, "p", "us-central1");
 
     expect(result.model).toBe("gpt-oss-120b-medium");
-    expect(result.request.generationConfig.thinkingConfig).toBeUndefined();
+    expect(result.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
   });
 
   test("Claude tool call transformation with ID", () => {
@@ -509,10 +509,10 @@ describe("Unit Tests: transformToGoogleBody", () => {
       }))
     }, "p", "us-central1");
 
-    const names = result.request.tools[0].functionDeclarations.map((declaration: any) => declaration.name);
+    const names = result.request.tools.flatMap((tool: any) => tool.functionDeclarations).map((declaration: any) => declaration.name);
     expect(new Set(names).size).toBe(3);
     expect(names.every((name: string) => /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/.test(name))).toBe(true);
-    expect(result.request.tools[0].functionDeclarations.every((declaration: any) => declaration.parameters === undefined)).toBe(true);
+    expect(result.request.tools.flatMap((tool: any) => tool.functionDeclarations).every((declaration: any) => declaration.parameters === undefined)).toBe(true);
   });
 
   test("keeps supported Schema constraints and resolves local JSON Schema refs", () => {

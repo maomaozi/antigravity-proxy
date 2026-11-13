@@ -5,6 +5,7 @@ import { getProxyConfig } from "../config/manager";
 import { getUnavailableModelError, isModernGeminiModel, type DiscoveredModel } from "../models";
 import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
 import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionChunk } from "../api/openai/chat";
+import { antigravityThinkingLevel, createAntigravityRequestContext } from "./antigravity-protocol";
 
 const TOOL_NAME_REMAP_CACHE = new Map<string, string>();
 const SANITIZED_TOOL_NAME_CACHE = new Map<string, string>();
@@ -201,12 +202,12 @@ export function transformCompletionToGoogleBody(
   const resolvedModel = resolveModelId(request.model);
   let googleModel = resolvedModel;
   
-  const tierMatch = rawModel.match(/-(low|medium|high)$/i);
-  const thinkingTierMatch = rawModel.match(/-thinking-(low|medium|high)$/i);
+  const tierMatch = rawModel.match(/-(low|medium|high|xhigh)$/i);
+  const thinkingTierMatch = rawModel.match(/-thinking-(low|medium|high|xhigh)$/i);
   const reasoningEffort = typeof request.reasoningEffort === "string"
     ? request.reasoningEffort.toLowerCase()
     : undefined;
-  const requestTier = reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort)
+  const requestTier = reasoningEffort && /^(low|medium|high|xhigh)$/.test(reasoningEffort)
     ? reasoningEffort
     : undefined;
   let extractedTier = thinkingTierMatch
@@ -305,7 +306,7 @@ export function transformCompletionToGoogleBody(
   // Discovery wins over legacy fuzzy aliases and tier stripping.
   if (discoveredModel) {
     googleModel = discoveredModel.id;
-    extractedTier ||= discoveredModel.id.match(/-(low|medium|high)$/)?.[1];
+    extractedTier ||= discoveredModel.id.match(/-(low|medium|high|xhigh)$/)?.[1];
   }
 
   // Extract system instruction (like plugin)
@@ -446,6 +447,9 @@ export function transformCompletionToGoogleBody(
                           rawModel.includes("gemini-3.8-flash") ||
                           rawModel.includes("gemini-3.5-flash"));
   const isModernGeminiProtocolModel = isModernGeminiModel(googleModel);
+  const isLevelThinkingModel = isModernGeminiProtocolModel || typeof discoveredModel?.thinkingLevel === "number"
+    || /^claude-(?:sonnet|opus)-5-5(?:-|$)/.test(googleModel);
+  const isGptOssModel = /^gpt-oss-120b(?:-|$)/.test(googleModel);
   let thinkingBudget = request.thinkingBudget;
 
   if (!thinkingBudget && isThinkingModel) {
@@ -460,7 +464,7 @@ export function transformCompletionToGoogleBody(
     : undefined;
 
   const requestedMaxTokens = Number(request.maxOutputTokens);
-  const defaultMaxOutputTokens = isThinkingModel ? 64000 : 4096;
+  const defaultMaxOutputTokens = discoveredModel?.maxOutputTokens || (isThinkingModel ? 64000 : 4096);
   const normalizedMaxOutputTokens = Number.isFinite(requestedMaxTokens) && requestedMaxTokens > 0
     ? Math.trunc(requestedMaxTokens)
     : defaultMaxOutputTokens;
@@ -477,23 +481,25 @@ export function transformCompletionToGoogleBody(
   };
 
   // Gemini 3.5+ rejects or ignores legacy sampling parameters and candidateCount.
-  if (!isModernGeminiProtocolModel) {
+  if (!isLevelThinkingModel && !googleModel.includes("claude") && !isGptOssModel) {
     generationConfig.temperature = request.temperature ?? 0.7;
     generationConfig.topP = request.topP ?? 0.95;
     generationConfig.candidateCount = 1;
   }
 
+  const context = createAntigravityRequestContext(sessionId, googleModel, discoveredModel?.modelEnum);
   const googleRequest: any = {
     contents,
     systemInstruction,
     generationConfig,
-    safetySettings: [
-      { category: "HARM_CATEGORY_HARASSMENT", threshold: process.env.SAFETY_THRESHOLD || "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: process.env.SAFETY_THRESHOLD || "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: process.env.SAFETY_THRESHOLD || "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: process.env.SAFETY_THRESHOLD || "BLOCK_NONE" }
-    ],
-    sessionId: sessionId || crypto.randomUUID()
+    ...(process.env.SAFETY_THRESHOLD ? { safetySettings: [
+      { category: "HARM_CATEGORY_HARASSMENT", threshold: process.env.SAFETY_THRESHOLD },
+      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: process.env.SAFETY_THRESHOLD },
+      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: process.env.SAFETY_THRESHOLD },
+      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: process.env.SAFETY_THRESHOLD }
+    ] } : {}),
+    sessionId: context.sessionId,
+    labels: context.labels,
   };
 
   const responseFormat = request.responseFormat;
@@ -525,22 +531,21 @@ export function transformCompletionToGoogleBody(
   }
 
   const structuredClaudeResponse = hasStructuredResponse && googleModel.includes("claude");
-  if ((isThinkingModel || isModernGeminiProtocolModel) && !structuredClaudeResponse) {
-    googleRequest.generationConfig.thinkingConfig = isModernGeminiProtocolModel
+  if ((isThinkingModel || isLevelThinkingModel || isGptOssModel) && !structuredClaudeResponse) {
+    googleRequest.generationConfig.thinkingConfig = isLevelThinkingModel
       ? {
           includeThoughts: true,
-          thinkingLevel: extractedTier || "low"
+          thinkingLevel: antigravityThinkingLevel(extractedTier || discoveredModel?.thinkingLevel || "low")
         }
       : {
           includeThoughts: true,
-          thinkingBudget: thinkingBudget || 16000
+          thinkingBudget: thinkingBudget || (isGptOssModel ? 8192 : 16000)
         };
   }
 
-  if (request.tools) {
+  if (request.tools?.length) {
     const sanitize = proxyConfig.features.sanitizeToolNames;
-    googleRequest.tools = [{
-      functionDeclarations: request.tools.map(t => {
+    googleRequest.tools = request.tools.map(t => {
         const parameters = t.parameters || { type: "object", properties: {} };
         const claudeSchema = googleModel.includes("claude") ? normalizeClaudeToolSchema(parameters, t.name) : undefined;
         // The Google Schema -> Claude bridge corrupts nested compositions.
@@ -564,21 +569,14 @@ export function transformCompletionToGoogleBody(
         const hasParameterSchema = paramNames.length > 0
           || Object.keys(cleanParams).some(key => key !== "type" && key !== "properties");
 
-        return {
+        return { functionDeclarations: [{
           name: funcName,
           description: description.trim() || `Call ${funcName}.`,
           ...(hasParameterSchema
             ? claudeSchema ? { parametersJsonSchema: cleanParams } : { parameters: cleanParams }
             : {})
-        };
-      })
-    }];
-    
-    if (googleModel.includes("claude")) {
-        googleRequest.toolConfig = {
-            functionCallingConfig: { mode: "VALIDATED" }
-        };
-    }
+        }] };
+    });
   }
 
   const isGeminiModel = googleModel.includes("gemini");
@@ -603,7 +601,7 @@ export function transformCompletionToGoogleBody(
     project: projectId,
     model: googleModel,
     userAgent: "antigravity",
-    requestId: `agent-${crypto.randomUUID()}`,
+    requestId: context.requestId,
     requestType: "agent",
     request: googleRequest
   };

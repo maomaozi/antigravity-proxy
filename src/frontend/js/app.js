@@ -16,6 +16,7 @@ let activeCodexLoginId = null;
 let codexLoginPollTimer = null;
 let usageDisplayRefreshInFlight = null;
 let usageRefreshLabelTimer = null;
+const modelDisplay = globalThis.AntigravityModelDisplay;
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,11 +35,11 @@ function isCodexProviderEnabled() {
 
 function isGoogleAccountActive(account) {
     if (!account?.refreshToken || account.disabled || account.challenge) return false;
-    const families = [...new Set((account.quota || []).map(quota => getQuotaFamilyName(quota)))];
+    const families = [...new Set(modelDisplay.visibleQuotas(account).map(quota => getQuotaFamilyName(quota, account)))];
     if (!families.length) return true;
     const now = Date.now();
     return families.some(family => {
-        const quotas = (account.quota || []).filter(quota => getQuotaFamilyName(quota) === family);
+        const quotas = modelDisplay.visibleQuotas(account).filter(quota => getQuotaFamilyName(quota, account) === family);
         if (quotas.length && quotas.every(quota => Number(quota.remainingFraction) <= 0)) return false;
         if (getGoogleQuotaWindows(account, family).some(window => window.remainingFraction <= 0)) return false;
         const sandboxExpiry = Number(globalCooldowns[`${account.email}|sandbox|${family}`] || 0);
@@ -125,26 +126,26 @@ function formatCompactReset(iso) {
     return seconds > 0 ? `${seconds}s` : 'Ready';
 }
 
+function getDisplayQuotaPools(account, groupName) {
+    const members = modelDisplay.visibleQuotas(account).filter(quota => getQuotaFamilyName(quota, account) === groupName);
+    return [...new Set(members.length
+        ? members.map(quota => modelDisplay.quotaPool(account, quota))
+        : [modelDisplay.quotaPool(account, { modelId: groupName, groupName })])];
+}
+
 function getGooglePoolWindows(account, familyName) {
-    const quotas = (account.quota || []).filter(quota => getQuotaFamilyName(quota) === familyName);
-    const key = name => String(name).toLowerCase().replace(/\s*\((?:low|medium|high|thinking)\)$/i, '').replace(/[^a-z0-9]/g, '');
-    const names = quotas.flatMap(quota => [quota.limitName, quota.groupName]).map(key);
-    const windows = account.quotaWindows || [];
-    const specific = windows.filter(window => names.includes(key(window.groupName)));
-    const familyWindows = windows.filter(window => key(window.groupName) === key(familyName));
-    const selected = specific.length ? specific : familyWindows.length ? familyWindows : /^Claude |^GPT/.test(familyName)
-        ? windows.filter(window => /claude.*gpt|gpt.*claude/i.test(window.groupName)) : [];
-    return selected;
+    const pools = getDisplayQuotaPools(account, familyName);
+    return (account.quotaWindows || []).filter(window => pools.includes(window.groupName) && !window.disabled);
 }
 
 function getGooglePoolSuspension(account, familyName) {
-    const pool = getGooglePoolWindows(account, familyName)[0]?.groupName
-        || (/^Claude |^GPT/.test(familyName) ? 'Claude and GPT models' : familyName);
-    return account.poolSuspensions?.[pool];
+    const suspensions = getDisplayQuotaPools(account, familyName).map(pool => account.poolSuspensions?.[pool]).filter(Boolean);
+    return suspensions.find(suspension => suspension.retryAt > Date.now()) || suspensions[0];
 }
 
 function getGoogleQuotaWindows(account, familyName) {
-    return getGooglePoolWindows(account, familyName)
+    const byPeriod = new Map();
+    getGooglePoolWindows(account, familyName)
         .filter(window => (window.window === '5h' || window.window === 'weekly') && Number.isFinite(window.remainingFraction))
         .map(window => ({
             label: window.window === 'weekly' ? '7d' : '5h',
@@ -152,15 +153,18 @@ function getGoogleQuotaWindows(account, familyName) {
             remaining: Math.round(Math.max(0, Math.min(1, window.remainingFraction)) * 100),
             resetTime: window.remainingFraction < 1 && Number.isFinite(Date.parse(window.resetTime))
                 ? Date.parse(window.resetTime) : null,
-        }))
-        .sort((a, b) => (a.label === '5h' ? 0 : 1) - (b.label === '5h' ? 0 : 1));
+        })).forEach(window => {
+            const previous = byPeriod.get(window.label);
+            if (!previous || window.remainingFraction < previous.remainingFraction) byPeriod.set(window.label, window);
+        });
+    return [...byPeriod.values()].sort((a, b) => (a.label === '5h' ? 0 : 1) - (b.label === '5h' ? 0 : 1));
 }
 
 function getGoogleWindowStats(accounts, familyName) {
     const groups = new Map();
     accounts.forEach(account => {
         // A shared pool can exist even when this account cannot use the family.
-        if (!(account.quota || []).some(quota => getQuotaFamilyName(quota) === familyName)) return;
+        if (!modelDisplay.visibleQuotas(account).some(quota => getQuotaFamilyName(quota, account) === familyName)) return;
         getGoogleQuotaWindows(account, familyName).forEach(window => {
             const group = groups.get(window.label) || { label: window.label, sum: 0, count: 0, earliestReset: null };
             group.sum += window.remainingFraction * 100;
@@ -195,12 +199,12 @@ function getFamilyQuotaData(accounts, familyName) {
 
     accounts.forEach(acc => {
         if (acc.quota) {
-            const familyQuotas = acc.quota.filter(q => getQuotaFamilyName(q) === familyName);
+            const familyQuotas = modelDisplay.visibleQuotas(acc).filter(q => getQuotaFamilyName(q, acc) === familyName);
             if (familyQuotas.length > 0) {
                 const windows = getGoogleQuotaWindows(acc, familyName);
                 const remainingFraction = windows.length
                     ? Math.min(...windows.map(window => window.remainingFraction))
-                    : familyQuotas.reduce((sum, q) => sum + q.remainingFraction, 0) / familyQuotas.length;
+                    : Math.min(...familyQuotas.map(q => q.remainingFraction));
 
                 let accountReset = null;
                 const resetSources = windows.length ? windows : familyQuotas.filter(q => q.remainingFraction < 1);
@@ -391,33 +395,23 @@ function toggleLogs() {
     isLogsCollapsed = !isLogsCollapsed;
 }
 
-const MODEL_FAMILIES = {
-    'Gemini Models': (n) => n.includes('gemini'),
-    'Claude Sonnet 4.6': (n) => n.includes('claude') && n.includes('sonnet') && (n.includes('4-6') || n.includes('4.6')),
-    'Claude Opus 4.6': (n) => n.includes('claude') && n.includes('opus') && (n.includes('4-6') || n.includes('4.6')),
-    'GPT-OSS 120B': (n) => n.includes('gpt-oss') && n.includes('120b'),
-};
-
-function getFamilyName(modelName) {
-    const n = String(modelName).toLowerCase().replace(/[ .]/g, '-');
-    const claude = n.match(/claude-(sonnet|opus)-(\d+)-(\d+)/);
-    if (claude) return `Claude ${claude[1] === 'opus' ? 'Opus' : 'Sonnet'} ${claude[2]}.${claude[3]}`;
-    const gemini = n.match(/gemini-(\d+)(?:-([a-z]+))?/);
-    if (gemini && Number(gemini[1]) >= 4) return `Gemini ${gemini[1]}${gemini[2] ? ` ${gemini[2][0].toUpperCase()}${gemini[2].slice(1)}` : ''}`;
-    for (const [family, check] of Object.entries(MODEL_FAMILIES)) {
-        if (check(n)) return family;
-    }
-    if (n.includes('claude')) return 'Claude Models';
-    if (n.includes('gpt')) return 'GPT Models';
-    return 'Other';
+function getFamilyName(modelName, account = {}) {
+    return modelDisplay.groupName(account, { modelId: modelName, groupName: modelName });
 }
 
-function getQuotaFamilyName(quota) {
-    return quota.familyName || getFamilyName(quota.groupName);
+function getQuotaFamilyName(quota, account = {}) {
+    return modelDisplay.groupName(account, quota);
+}
+
+function getDisplayedModelNames(ids) {
+    return [...new Set(ids.filter(modelDisplay.isVisibleModel).map(id =>
+        globalModelNames.get(id) || globalModelNames.get(`antigravity-${id}`) || id.replace(/^antigravity-/, '')
+    ).map(name => name.replace(/\s*\((?:Low|Medium|High|XHigh)\)$/i, '').replace(/-(?:low|medium|high|xhigh|tiered)$/, '')))];
 }
 
 function calculateFamilyStats(accounts) {
-    const keys = [...new Set([...Object.keys(MODEL_FAMILIES), ...accounts.flatMap(account => (account.quota || []).map(getQuotaFamilyName))])];
+    modelDisplay.setAccounts(accounts);
+    const keys = modelDisplay.orderGroups(new Set(accounts.flatMap(account => modelDisplay.visibleQuotas(account).map(quota => getQuotaFamilyName(quota, account)))));
     const healthyEmails = new Set(accounts.filter(account => account.healthScore >= 50).map(account => account.email));
     return keys.map(name => {
         const familyData = getFamilyQuotaData(accounts, name);
@@ -434,6 +428,7 @@ function calculateFamilyStats(accounts) {
             }).length,
             total,
             familyData,
+            quotaPools: [...new Set(familyData.accounts.flatMap(row => getDisplayQuotaPools(accounts.find(account => account.email === row.email), name)))],
             windowStats: getGoogleWindowStats(accounts, name),
         };
     });
@@ -554,13 +549,13 @@ function renderDashboardFamilies() {
 function organizeAccountDetails(account) {
     const groups = new Map();
     if (account.quota) {
-        account.quota.forEach(q => {
-            const fam = getQuotaFamilyName(q);
+        modelDisplay.visibleQuotas(account).forEach(q => {
+            const fam = getQuotaFamilyName(q, account);
             if (!groups.has(fam)) groups.set(fam, []);
             groups.get(fam).push({ ...q, pct: Math.round(q.remainingFraction * 100) });
         });
     }
-    return Array.from(groups.entries()).sort((a,b) => a[0].localeCompare(b[0]));
+    return modelDisplay.orderGroups(groups.keys()).map(name => [name, groups.get(name)]);
 }
 
 function renderFamilyGrid(stats) {
@@ -573,7 +568,7 @@ function renderFamilyGrid(stats) {
         
         const accountsWithFamily = stat.provider === 'codex'
             ? globalCodexAccounts
-            : globalAccounts.filter(acc => acc.quota && acc.quota.some(q => getQuotaFamilyName(q) === stat.name));
+            : globalAccounts.filter(acc => modelDisplay.visibleQuotas(acc).some(q => getQuotaFamilyName(q, acc) === stat.name));
         
         const allAccountsDownForFamily = stat.provider === 'codex'
             ? stat.total > 0 && stat.healthy === 0
@@ -588,13 +583,11 @@ function renderFamilyGrid(stats) {
         let barIndicatorColor = allAccountsDownForFamily ? 'bg-rose-500' : (stat.availability > 50 ? 'bg-emerald-500' : (stat.availability < 20 ? 'bg-rose-500' : 'bg-zinc-300 dark:bg-zinc-600'));
         let borderColor = allAccountsDownForFamily ? 'border-rose-200 dark:border-rose-900/50' : 'border-zinc-200 dark:border-zinc-800';
 
-        const familyModels = [...new Set(accountsWithFamily.flatMap(account => (account.quota || [])
-            .filter(quota => getQuotaFamilyName(quota) === stat.name)
+        const familyModels = [...new Set(accountsWithFamily.flatMap(account => modelDisplay.visibleQuotas(account)
+            .filter(quota => getQuotaFamilyName(quota, account) === stat.name)
             .flatMap(quota => quota.modelIds || (quota.modelId ? [quota.modelId] : []))))];
-        const modelsInFamily = (stat.models || (familyModels.length ? familyModels : globalSupportedModels
-            .filter(m => getFamilyName(m) === stat.name)))
-            .map(m => globalModelNames.get(m) || m.replace('models/', '').replace('anthropic/', ''))
-            .join(', ');
+        const modelsInFamily = getDisplayedModelNames(stat.models || (familyModels.length ? familyModels : globalSupportedModels
+            .filter(m => getFamilyName(m) === stat.name))).join(', ');
 
         const quotaWindowSummary = stat.windowStats?.length
             ? `<div class="shrink-0 w-full space-y-1.5" title="Quota windows">
@@ -620,6 +613,8 @@ function renderFamilyGrid(stats) {
                 <div class="flex items-start justify-between mb-4">
                     <div>
                         <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">${escapeHtml(stat.name)}</div>
+                        <div class="text-[8px] text-zinc-500 mb-1">${stat.total} ACCOUNTS</div>
+                        ${stat.quotaPools?.some(pool => pool !== stat.name) ? `<div class="text-[8px] text-zinc-500 mb-1">Shared quota: ${escapeHtml(stat.quotaPools.join(', '))}</div>` : ''}
                         <div class="flex items-baseline gap-2">
                             <span class="text-2xl font-bold ${indicatorColor} tracking-tighter">${stat.availability}%</span>
                             <span class="text-[9px] text-zinc-500 dark:text-zinc-600 font-medium">AVAILABILITY</span>
@@ -628,7 +623,7 @@ function renderFamilyGrid(stats) {
                 </div>
 
                 <div class="flex flex-col items-stretch gap-2 mt-auto">
-                     <div class="min-w-0 h-12 shrink-0 overflow-hidden text-[10px] text-zinc-500 dark:text-zinc-600 leading-tight" title="${escapeHtml(modelsInFamily)}">${escapeHtml(modelsInFamily)}</div>
+                     <div class="min-w-0 min-h-[3rem] shrink-0 text-[10px] text-zinc-500 dark:text-zinc-600 leading-tight break-words" title="${escapeHtml(modelsInFamily)}">${escapeHtml(modelsInFamily)}</div>
                      ${quotaWindowSummary}
                 </div>
             </div>
@@ -711,6 +706,7 @@ function renderFamilyGrid(stats) {
 }
 
 function renderAccountsTable(accounts) {
+    modelDisplay.setAccounts(accounts);
     const tbody = $('accounts-table-body');
     if (!tbody) return;
     
@@ -737,7 +733,7 @@ function renderAccountsTable(accounts) {
                  let scoreCount = 0;
                  Object.entries(acc.modelScores).forEach(([key, score]) => {
                      const [modelName] = key.split('|');
-                     if (getFamilyName(modelName) === cat) {
+                     if (getFamilyName(modelName, acc) === cat) {
                          scoreSum += score;
                          scoreCount++;
                      }
@@ -800,6 +796,8 @@ function renderAccountsTable(accounts) {
                                     </div>
                                 </div>
                                 
+                                <div class="text-[9px] text-zinc-500 break-words mb-3">${escapeHtml(getDisplayedModelNames(quotas.flatMap(modelDisplay.modelIds)).join(', '))}</div>
+                                ${getDisplayQuotaPools(acc, cat).some(pool => pool !== cat) ? `<div class="text-[8px] text-zinc-500 mb-2">Shared quota: ${escapeHtml(getDisplayQuotaPools(acc, cat).join(', '))}</div>` : ''}
                                 ${windows.length ? renderGoogleQuotaWindows(windows) : `<div class="h-0.5 w-full bg-zinc-100 dark:bg-zinc-900 mt-4 rounded-none overflow-hidden">
                                     <div class="h-full ${barColor} transition-all duration-500 rounded-none" style="width: ${best}%"></div>
                                 </div>`}
@@ -837,7 +835,7 @@ function renderAccountsTable(accounts) {
             </div>`;
         }
 
-        const knownFamilies = acc.quota ? [...new Set(acc.quota.map(q => getQuotaFamilyName(q)))] : Object.keys(MODEL_FAMILIES);
+        const knownFamilies = [...new Set(modelDisplay.visibleQuotas(acc).map(q => getQuotaFamilyName(q, acc)))];
         const totalPossibleBlocks = knownFamilies.length * 2;
         const activeCooldowns = emailCooldowns.filter(k => globalCooldowns[k] > now).length;
         const isAllDownFinal = activeCooldowns >= totalPossibleBlocks && totalPossibleBlocks > 0;
@@ -891,18 +889,24 @@ function renderAccountsTable(accounts) {
 }
 
 function updateUI(data) {
+    if (data.display) modelDisplay.configure(data.display);
     if (Array.isArray(data)) {
         globalAccounts = data;
     } else {
         if (data.accounts) globalAccounts = data.accounts;
         if (data.cooldowns) globalCooldowns = data.cooldowns;
-        if (data.supportedModels) globalSupportedModels = data.supportedModels;
-        if (data.antigravity?.chatModels) globalModelNames = new Map(data.antigravity.chatModels.map(model => [model.id, model.name]));
+        if (data.supportedModels) globalSupportedModels = data.supportedModels.filter(modelDisplay.isVisibleModel);
+        if (data.antigravity?.chatModels) globalModelNames = new Map([
+            ...data.antigravity.chatModels,
+            ...(data.antigravity.imageModels || []),
+            ...globalAccounts.flatMap(account => account.availableModels || []),
+        ].filter(modelDisplay.isVisibleModel).map(model => [model.id, model.name]));
         if (data.codexModels) globalCodexModels = data.codexModels;
         if (data.version && $('app-version')) $('app-version').textContent = 'v' + data.version;
     }
     
     const accounts = globalAccounts || [];
+    modelDisplay.setAccounts(accounts);
     accounts.sort((a,b) => b.healthScore - a.healthScore);
 
     updateAccountSummary();
@@ -1368,8 +1372,10 @@ async function loadConfig() {
     try {
         const res = await fetch('/api/config');
         currentConfig = await res.json();
+        modelDisplay.configure(currentConfig.display);
         globalCodexModels = currentConfig.codex?.models || globalCodexModels;
         renderDashboardFamilies();
+        renderAccountsTable(globalAccounts);
         renderCodexAccounts();
         updateAccountSummary();
     } catch (e) {
@@ -1394,6 +1400,8 @@ function openConfigModal() {
     $('cfg-weight-health').value = currentConfig.scoring.weights.health;
     $('cfg-weight-lru').value = currentConfig.scoring.weights.lru;
     $('cfg-blacklist').value = currentConfig.models.blacklist.join('\n');
+    $('cfg-display').value = JSON.stringify(currentConfig.display, null, 2);
+    $('cfg-display-error').hidden = true;
     $('cfg-retry-max').value = currentConfig.retry.maxAttempts;
     $('cfg-retry-threshold').value = currentConfig.retry.transientRetryThresholdSeconds;
     $('cfg-codex-enabled').checked = currentConfig.codex?.enabled !== false;
@@ -1408,7 +1416,17 @@ function closeConfigModal() {
 }
 
 async function saveConfig() {
+    let display;
+    try {
+        display = JSON.parse($('cfg-display').value);
+        $('cfg-display-error').hidden = true;
+    } catch {
+        $('cfg-display-error').textContent = 'Display rules must be valid JSON.';
+        $('cfg-display-error').hidden = false;
+        return;
+    }
     const updates = {
+        display,
         rotation: {
             cooldown: {
                 defaultDurationMs: parseInt($('cfg-cooldown-default').value),
@@ -1457,14 +1475,18 @@ async function saveConfig() {
         
         if (res.ok) {
             currentConfig = await res.json();
+            modelDisplay.configure(currentConfig.display);
             globalCodexModels = currentConfig.codex?.models || [];
             renderDashboardFamilies();
+            renderAccountsTable(globalAccounts);
             renderCodexAccounts();
             updateAccountSummary();
             addLog('[CONFIG] Configuration saved successfully');
             closeConfigModal();
         } else {
             const error = await res.json();
+            $('cfg-display-error').textContent = error.error;
+            $('cfg-display-error').hidden = false;
             addLog(`[CONFIG] Failed to save: ${error.error}`);
         }
     } catch (e) {

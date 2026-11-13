@@ -21,7 +21,7 @@ import { collectCompletionStream } from "../core/completion";
 import type { SessionIdentity } from "../session/identity";
 import { getSessionBinding, recordRequestTokenUsage, recordSessionBinding } from "../session/store";
 import { parseGoogleError } from "../utils/errors";
-import { getImpersonationHeaders } from "../utils/headers";
+import { getAntigravityNativeHeaders } from "../utils/headers";
 import {
   createCompletionStreamTransformer,
   transformCompletionToGoogleBody,
@@ -240,7 +240,7 @@ export async function executeCompletion({
       findAccountModel(account, request.model, request.reasoningEffort),
     );
 
-    const headers = getImpersonationHeaders(account.accessToken!, account.fingerprint!, googleBody.model);
+    const headers = getAntigravityNativeHeaders(account.accessToken!);
 
     console.log(
       `[Request] Model: ${request.model} | Account: ${account.email} | Project: ${effectiveProjectId}`
@@ -390,7 +390,7 @@ export async function executeCompletion({
           if (invalidToolIndex) {
             const index = Number(invalidToolIndex[1]);
             const tool = request.tools?.[index];
-            const declaration = googleBody.request.tools?.find((group: any) => group.functionDeclarations)?.functionDeclarations?.[index];
+            const declaration = googleBody.request.tools?.flatMap((group: any) => group.functionDeclarations || [])?.[index];
             console.warn(`[InvalidToolSchema] Request: ${requestId} | Index: ${index} | Name: ${JSON.stringify(tool?.name ?? declaration?.name ?? "unknown")}`
               + ` | OriginalRootKeys: ${JSON.stringify(Object.keys(tool?.parameters || {}))}`
               + ` | UpstreamRootKeys: ${JSON.stringify(Object.keys(declaration?.parametersJsonSchema ?? declaration?.parameters ?? {}))}`);

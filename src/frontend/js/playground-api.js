@@ -1,3 +1,7 @@
+import './model-display.js';
+
+export const isVisibleModel = globalThis.AntigravityModelDisplay.isVisibleModel;
+
 const TEXT_EXTENSION = /\.(txt|md|csv|jsonl?|log|xml|ya?ml|html?|css|[cm]?js|tsx?|jsx|py|go|rs|java|c|cpp|h|sh|sql)$/i;
 export async function readAttachment(file) {
     const image = /^image\/(png|jpeg|webp|gif)$/.test(file.type);
@@ -47,7 +51,7 @@ export function classifyModel(model, mode = 'chat') {
             summary: 'Multimodal text-to-image & reference image studio',
         };
     }
-    const tierMatch = id.match(/-(low|medium|high)$/) || name.match(/\((Low|Medium|High)\)$/i);
+    const tierMatch = id.match(/-(low|medium|high|xhigh)$/) || name.match(/\((Low|Medium|High|XHigh)\)$/i);
     const isTierAlias = Boolean(tierMatch && !id.endsWith('-thinking'));
     const tierLabel = tierMatch ? tierMatch[1].toLowerCase() : '';
     if (model.owned_by === 'codex') {
@@ -80,7 +84,9 @@ export function classifyModel(model, mode = 'chat') {
             providerKey: 'antigravity',
             isTierAlias,
             tierLabel,
-            summary: isArgon
+            summary: id.includes('orchestrator')
+                ? 'Argon orchestrator with Hydrogen workers'
+                : isArgon
                 ? 'Next-gen frontier reasoning & multimodal synthesis'
                 : isLite
                 ? 'High-throughput, low-latency responses'

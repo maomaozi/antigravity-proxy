@@ -65,7 +65,7 @@ describe("account-specific models and quotas", () => {
       const body = transformCompletionToGoogleBody({ model: id!, reasoningEffort: effort, messages: [{ role: "user", content: "hi" }], stream: false, maxOutputTokens: 99999 }, "project", "", undefined, false, findAccountModel(a, id!, effort));
       expect(body.model).toBe(upstream);
       expect(body.request.generationConfig.maxOutputTokens).toBe(8192);
-      if (id!.includes("gemini")) expect(body.request.generationConfig.thinkingConfig.thinkingLevel).toBe(effort);
+      if (id!.includes("gemini")) expect(body.request.generationConfig.thinkingConfig.thinkingLevel).toBe(effort!.toUpperCase());
     }
   });
 
@@ -88,13 +88,13 @@ describe("account-specific models and quotas", () => {
     } finally { getAccounts().splice(0, getAccounts().length, ...original); }
   });
 
-  test("keeps discovered GPT models on their existing generation protocol", async () => {
+  test("uses the native GPT-OSS thinking budget after discovery", async () => {
     const a = await discover({ "gpt-oss-120b-medium": model("GPT-OSS-120B") });
     const body = transformCompletionToGoogleBody({
       model: "antigravity-gpt-oss-120b", messages: [{ role: "user", content: "hi" }], stream: false,
     }, "project", "", undefined, false, findAccountModel(a, "antigravity-gpt-oss-120b"));
     expect(body.model).toBe("gpt-oss-120b-medium");
-    expect(body.request.generationConfig.thinkingConfig).toBeUndefined();
+    expect(body.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
   });
 
   test("derives an arbitrary dedicated pool from the summary rather than a Gemini generation whitelist", async () => {

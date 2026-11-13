@@ -1,10 +1,21 @@
-import { describe, expect, test } from 'bun:test';
-import { buildCurlSnippet, classifyModel, consumeEvents, formatBytes, outputText, readAttachment, userContent } from '../../src/frontend/js/playground-api.js';
+import { beforeEach, describe, expect, test } from 'bun:test';
+import { buildCurlSnippet, classifyModel, consumeEvents, formatBytes, isVisibleModel, outputText, readAttachment, userContent } from '../../src/frontend/js/playground-api.js';
 import { validateResponsesRequest } from '../../src/api/openai/responses';
 
 const playgroundHtml = await Bun.file(new URL('../../src/frontend/playground.html', import.meta.url)).text();
 
+const defaultDisplay = await Bun.file(new URL('../../src/config/model-display-defaults.json', import.meta.url)).json();
+beforeEach(() => (globalThis as any).AntigravityModelDisplay.configure(defaultDisplay));
+
 describe('playground existing API compatibility', () => {
+    test('hides Gemini 3.5 and older chat models while keeping images, Orchestrator and current models', () => {
+        for (const id of ['antigravity-gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'models/gemini-3-flash', 'gemini-2.5-pro']) {
+            expect(isVisibleModel({ id })).toBe(false);
+        }
+        for (const id of ['antigravity-gemini-3.8-flash', 'gemini-4-hydrogen-xhigh', 'gemini-pro-orchestrator-g1-pro', 'gemini-3.1-flash-image', 'claude-sonnet-4-6', 'gpt-oss-120b-medium', 'gpt-6.1-sol']) {
+            expect(isVisibleModel({ id })).toBe(true);
+        }
+    });
     test('text files and images produce supported multi-turn Responses input', async () => {
         const text = await readAttachment(new File(['你好,world'], 'sample.csv', { type: 'text/csv' }));
         const image = await readAttachment(new File([new Uint8Array([1, 2, 3])], 'sample.png', { type: 'image/png' }));

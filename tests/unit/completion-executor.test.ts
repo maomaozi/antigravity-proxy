@@ -132,7 +132,8 @@ describe("completion failure classification", () => {
       const headers = new Headers(init?.headers);
       expect(headers.get("Authorization")).toBe("Bearer access");
       expect(headers.get("User-Agent")).toStartWith(`antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} `);
-      expect(headers.get("anthropic-beta")).toBe(model.includes("claude") ? "interleaved-thinking-2025-05-14" : null);
+      expect(headers.get("anthropic-beta")).toBeNull();
+      expect(headers.get("Client-Metadata")).toBeNull();
     }
   });
 
@@ -157,7 +158,7 @@ describe("completion failure classification", () => {
       expect(result?.text).toBe("OK");
       const body = JSON.parse(String(fetchSpy.mock.calls[0]![1]!.body));
       expect(body.model).toBe("gemini-4-argon-low");
-      expect(body.request.generationConfig.thinkingConfig.thinkingLevel).toBe("low");
+      expect(body.request.generationConfig.thinkingConfig.thinkingLevel).toBe("LOW");
       expect(getSessionBinding("argon-regression", "antigravity-gemini-4-argon")?.accountEmail).toBe(special.email);
     } finally { deleteSessionBindingsForAccount(special.email); }
   });
@@ -594,6 +595,12 @@ describe("completion failure classification", () => {
     // The envelope gets a new requestId, while model input remains identical.
     const firstBody = JSON.parse(String(first![1]?.body));
     const secondBody = JSON.parse(String(second![1]?.body));
+    expect(secondBody.request.labels.cascade_id).toBe(firstBody.request.labels.cascade_id);
+    expect(secondBody.request.labels.trajectory_id).not.toBe(firstBody.request.labels.trajectory_id);
+    for (const body of [firstBody, secondBody]) {
+      delete body.request.labels.trajectory_id;
+      delete body.request.labels.request_id;
+    }
     expect(secondBody.request).toEqual(firstBody.request);
     expect(secondBody.project).toBe(firstBody.project);
     expect(secondBody.model).toBe(firstBody.model);

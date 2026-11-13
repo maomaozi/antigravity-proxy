@@ -9,6 +9,14 @@ export interface ProxyConfig {
   features: FeaturesConfig;
   scheduling: SchedulingConfig;
   codex: CodexConfig;
+  display: ModelDisplayConfig;
+}
+
+export interface ModelDisplayConfig {
+  visibility: { showPatterns: string[]; hidePatterns: string[] };
+  poolRules: Array<{ patterns: string[]; pools: string[]; preferDeclaredPool?: boolean }>;
+  groups: Array<{ name: string; patterns: string[]; separateWhen?: 'always' | 'different-accounts' }>;
+  groupOrder: string[];
 }
 
 export interface RotationConfig {

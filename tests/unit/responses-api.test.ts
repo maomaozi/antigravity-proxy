@@ -198,7 +198,7 @@ describe("Responses API request adapter", () => {
     expect(request.tools).toHaveLength(3);
 
     const google = transformCompletionToGoogleBody(request, "project", "", "session");
-    const declarations = google.request.tools.find((tool: any) => tool.functionDeclarations)?.functionDeclarations ?? [];
+    const declarations = google.request.tools.flatMap((tool: any) => tool.functionDeclarations || []);
     expect(declarations).toHaveLength(3);
     expect(google.request.tools.some((tool: any) => tool.googleSearch)).toBe(false);
   });

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import "../../src/frontend/js/model-display.js";
 
 const header = await Bun.file(new URL("../../src/frontend/components/header.html", import.meta.url)).text();
 const main = await Bun.file(new URL("../../src/frontend/components/main.html", import.meta.url)).text();
@@ -7,17 +8,29 @@ const server = await Bun.file(new URL("../../src/server.ts", import.meta.url)).t
 const sessions = await Bun.file(new URL("../../src/frontend/js/sessions.js", import.meta.url)).text();
 const sessionsPage = await Bun.file(new URL("../../src/frontend/sessions.html", import.meta.url)).text();
 
-function createCodexQuotaHarness() {
+const defaultDisplay = await Bun.file(new URL("../../src/config/model-display-defaults.json", import.meta.url)).json();
+
+function createCodexQuotaHarness(display = defaultDisplay) {
+  (globalThis as any).AntigravityModelDisplay.configure(display);
+  (globalThis as any).AntigravityModelDisplay.setAccounts([]);
   const elements = new Map<string, { innerHTML: string }>();
   return new Function("window", "document", `${app}
     return {
       google(accounts, family) {
-        return { windows: getGoogleQuotaWindows(accounts[0], family), stats: getGoogleWindowStats(accounts, family), family: getFamilyQuotaData(accounts, family) };
+        modelDisplay.setAccounts(accounts);
+        const pool = getFamilyName(family, accounts[0]);
+        return { windows: getGoogleQuotaWindows(accounts[0], pool), stats: getGoogleWindowStats(accounts, pool), family: getFamilyQuotaData(accounts, pool) };
       },
       families(accounts) { return calculateFamilyStats(accounts); },
       renderGoogle(accounts) {
         renderAccountsTable(accounts);
         return document.getElementById('accounts-table-body').innerHTML;
+      },
+      renderPools(accounts) {
+        globalAccounts = accounts;
+        globalModelNames = new Map(accounts.flatMap(account => (account.availableModels || []).map(model => [model.id, model.name])));
+        renderFamilyGrid(calculateFamilyStats(accounts));
+        return document.getElementById('family-grid').innerHTML;
       },
       calculate(accounts) {
         globalCodexAccounts = accounts;
@@ -33,10 +46,133 @@ function createCodexQuotaHarness() {
 }
 
 describe("dashboard account provider layout", () => {
+  test('separates restricted Hydrogen accounts without inventing a separate quota pool', () => {
+    const accounts = [
+      { email: 'full@example.com', healthScore: 100,
+        quota: [{ modelIds: ['gemini-3.8-flash-high', 'gemini-4-hydrogen-high'], groupName: 'Gemini Models', remainingFraction: 0.6 }],
+        quotaWindows: [
+          { groupName: 'Gemini Models', window: '5h', remainingFraction: 0.8 },
+          { groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.6 },
+        ],
+      },
+      { email: 'standard@example.com', healthScore: 100,
+        quota: [{ modelId: 'gemini-3.8-flash-high', groupName: 'Gemini 3.8 Flash', remainingFraction: 0.2 }],
+        quotaWindows: [{ groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.2 }],
+      },
+    ];
+    const harness = createCodexQuotaHarness();
+    const stats = harness.families(accounts);
+    const hydrogen = stats.find((stat: any) => stat.name === 'Gemini 4 Hydrogen');
+    expect(hydrogen).toMatchObject({ total: 1, availability: 60, quotaPools: ['Gemini Models'] });
+    expect(hydrogen.familyData.accounts.map((row: any) => row.email)).toEqual(['full@example.com']);
+    expect(hydrogen.windowStats).toMatchObject([{ label: '5h', availability: 80 }, { label: '7d', availability: 60 }]);
+    expect(stats.find((stat: any) => stat.name === 'Gemini Models')).toMatchObject({ total: 2, availability: 40 });
+    const html = harness.renderPools(accounts);
+    expect(html).toContain('Shared quota: Gemini Models');
+    expect(harness.renderGoogle(accounts).split('standard@example.com')[1]).not.toContain('Gemini 4 Hydrogen');
+    expect(accounts[0]!.quota[0]).toMatchObject({ modelIds: ['gemini-3.8-flash-high', 'gemini-4-hydrogen-high'] });
+  });
+
+  test('lets configuration merge, always split, or conditionally split the same models', () => {
+    const accounts = ['a', 'b'].map(name => ({ email: `${name}@example.com`, healthScore: 100,
+      quota: ['gemini-3.8-flash-high', 'gemini-4-hydrogen-high'].map(modelId => ({ modelId, groupName: modelId, remainingFraction: 0.5 })),
+      quotaWindows: [{ groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.5 }],
+    }));
+    expect(createCodexQuotaHarness().families(accounts).map((stat: any) => stat.name)).toEqual(['Gemini Models']);
+    const always = { ...defaultDisplay, groups: [{ ...defaultDisplay.groups[0], separateWhen: 'always' }] };
+    expect(createCodexQuotaHarness(always).families(accounts).map((stat: any) => stat.name)).toEqual(['Gemini Models', 'Gemini 4 Hydrogen']);
+    accounts[1]!.quota = accounts[1]!.quota.slice(0, 1);
+    expect(createCodexQuotaHarness().families(accounts).map((stat: any) => stat.name)).toEqual(['Gemini Models', 'Gemini 4 Hydrogen']);
+    expect(createCodexQuotaHarness({ ...defaultDisplay, groups: [] }).families(accounts).map((stat: any) => stat.name)).toEqual(['Gemini Models']);
+  });
+
+  test('applies grouping policies to arbitrary future model IDs and group names', () => {
+    const policy = {
+      visibility: { showPatterns: [], hidePatterns: [] },
+      poolRules: [{ patterns: ['^future-'], pools: ['Shared compute'] }],
+      groups: [{ name: 'Restricted preview', patterns: ['^future-preview$'], separateWhen: 'different-accounts' }],
+      groupOrder: ['Restricted preview', 'Shared compute'],
+    };
+    const accounts = [
+      { email: 'preview@example.com', quota: [{ modelId: 'future-preview', groupName: 'Preview', remainingFraction: 0.4 }, { modelId: 'future-common', groupName: 'Common', remainingFraction: 0.4 }], quotaWindows: [{ groupName: 'Shared compute', window: 'weekly', remainingFraction: 0.4 }] },
+      { email: 'common@example.com', quota: [{ modelId: 'future-common', groupName: 'Common', remainingFraction: 0.8 }], quotaWindows: [{ groupName: 'Shared compute', window: 'weekly', remainingFraction: 0.8 }] },
+    ];
+    const stats = createCodexQuotaHarness(policy).families(accounts);
+    expect(stats.map((stat: any) => [stat.name, stat.total, stat.availability])).toEqual([['Restricted preview', 1, 40], ['Shared compute', 2, 60]]);
+    expect(stats[0].quotaPools).toEqual(['Shared compute']);
+  });
+
+  test('counts each account once per period when a configured group covers several quota pools', () => {
+    const policy = { ...defaultDisplay, groups: [{ name: 'Combined view', patterns: ['.'], separateWhen: 'always' }] };
+    const accounts = [
+      { email: 'two-pools@example.com', healthScore: 100,
+        quota: [{ modelId: 'gemini-3.8-flash-high', groupName: 'Flash', remainingFraction: 0.8 }, { modelId: 'claude-sonnet-5-5-high', groupName: 'Sonnet', remainingFraction: 0.2 }],
+        quotaWindows: [{ groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.8 }, { groupName: 'Claude and GPT models', window: 'weekly', remainingFraction: 0.2 }],
+      },
+      { email: 'one-pool@example.com', healthScore: 100,
+        quota: [{ modelId: 'gemini-3.8-flash-high', groupName: 'Flash', remainingFraction: 0.9 }],
+        quotaWindows: [{ groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.9 }],
+      },
+    ];
+    const stats = createCodexQuotaHarness(policy).families(accounts);
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toMatchObject({ total: 2, availability: 55, windowStats: [{ label: '7d', availability: 55 }] });
+    expect(stats[0].familyData.accounts[0].windows).toHaveLength(1);
+  });
+
+  test('merges shared model tiers once per account and displays Orchestrator under the dedicated Argon pool', () => {
+    const account = {
+      email: 'shared@example.com', healthScore: 100,
+      availableModels: [{ id: 'gemini-pro-orchestrator-g1-pro', name: 'Orchestrator (Argon)' }],
+      quota: [
+        { modelId: 'gemini-3.8-flash-high', groupName: 'Gemini 3.8 Flash (High)', remainingFraction: 0.8 },
+        { modelId: 'gemini-4-hydrogen-xhigh', groupName: 'Gemini 4 Hydrogen (XHigh)', familyName: 'Gemini 4 Hydrogen', remainingFraction: 0.8 },
+        { modelId: 'gemini-3.1-flash-image', groupName: 'Gemini 3.1 Flash Image', remainingFraction: 0.8 },
+        { modelId: 'gemini-3.5-flash-lite', groupName: 'Gemini 3.5 Flash Lite', remainingFraction: 0 },
+        { modelId: 'gemini-2.5-pro', groupName: 'Gemini 2.5 Pro', remainingFraction: 0 },
+        ...['claude-sonnet-5-5-high', 'claude-opus-5-5-low', 'gpt-oss-120b-medium'].map(modelId => ({ modelId, groupName: modelId, remainingFraction: 0.4 })),
+        { modelId: 'gemini-4-argon-high', groupName: 'Gemini 4 Argon (High)', remainingFraction: 0.2 },
+        { modelId: 'gemini-pro-orchestrator-g1-pro', groupName: 'Orchestrator (Argon)', familyName: 'Gemini Models', remainingFraction: 0.2 },
+      ],
+      quotaWindows: [
+        { groupName: 'Gemini Models', window: '5h', remainingFraction: 0.8 },
+        { groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.6 },
+        { groupName: 'Claude and GPT models', window: 'weekly', remainingFraction: 0.4 },
+        { groupName: 'Gemini 4 Argon', window: 'weekly', remainingFraction: 0.2 },
+      ],
+    };
+    const harness = createCodexQuotaHarness();
+    const stats = harness.families([account]);
+    expect(stats.map((stat: any) => [stat.name, stat.total, stat.availability])).toEqual([
+      ['Gemini Models', 1, 60], ['Claude and GPT models', 1, 40], ['Gemini 4 Argon', 1, 20],
+    ]);
+    expect(harness.google([account], 'Gemini 4 Hydrogen').family.accounts).toHaveLength(1);
+    const html = harness.renderPools([account]);
+    const argon = html.split('>Gemini 4 Argon</div>')[1];
+    expect(argon).toContain('Orchestrator (Argon)');
+    expect(html).toContain('gemini-3.1-flash-image');
+    expect(html).not.toContain('3.5');
+    expect(html).not.toContain('2.5');
+    const details = harness.renderGoogle([account]);
+    expect(details).not.toContain('Gemini 3.5');
+    expect(details).not.toContain('Gemini 2.5');
+  });
+
+  test('merges Argon and Orchestrator into Gemini only on accounts whose summary has no dedicated Argon pool', () => {
+    const accounts = [{
+      email: 'combined@example.com', healthScore: 100,
+      quota: ['gemini-4-argon-high', 'gemini-pro-orchestrator-g1-pro'].map(modelId => ({ modelId, groupName: modelId, remainingFraction: 0.5 })),
+      quotaWindows: [{ groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.5 }],
+    }];
+    const stats = createCodexQuotaHarness().families(accounts);
+    expect(stats.find((stat: any) => stat.name === 'Gemini Models')).toMatchObject({ total: 1, availability: 50 });
+    expect(stats.some((stat: any) => stat.name === 'Gemini 4 Argon')).toBe(false);
+  });
+
   test('shows suspended pools while leaving the account and other pools available', () => {
     const html = createCodexQuotaHarness().renderGoogle([{
       email:'pool@example.com', healthScore:100,
-      quota:[{groupName:'Gemini 3 Flash',remainingFraction:1},{groupName:'Claude Sonnet 4.6',remainingFraction:1}],
+      quota:[{groupName:'Gemini 3.8 Flash',remainingFraction:1},{groupName:'Claude Sonnet 4.6',remainingFraction:1}],
       poolSuspensions:{'Claude and GPT models':{reason:'tos_violation',message:'<service disabled>',retryAt:Date.now()+600000,appealUrl:'javascript:alert(1)'}},
     }]);
     expect(html).toContain('1 POOL(S) SUSPENDED');
@@ -51,7 +187,7 @@ describe("dashboard account provider layout", () => {
     const accounts = Array.from({ length: 6 }, (_, index) => ({
       email: `account-${index}@example.com`, healthScore: 100,
       quota: [
-        { groupName: 'Gemini 3 Flash', remainingFraction: 1 },
+        { groupName: 'Gemini 3.8 Flash', remainingFraction: 1 },
         { groupName: index === 5 ? 'Claude Opus 5.5 (High)' : 'Claude Opus 4.6 (Thinking)', remainingFraction: 1 },
         { groupName: index === 5 ? 'Claude Sonnet 5.5 (High)' : 'Claude Sonnet 4.6 (Thinking)', remainingFraction: 1 },
         { groupName: 'GPT-OSS 120B (Medium)', remainingFraction: 1 },
@@ -76,12 +212,12 @@ describe("dashboard account provider layout", () => {
         expect(window.availability).toBe(Math.round(measured.reduce((sum: number, item: any) => sum + item.remainingFraction * 100, 0) / measured.length));
       }
     }
-    expect(families.find((item: any) => item.name === 'Claude Opus 5.5')).toMatchObject({
-      total: 1, availability: 100, windowStats: [{ label: '5h', availability: 100 }, { label: '7d', availability: 100 }],
+    expect(families.find((item: any) => item.name === 'Claude and GPT models')).toMatchObject({
+      total: 6, availability: 92, windowStats: [{ label: '5h', availability: 100 }, { label: '7d', availability: 92 }],
     });
-    expect(families.find((item: any) => item.name === 'Claude Opus 4.6').windowStats[1].availability).toBe(91);
-    expect(families.find((item: any) => item.name === 'Claude Sonnet 5.5').windowStats[1].availability).toBe(100);
-    expect(families.find((item: any) => item.name === 'GPT-OSS 120B').windowStats[1].availability).toBe(92);
+    expect(families.find((item: any) => item.name === 'Claude and GPT models').windowStats[1].availability).toBe(92);
+    expect(families.find((item: any) => item.name === 'Claude and GPT models').windowStats[1].availability).toBe(92);
+    expect(families.find((item: any) => item.name === 'Claude and GPT models').windowStats[1].availability).toBe(92);
     expect(families.find((item: any) => item.name === 'Gemini 4 Argon')).toMatchObject({
       total: 1, availability: 75, windowStats: [{ label: '7d', availability: 75 }],
     });
@@ -94,7 +230,7 @@ describe("dashboard account provider layout", () => {
       email: 'resets@example.com', healthScore: 100,
       quota: [
         { groupName: 'Claude Opus 5.5 (High)', remainingFraction: 1 },
-        { groupName: 'Gemini 3 Flash', remainingFraction: 0.2 },
+        { groupName: 'Gemini 3.8 Flash', remainingFraction: 0.2 },
         { groupName: 'Gemini 3.8 Flash (High)', remainingFraction: 0.8 },
       ],
       quotaWindows: [
@@ -105,11 +241,11 @@ describe("dashboard account provider layout", () => {
     expect(harness.google(accounts, 'Claude Opus 5.5').family).toMatchObject({
       earliestReset: reset, accounts: [{ avgQuota: 40, resetTime: reset }],
     });
-    expect(harness.families(accounts).find((item: any) => item.name === 'Gemini Models').availability).toBe(50);
+    expect(harness.families(accounts).find((item: any) => item.name === 'Gemini Models').availability).toBe(20);
     const html = harness.renderGoogle(accounts);
-    expect(html).toMatch(/>50%<\/span>/);
+    expect(html).toMatch(/>20%<\/span>/);
     expect(html).not.toMatch(/>80%<\/span>/);
-    const opus = html.split('Claude Opus 5.5')[1].split('Status: OK')[1];
+    const opus = html.split('Claude and GPT models')[1].split('Status: OK')[1];
     expect(opus.split('Quota resets in')[1].split('</span>')[1]).not.toContain('Ready');
   });
 
@@ -121,7 +257,7 @@ describe("dashboard account provider layout", () => {
       email: 'one-tier@example.com', healthScore: 40,
       quota: [{ groupName: 'Claude Opus 5.5 (High)', remainingFraction: 0.2051 }],
     }];
-    const stat = createCodexQuotaHarness().families(accounts).find((item: any) => item.name === 'Claude Opus 5.5');
+    const stat = createCodexQuotaHarness().families(accounts).find((item: any) => item.name === 'Claude and GPT models');
     expect(stat).toMatchObject({ availability: 51, total: 2, healthy: 1, windowStats: [] });
     expect(stat.familyData.accounts.map((item: any) => item.avgQuota)).toEqual([80, 21]);
   });
@@ -141,7 +277,7 @@ describe("dashboard account provider layout", () => {
       quotaWindows: [],
     }];
     const harness = createCodexQuotaHarness();
-    const stat = harness.families(accounts).find((item: any) => item.name === 'Claude Opus 5.5');
+    const stat = harness.families(accounts).find((item: any) => item.name === 'Claude and GPT models');
     expect(stat).toMatchObject({ availability: 60, total: 2, windowStats: [
       { label: '5h', availability: 100, earliestReset: null },
       { label: '7d', availability: 40, earliestReset: Date.parse(future) },
@@ -155,7 +291,7 @@ describe("dashboard account provider layout", () => {
     const accounts = [{
       email: 'special@example.com', healthScore: 100,
       quota: [
-        { groupName: 'Gemini 3 Flash', remainingFraction: 0.8 },
+        { groupName: 'Gemini 3.8 Flash', remainingFraction: 0.8 },
         { groupName: 'Gemini 4 Argon (High)', remainingFraction: 0.4, familyName: 'Gemini 4 Argon' },
         { groupName: 'Claude Opus 5.5 (High)', remainingFraction: 1 },
       ],
@@ -170,7 +306,7 @@ describe("dashboard account provider layout", () => {
     expect(harness.google(accounts, 'Gemini 4 Argon').windows.map((item: any) => [item.label, item.remaining])).toEqual([['7d', 40]]);
     expect(harness.google(accounts, 'Gemini Models').windows.map((item: any) => item.remaining)).toEqual([80, 90]);
     expect(harness.families(accounts).find((item: any) => item.name === 'Gemini 4 Argon')).toMatchObject({ availability: 40, total: 1 });
-    expect(harness.families(accounts).some((item: any) => item.name === 'Claude Opus 5.5')).toBe(true);
+    expect(harness.families(accounts).some((item: any) => item.name === 'Claude and GPT models')).toBe(true);
   });
 
   test('shows shared Google weekly quotas in the correct families and respects the tighter window', () => {
@@ -327,7 +463,7 @@ describe("dashboard account provider layout", () => {
     expect(app).toContain("Codex Models");
     expect(app).toContain("calculateCodexFamilyStat");
     expect(app).toContain("renderDashboardFamilies");
-    expect(main).toContain("lg:grid-cols-5");
+    expect(main).toContain("repeat(auto-fit,minmax(200px,1fr))");
   });
   test("keeps mobile dashboard on natural document scrolling", async () => {
     const index = await Bun.file(new URL("../../src/frontend/index.html", import.meta.url)).text();
@@ -359,9 +495,9 @@ describe("dashboard account provider layout", () => {
   });
 
   test("keeps family cards aligned while expanding independently", () => {
-    expect(main).toContain("lg:grid-cols-5 items-start");
+    expect(main).toContain("repeat(auto-fit,minmax(200px,1fr))] items-start");
     expect(app).toContain("flex flex-col self-start");
-    expect(app).toContain("min-w-0 h-12 shrink-0 overflow-hidden");
+    expect(app.includes("min-w-0 min-h-[3rem] shrink-0")).toBe(true);
     expect(app).not.toContain("flex flex-col h-full");
   });
 

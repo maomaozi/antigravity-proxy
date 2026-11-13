@@ -7,9 +7,9 @@ export interface SupportedModel {
   defaultThinkingLevel: string;
   recommended?: boolean;
 }
-export const ANTIGRAVITY_CLIENT_VERSION = "2.29.0";
-// Official 2.29.0 Linux ARM language_server build, verified against native requests.
-export const ANTIGRAVITY_CLIENT_BUILD = "1013064288";
+export const ANTIGRAVITY_CLIENT_VERSION = "2.31.2";
+// Official 2.31.2 Linux ARM language_server build, verified against native requests.
+export const ANTIGRAVITY_CLIENT_BUILD = "1019359392";
 export const GEMINI_CHAT_MODELS: readonly SupportedModel[] = [
   { id: "antigravity-gemini-3.8-flash", name: "Gemini 3.8 Flash", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "high", recommended: true },
   { id: "antigravity-gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite", thinkingLevels: ["low", "medium", "high"], defaultThinkingLevel: "low" },
@@ -51,6 +51,8 @@ export interface DiscoveredModel {
   name: string;
   supportsThinking?: boolean;
   maxOutputTokens?: number;
+  modelEnum?: string;
+  thinkingLevel?: number;
 }
 
 export function normalizeModelId(id: string): string {
@@ -59,11 +61,13 @@ export function normalizeModelId(id: string): string {
 }
 
 export function modelBaseId(id: string): string {
-  return normalizeModelId(id).replace(/-(?:thinking-)?(?:low|medium|high|tiered)$/, "").replace(/-thinking$/, "");
+  return normalizeModelId(id).replace(/-(?:thinking-)?(?:low|medium|high|xhigh|tiered)$/, "").replace(/-thinking$/, "");
 }
 
 export function getModelFamilyName(name: string): string {
   const n = normalizeModelId(name).replace(/[ .]/g, "-");
+  if (/^gemini-4-hydrogen(?:-|$)/.test(n)) return "Gemini Models";
+  if (n === "gemini-pro-orchestrator-g1-pro") return "Gemini 4 Argon";
   const claude = n.match(/claude-(sonnet|opus)-(\d+)-(\d+)/);
   if (claude) return `Claude ${claude[1] === "opus" ? "Opus" : "Sonnet"} ${claude[2]}.${claude[3]}`;
   // New Gemini generations may have their own pool; never merge them into Flash.
@@ -85,12 +89,12 @@ export function findAccountModel(account: AntigravityAccount, id: string, effort
   if (exact) return exact;
   const base = modelBaseId(id);
   const matches = models.filter(model => modelBaseId(model.id) === base);
-  const tier = normalized.match(/-(low|medium|high)$/)?.[1] || effort || "high";
+  const tier = normalized.match(/-(low|medium|high|xhigh)$/)?.[1] || effort || "high";
   return matches.find(model => model.id === `${base}-tiered`)
     || matches.find(model => model.id === `${base}-${tier}`)
     || matches.find(model => model.id === `${base}-thinking-${tier}`)
     || matches.find(model => model.id === base || model.id === `${base}-thinking`)
-    || (!normalized.match(/-(low|medium|high)$/) && !effort ? matches.at(-1) : undefined);
+    || (!normalized.match(/-(low|medium|high|xhigh)$/) && !effort ? matches.at(-1) : undefined);
 }
 
 export function getAccountModelQuotas(account: AntigravityAccount, id: string) {
@@ -117,7 +121,7 @@ export function accountSupportsModel(account: AntigravityAccount, id: string, ef
 }
 
 function groupKey(name: string): string {
-  return name.toLowerCase().replace(/\s*\((?:low|medium|high|thinking)\)$/i, "").replace(/[^a-z0-9]/g, "");
+  return name.toLowerCase().replace(/\s*\((?:low|medium|high|xhigh|thinking)\)$/i, "").replace(/[^a-z0-9]/g, "");
 }
 
 export function getAccountQuotaWindows(account: AntigravityAccount, id: string) {
@@ -129,6 +133,8 @@ export function getAccountQuotaWindows(account: AntigravityAccount, id: string) 
   if (specific.length) return specific;
   const familyWindows = windows.filter(window => groupKey(window.groupName) === groupKey(family));
   if (familyWindows.length) return familyWindows;
+  // Paid Pro has a dedicated Argon pool; other plans can include it in Gemini.
+  if (family === "Gemini 4 Argon") return windows.filter(window => groupKey(window.groupName) === "geminimodels");
   // The upstream summary explicitly declares the common third-party pool.
   if (/^Claude |^GPT/.test(family)) return windows.filter(window => /claude.*gpt|gpt.*claude/i.test(window.groupName));
   return [];
@@ -143,13 +149,15 @@ export function getAvailableModelCatalog(accounts: AntigravityAccount[]): Suppor
       // Keep tier IDs as well as a convenient base alias for newly discovered models.
       const id = `antigravity-${model.id}`;
       if (!catalog.has(id) && !SUPPORTED_MODELS.some(known => modelBaseId(known.id) === modelBaseId(model.id))) {
-        const tier = model.id.match(/-(low|medium|high)$/)?.[1];
-        catalog.set(id, { id, name: model.name, thinkingLevels: tier ? [tier] : [], defaultThinkingLevel: tier || "" });
+        const tier = model.id.match(/-(low|medium|high|xhigh)$/)?.[1];
+        const fixedLevel = model.thinkingLevel === 100 ? "xhigh" : ({ 1: "low", 2: "medium", 3: "high" } as Record<number, string>)[model.thinkingLevel || 0];
+        const level = tier || fixedLevel || "";
+        catalog.set(id, { id, name: model.name, thinkingLevels: level ? [level] : [], defaultThinkingLevel: level });
         if (tier) {
           const baseId = `antigravity-${modelBaseId(model.id)}`;
           const previous = catalog.get(baseId);
-          const levels = [...new Set([...(previous?.thinkingLevels || []), tier])].sort((a, b) => ["low", "medium", "high"].indexOf(a) - ["low", "medium", "high"].indexOf(b));
-          catalog.set(baseId, { id: baseId, name: model.name.replace(/\s*\((Low|Medium|High)\)$/i, ""), thinkingLevels: levels, defaultThinkingLevel: levels.at(-1)! });
+          const levels = [...new Set([...(previous?.thinkingLevels || []), tier])].sort((a, b) => ["low", "medium", "high", "xhigh"].indexOf(a) - ["low", "medium", "high", "xhigh"].indexOf(b));
+          catalog.set(baseId, { id: baseId, name: model.name.replace(/\s*\((Low|Medium|High|XHigh)\)$/i, ""), thinkingLevels: levels, defaultThinkingLevel: levels.includes("high") ? "high" : levels.at(-1)! });
         }
       }
     }
@@ -185,6 +193,7 @@ export function updateQuotaFamilies(account: AntigravityAccount): void {
 }
 
 export function isModernGeminiModel(id: string): boolean {
+  if (/^gemini-(?:pro-orchestrator-g1-pro|flash-worker-agy)$/.test(normalizeModelId(id))) return true;
   const generation = normalizeModelId(id).match(/^gemini-(\d+)/)?.[1];
   return generation !== undefined && Number(generation) >= 3;
 }

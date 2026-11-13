@@ -499,8 +499,8 @@ export function validateResponsesRequest(body: any): string | undefined {
   if (body.truncation != null && body.truncation !== "disabled") return "Only truncation=disabled is supported.";
   if (body.text?.verbosity != null) return "text.verbosity is not supported.";
   if (body.instructions != null && typeof body.instructions !== "string") return "instructions must be a string.";
-  if (body.reasoning?.effort != null && !["low", "medium", "high"].includes(body.reasoning.effort)) {
-    return "reasoning.effort must be low, medium, or high.";
+  if (body.reasoning?.effort != null && !["low", "medium", "high", "xhigh"].includes(body.reasoning.effort)) {
+    return "reasoning.effort must be low, medium, high, or xhigh.";
   }
 
   if (Array.isArray(body.tools)) {

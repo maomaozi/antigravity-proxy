@@ -100,7 +100,11 @@ describe("canonical completion core", () => {
     const canonical = adaptChatCompletionRequest(body);
     const refactored = transformCompletionToGoogleBody(canonical, "project", "", "session", false);
 
-    // requestId is intentionally generated per transformation; everything else is the contract.
+    // Request and trajectory IDs are generated per transformation; semantic input stays identical.
+    for (const transformed of [legacy, refactored]) {
+      delete transformed.request.labels.trajectory_id;
+      delete transformed.request.labels.request_id;
+    }
     expect({ ...refactored, requestId: "<generated>" }).toEqual({ ...legacy, requestId: "<generated>" });
   });
 

@@ -1,0 +1,33 @@
+{
+  "visibility": {
+    "showPatterns": ["image"],
+    "hidePatterns": ["^gemini-(?:[0-2](?:\\.|-|$)|3(?:\\.[0-5](?:-|$)|-(?![0-9])|$))"]
+  },
+  "poolRules": [
+    {
+      "patterns": ["^gemini-4-argon(?:-|$)", "^gemini-pro-orchestrator-g1-pro$", "orchestrator.*argon"],
+      "pools": ["Gemini 4 Argon", "Gemini Models"]
+    },
+    {
+      "patterns": ["claude", "gpt"],
+      "pools": ["Claude and GPT models"]
+    },
+    {
+      "patterns": ["^gemini-4-hydrogen(?:-|$)"],
+      "pools": ["Gemini Models"]
+    },
+    {
+      "patterns": ["gemini"],
+      "pools": ["Gemini Models"],
+      "preferDeclaredPool": true
+    }
+  ],
+  "groups": [
+    {
+      "name": "Gemini 4 Hydrogen",
+      "patterns": ["^gemini-4-hydrogen(?:-|$)"],
+      "separateWhen": "different-accounts"
+    }
+  ],
+  "groupOrder": ["Gemini Models", "Gemini 4 Hydrogen", "Claude and GPT models", "Gemini 4 Argon"]
+}

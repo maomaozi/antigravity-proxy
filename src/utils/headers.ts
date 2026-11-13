@@ -6,7 +6,7 @@ export function getAntigravityNativeHeaders(accessToken: string): Record<string,
   return {
     "Authorization": `Bearer ${accessToken}`,
     "Content-Type": "application/json",
-    "User-Agent": `antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} (aidev_client; os_type=linux; arch=arm64; cl=${ANTIGRAVITY_CLIENT_BUILD})`,
+    "User-Agent": `antigravity/hub/${ANTIGRAVITY_CLIENT_VERSION} (aidev_client; os_type=linux; arch=arm64; cl=${ANTIGRAVITY_CLIENT_BUILD}; datacollection_opt_in=false)`,
   };
 }
 

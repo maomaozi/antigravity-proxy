@@ -1,6 +1,8 @@
 import { type ProxyConfig } from './types';
 import { EventEmitter } from 'node:events';
 import { readDurableJson, writeDurableJson } from '../utils/durable-json';
+import { readFileSync } from 'node:fs';
+import { validateModelDisplayConfig } from './model-display';
 
 const CONFIG_PATH = 'config.json';
 export const configEventBus = new EventEmitter();
@@ -8,6 +10,7 @@ export const configEventBus = new EventEmitter();
 let config: ProxyConfig;
 
 const DEFAULT_CONFIG: ProxyConfig = {
+  display: JSON.parse(readFileSync(new URL('./model-display-defaults.json', import.meta.url), 'utf8')),
   rotation: {
     cooldown: {
       defaultDurationMs: 60000,
@@ -93,6 +96,7 @@ function decodeConfig(value: unknown): Partial<ProxyConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid proxy configuration');
   // Discard legacy endpoint lists, including those sent by older dashboard tabs.
   const { endpoints: _legacyEndpoints, ...current } = value as Partial<ProxyConfig> & { endpoints?: unknown };
+  if (current.display !== undefined) validateModelDisplayConfig(current.display);
   return current;
 }
 

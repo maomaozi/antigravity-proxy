@@ -36,7 +36,7 @@ describe("Responses namespace context", () => {
     const serialized = JSON.stringify(upstream);
     expect(serialized.split(rules.trim()).length - 1).toBe(1);
     expect(upstream.systemInstruction.parts[0].text).toContain("Original system instructions.\n\nOriginal developer instructions.");
-    const declarations = upstream.tools[0].functionDeclarations;
+    const declarations = upstream.tools.flatMap((tool: any) => tool.functionDeclarations || []);
     expect(declarations).toHaveLength(3);
     expect(new Set(declarations.map((tool: any) => tool.name)).size).toBe(3);
     expect(declarations[0].description).toContain("[Responses namespace: inventory]");
@@ -79,7 +79,7 @@ describe("Responses client tool search", () => {
     expect(loaded.tools).toHaveLength(2);
     const upstream = google(loaded).request;
     expect(upstream.systemInstruction.parts[0].text).toContain(inventory.description);
-    expect(upstream.tools[0].functionDeclarations[1].parameters.properties.sku.type).toBe("STRING");
+    expect(upstream.tools[1].functionDeclarations[0].parameters.properties.sku.type).toBe("STRING");
     expect(upstream.contents[1].parts[0]).toMatchObject({ functionCall: { id: "search-call", name: declaration.name, args: { query: "inventory SKU lookup", limit: 1 } }, thoughtSignature: "signed-search" });
     expect(upstream.contents[2].parts[0]).toEqual({ functionResponse: { id: "search-call", name: declaration.name, response: { tools: [{ name: "lookup", namespace: "inventory" }] } } });
     expect(JSON.stringify(upstream.contents[2])).not.toContain("properties");

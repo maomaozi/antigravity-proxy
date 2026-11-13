@@ -379,6 +379,7 @@ Bun.serve({
 
                 send("init", {
                     version: APP_VERSION,
+                    display: getProxyConfig().display,
                     accounts: getAccounts(),
                     supportedModels: getSupportedModelIds(),
                     antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) },
@@ -387,7 +388,7 @@ Bun.serve({
                     logs: logBuffer
                 });
 
-                onUpdate = (data: any) => send("update", { ...data, antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) }, supportedModels: getSupportedModelIds(), codexModels: getCodexModelIds() });
+                onUpdate = (data: any) => send("update", { ...data, display: getProxyConfig().display, antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) }, supportedModels: getSupportedModelIds(), codexModels: getCodexModelIds() });
                 onFlash = (data: { email: string, status: 'success' | 'error' }) => send("flash", data);
                 onLog = (msg: string) => send("log", { message: msg });
                 onCooldown = (data: any) => send("cooldown", data);
@@ -506,12 +507,17 @@ Bun.serve({
     if (cleanPath === "/api/status") {
         return json({
             version: APP_VERSION,
+            display: getProxyConfig().display,
             accounts: getAccounts(),
             codexAccounts: codexAccountManager.listPublic(),
             supportedModels: getSupportedModelIds(),
             antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) },
             codexModels: getCodexModelIds()
         });
+    }
+
+    if (cleanPath === "/api/model-display" && req.method === "GET") {
+        return json(getProxyConfig().display, 200, { "Cache-Control": "no-store" });
     }
 
     if (cleanPath === "/api/config" && req.method === "GET") {
@@ -522,6 +528,7 @@ Bun.serve({
         try {
             const body = await req.json() as any;
             const updated = await updateProxyConfig(body);
+            eventBus.emit('update', { accounts: getAccounts() });
             return json(updated);
         } catch (e: any) {
             return json({ error: e.message }, 400);

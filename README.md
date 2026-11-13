@@ -15,8 +15,8 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
 - **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for unused Google quota pools and Codex 5-hour windows. Google activation selects an advertised chat model per independent pool, including Claude/Opus and dedicated model quotas such as Argon. Shared pools receive one request, exhausted pools are skipped, and quotas are refreshed after activation. The first check runs 10 minutes after server startup.
-- **Antigravity Routing**: Accesses Antigravity Gemini, Claude, and GPT-OSS models through the Sandbox Pool, including account-specific Gemini 4 Argon and Claude Sonnet/Opus 5.5 models.
-- **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs via a built-in web interface.
+- **Antigravity Routing**: Uses the verified Hub 2.31.2 request format and discovers account-specific Gemini 4 Hydrogen, Argon, Orchestrator, and Claude Sonnet/Opus 5.5 models. Hydrogen supports the XHigh thinking tier.
+- **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs. Configurable rules merge or separate quota cards and account details, counting each account once per displayed group and identifying shared quota sources.
 - **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account and pool in SQLite. Google requests always use `daily-cloudcode-pa.googleapis.com`; retries switch accounts on that host.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
 
@@ -142,6 +142,112 @@ the selected account is logged on the server, and OAuth tokens stay server-side.
 for enabled accounts during quota refreshes, and configured Codex model IDs.
 It uses the latest saved discovery results rather than querying upstream on each
 request. A listed model still requires an eligible account with available quota.
+
+The dashboard and Playground hide Gemini 3.5 and older **chat** models. The
+`gemini-3.1-flash-image` image model remains visible in Image Studio. Existing
+API model IDs remain available for compatibility when supported upstream.
+
+### Shared Quota Pools
+
+Pools are separate for each Google account. Models within one pool share its
+remaining quota; model tiers are not additional quota balances. The dashboard
+shows each account once per displayed group and keeps its 5-hour and weekly windows
+separate. Missing windows are not treated as unlimited quota or included in
+the average for accounts that report them. The account's tighter window
+determines its displayed availability.
+
+| Pool | Models sharing the pool |
+| --- | --- |
+| Gemini Models | Gemini 3.8 Flash tiers, Gemini 4 Hydrogen tiers, Flash Worker, and Gemini 3.1 Flash Image; older API-compatible Gemini models also use this pool |
+| Claude and GPT models | Claude Sonnet and Opus across available versions and tiers, plus GPT-OSS 120B |
+| Gemini 4 Argon | Argon tiers and Orchestrator (Argon), on accounts whose quota summary advertises a dedicated Argon pool |
+
+Some plans include Argon in the common Gemini pool. Pool membership follows
+the account's quota summary rather than assuming every account has a separate
+Argon allowance. A weekly limit of zero blocks the pool even if another window
+shows 100% remaining.
+
+### Configurable Model Display
+
+Display grouping and quota accounting are separate. By default, Hydrogen gets
+its own card only when it is supported by fewer accounts than its underlying
+Gemini pool. Its card counts only supporting accounts and shows
+**Shared quota: Gemini Models**. Its balance is a view of that existing pool,
+not additional quota that can be summed with the Gemini card.
+
+Edit **Configuration → Model Display Rules (JSON)** to change grouping without
+changing code. Saving applies the policy to open dashboards immediately.
+Playground reloads visibility settings when its model catalog is reloaded.
+The same settings are stored in `config.json` under `display`; after editing
+that file directly, restart the service to load the changes. Defaults are in
+[model-display-defaults.json](src/config/model-display-defaults.json).
+
+For example, this partial configuration separates Hydrogen only when its
+supporting account set differs from that of its quota pool:
+
+```json
+{
+  "display": {
+    "groups": [
+      {
+        "name": "Gemini 4 Hydrogen",
+        "patterns": ["^gemini-4-hydrogen(?:-|$)"],
+        "separateWhen": "different-accounts"
+      }
+    ]
+  }
+}
+```
+
+- `groups`: ordered display rules. Use `separateWhen: "always"` to keep a
+  matched group separate even when every account supports it. Remove a rule
+  to merge those models back into their quota pool; `groups: []` merges all
+  displayed models by quota pool. A quota row containing several model IDs
+  can be split across groups without modifying stored quota data.
+- `poolRules`: ordered model patterns and candidate upstream pool names.
+  Candidates are checked against each account's quota summary in order.
+  `preferDeclaredPool: true` preserves a dedicated pool identified by the
+  account's metadata. These rules associate displayed groups with quota
+  windows; they do not change upstream accounting or request routing.
+- `visibility.showPatterns` and `visibility.hidePatterns`: model visibility
+  rules shared by the dashboard and Playground. Show rules take precedence;
+  defaults hide Gemini 3.5 and older chat models while preserving images.
+- `groupOrder`: preferred card order. Unlisted groups follow alphabetically.
+
+Patterns are case-insensitive regular expressions matching lowercase model
+IDs with the `antigravity-` prefix removed. When a legacy quota row has no
+model ID, its display name is used with spaces replaced by hyphens. Arrays
+replace default rule arrays rather than being appended. Invalid JSON or
+regular expressions are rejected before configuration is saved.
+
+Policies can also be updated with `POST /api/config` using a partial
+`{"display": ...}` body. `GET /api/model-display` returns the effective policy
+without exposing unrelated settings.
+
+Orchestrator is listed as **Orchestrator (Argon)** in Playground and in the
+appropriate quota card. Its proxy ID is
+`antigravity-gemini-pro-orchestrator-g1-pro`. It appears after quota discovery
+for an eligible account. Discovery refreshes at startup and on the configured
+quota refresh interval; use **Refresh usage** to reload its latest snapshot,
+then reload the Playground model catalog. Older Hub client identifiers do not
+receive this model from upstream. Its advertised quota matches Argon;
+delegated Hydrogen work may also consume Gemini quota, which has not been
+verified through generation-side quota measurements.
+
+### Native Request Format
+
+Google model requests use the Hub 2.31.2 Linux ARM User-Agent (build
+`1019359392`) with OAuth authorization and JSON content type. Legacy IDE and
+device headers are omitted. Agent requests use the native request envelope,
+slash-delimited request IDs, stable signed decimal session IDs, and model
+labels. Caller messages and tools remain the source of the request content.
+
+Thinking levels use native uppercase enum names; Hydrogen `xhigh` is encoded
+as numeric enum value `100`. Claude 5.5 uses thinking levels, while legacy
+Claude models retain their thinking budgets. GPT-OSS Medium uses the native
+8192-token thinking budget. Function tools are emitted as one declaration per
+tool entry, while the proxy retains its JSON Schema compatibility handling.
+See [the protocol verification notes](docs/antigravity-2.31.2-protocol.md).
 
 Chat and Responses failures preserve their cause in `error.code`:
 
