@@ -9,8 +9,10 @@ const sessions = await Bun.file(new URL("../../src/frontend/js/sessions.js", imp
 const sessionsPage = await Bun.file(new URL("../../src/frontend/sessions.html", import.meta.url)).text();
 
 const defaultDisplay = await Bun.file(new URL("../../src/config/model-display-defaults.json", import.meta.url)).json();
+// Keep baseline pool-merging tests independent of the configured version splits.
+const mergedDisplay = { ...defaultDisplay, groups: defaultDisplay.groups.filter((group: any) => group.name === 'Gemini 4 Hydrogen') };
 
-function createCodexQuotaHarness(display = defaultDisplay) {
+function createCodexQuotaHarness(display = mergedDisplay) {
   (globalThis as any).AntigravityModelDisplay.configure(display);
   (globalThis as any).AntigravityModelDisplay.setAccounts([]);
   const elements = new Map<string, { innerHTML: string }>();
@@ -46,6 +48,33 @@ function createCodexQuotaHarness(display = defaultDisplay) {
 }
 
 describe("dashboard account provider layout", () => {
+  test('merges Sonnet and Opus within each Claude version while counting shared accounts and thinking tiers once', () => {
+    const accounts = Array.from({ length: 9 }, (_, index) => {
+      const version = index < 6 ? '4-6' : '5-5';
+      const remainingFraction = index < 6 ? 0.8 : 0.2;
+      const ids = ['sonnet', 'opus'].flatMap(family => version === '5-5'
+        ? ['low', 'medium', 'high'].map(tier => `claude-${family}-${version}-${tier}`)
+        : [`claude-${family}-${version}${family === 'opus' ? '-thinking' : ''}`]);
+      return {
+        email: `version-${index}@example.com`, healthScore: 100,
+        quota: [...ids, 'gpt-oss-120b-medium'].map(modelId => ({ modelId, groupName: modelId, remainingFraction })),
+        quotaWindows: [{ groupName: 'Claude and GPT models', window: 'weekly', remainingFraction }],
+      };
+    });
+    const harness = createCodexQuotaHarness(defaultDisplay);
+    const stats = harness.families(accounts);
+    expect(stats.map((stat: any) => [stat.name, stat.total, stat.availability])).toEqual([
+      ['Claude 4.6', 6, 80], ['Claude 5.5', 3, 20], ['GPT-OSS 120B', 9, 60],
+    ]);
+    for (const stat of stats) {
+      expect(stat.quotaPools).toEqual(['Claude and GPT models']);
+      expect(stat.familyData.accounts.map((row: any) => row.email)).toEqual(accounts
+        .filter(account => account.quota.some(quota => (globalThis as any).AntigravityModelDisplay.groupName(account, quota) === stat.name))
+        .map(account => account.email));
+    }
+    expect(harness.renderPools(accounts).match(/Shared quota: Claude and GPT models/g)).toHaveLength(3);
+  });
+
   test('separates restricted Hydrogen accounts without inventing a separate quota pool', () => {
     const accounts = [
       { email: 'full@example.com', healthScore: 100,

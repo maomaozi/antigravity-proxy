@@ -175,6 +175,14 @@ Gemini pool. Its card counts only supporting accounts and shows
 **Shared quota: Gemini Models**. Its balance is a view of that existing pool,
 not additional quota that can be summed with the Gemini card.
 
+Claude versions are separated when their supporting accounts differ. Sonnet
+and Opus share a card within each version because they use the same quota
+pool and supporting accounts: **Claude 4.6** and **Claude 5.5**. Thinking tiers
+remain together, and each account is counted once. GPT-OSS 120B has its
+own display group. These cards all show **Shared quota: Claude and GPT models**;
+switching between them does not provide a separate quota balance on the same
+account. Each card counts only the accounts that advertise its models.
+
 Edit **Configuration → Model Display Rules (JSON)** to change grouping without
 changing code. Saving applies the policy to open dashboards immediately.
 Playground reloads visibility settings when its model catalog is reloaded.
