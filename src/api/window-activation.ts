@@ -2,7 +2,6 @@ import { accountSupportsModel, findAccountModel, getAccountQuotaWindows, getMode
 import { transformCompletionToGoogleBody } from "../utils/transform";
 import { randomUUID } from "node:crypto";
 import {
-  ensureFingerprint,
   getAccounts,
   prepareAccountForRequest,
   saveAccounts,
@@ -17,7 +16,7 @@ import type {
   CodexUsageSnapshot,
 } from "../codex/account-manager";
 import { getProxyConfig } from "../config/manager";
-import { getImpersonationHeaders } from "../utils/headers";
+import { getAntigravityNativeHeaders } from "../utils/headers";
 import { parseGoogleError } from "../utils/errors";
 import { fetchQuota, fetchQuotaWindows, refreshAllQuotas } from "./quota";
 import { ANTIGRAVITY_STREAM_URL } from "./endpoints";
@@ -110,11 +109,10 @@ export function isCodexFiveHourWindowInactive(usage: CodexUsage | null): boolean
 }
 
 function googleActivationBody(account: AntigravityAccount, model: string): Record<string, unknown> {
-  const body = transformCompletionToGoogleBody({
+  return transformCompletionToGoogleBody({
     model, messages: [{ role: "user", content: "." }], stream: false,
     maxOutputTokens: 2048, thinkingBudget: 1024,
   }, account.projectId!, "", randomUUID(), false, findAccountModel(account, model));
-  return { ...body, requestId: `window-activation-${randomUUID()}` };
 }
 
 export async function activateGoogleModelWindow(
@@ -126,10 +124,9 @@ export async function activateGoogleModelWindow(
   const send = async (forceRefresh: boolean): Promise<Response | null> => {
     const ready = await prepareAccountForRequest(account.email, forceRefresh);
     if (!ready?.accessToken || !ready.projectId) return null;
-    ensureFingerprint(ready);
     return fetchImpl(ANTIGRAVITY_STREAM_URL, {
       method: "POST",
-      headers: getImpersonationHeaders(ready.accessToken, ready.fingerprint, model),
+      headers: getAntigravityNativeHeaders(ready.accessToken),
       body: JSON.stringify(googleActivationBody(ready, model)),
       signal: AbortSignal.timeout(60_000),
     });

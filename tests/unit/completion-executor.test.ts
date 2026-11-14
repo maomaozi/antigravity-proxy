@@ -10,6 +10,7 @@ import { getProxyConfig } from "../../src/config/manager";
 import { fetchQuota, fetchQuotaWindows } from "../../src/api/quota";
 import { activateGoogleGeminiWindow, activateGoogleModelWindow } from "../../src/api/window-activation";
 import { ANTIGRAVITY_STREAM_URL } from "../../src/api/endpoints";
+import { getAntigravityNativeHeaders, OAUTH_CONFIG } from "../../src/utils/headers";
 
 describe("completion executor timeouts resolution", () => {
   test("defaults to 120s for first byte and 900s for stream when no config provided", () => {
@@ -176,11 +177,52 @@ describe("completion failure classification", () => {
       return Response.json({ candidates: [{ content: { role: "model", parts: [{ text: "." }] }, finishReason: "STOP" }] });
     }) as unknown as typeof fetch);
     expect(await activateGoogleModelWindow(a, id)).toBe(true);
-    expect(JSON.parse(String(fetchSpy.mock.calls[0]![1]!.body)).model).toBe(id);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe(ANTIGRAVITY_STREAM_URL);
+    const body = JSON.parse(String(init!.body));
+    expect(body.model).toBe(id);
+    expect(body.requestType).toBe("agent");
+    expect(body.requestId).toMatch(/^agent\/[\da-f-]{36}\/\d+\/[\da-f-]{36}\/1$/);
+    const [, cascadeId, , trajectoryId] = body.requestId.split("/");
+    expect(body.request.labels).toMatchObject({
+      cascade_id: cascadeId, root_cascade_id: cascadeId,
+      trajectory_id: trajectoryId, request_id: `${trajectoryId}-0`,
+    });
+    expect(body.request.contents).toEqual([{ role: "user", parts: [{ text: "." }] }]);
+    expect(body.request.generationConfig.maxOutputTokens).toBe(2048);
+    for (const [, requestInit] of fetchSpy.mock.calls) {
+      expect(Object.fromEntries(new Headers(requestInit?.headers)))
+        .toEqual(Object.fromEntries(new Headers(getAntigravityNativeHeaders("access"))));
+    }
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(a.quota?.[0]?.remainingFraction).toBe(0.99);
     expect(a.quotaWindows?.[0]?.remainingFraction).toBe(0.99);
     expect(saveSpy).toHaveBeenCalled();
+  });
+
+  test("retries activation with native headers after refreshing an expired access token", async () => {
+    const a = getAccounts()[0]!;
+    fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ access_token: "refreshed-access", expires_in: 3600 }))
+      .mockResolvedValueOnce(new Response("data: {}\n\n"))
+      .mockResolvedValueOnce(Response.json({ models: {
+        "gemini-3.8-flash-tiered": { displayName: "Gemini Flash", quotaInfo: { remainingFraction: 0.99 } },
+      } }))
+      .mockResolvedValueOnce(Response.json({ groups: [] }));
+
+    expect(await activateGoogleGeminiWindow(a)).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
+    expect(fetchSpy.mock.calls[1]![0]).toBe(OAUTH_CONFIG.tokenUri);
+    const attempts = [fetchSpy.mock.calls[0]!, fetchSpy.mock.calls[2]!];
+    for (const [index, [url, init]] of attempts.entries()) {
+      expect(url).toBe(ANTIGRAVITY_STREAM_URL);
+      expect(Object.fromEntries(new Headers(init?.headers)))
+        .toEqual(Object.fromEntries(new Headers(getAntigravityNativeHeaders(index === 0 ? "access" : "refreshed-access"))));
+      expect(JSON.parse(String(init?.body)).requestId).toMatch(/^agent\/[\da-f-]{36}\/\d+\/[\da-f-]{36}\/1$/);
+    }
+    expect(a.accessToken).toBe("refreshed-access");
+    expect(a.quota?.[0]?.remainingFraction).toBe(0.99);
   });
 
   test("cached model rejection returns 404 without making a Google request", async () => {
