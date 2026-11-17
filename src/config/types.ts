@@ -48,12 +48,19 @@ export interface ScoringConfig {
 }
 
 export interface ModelsConfig {
+  overrides?: Record<string, ModelMetadataOverride>;
   blacklist: string[];
   routing: {
     sandboxKeywords: string[];
     forceToSandbox: string[];
   };
   timeouts: Record<string, number>;
+}
+
+export interface ModelMetadataOverride {
+  name?: string;
+  thinkingLevels?: string[];
+  defaultThinkingLevel?: string;
 }
 
 export interface RetryConfig {

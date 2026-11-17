@@ -102,6 +102,22 @@ describe("dashboard account provider layout", () => {
     expect(accounts[0]!.quota[0]).toMatchObject({ modelIds: ['gemini-3.8-flash-high', 'gemini-4-hydrogen-high'] });
   });
 
+  test('keeps universally available Sonar in Gemini while counting only standard Hydrogen supporting accounts', () => {
+    const accounts = Array.from({ length: 8 }, (_, index) => ({
+      email: `hydrogen-${index}@example.com`, healthScore: 100,
+      quota: [{ modelIds: ['gemini-3.8-flash-high', 'gemini-4-hydrogen-sonar', ...(index < 2 ? ['gemini-4-hydrogen-low', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-tiered-xhigh'] : [])], groupName: 'Gemini Models', remainingFraction: 0.8 }],
+      quotaWindows: [{ groupName: 'Gemini Models', window: 'weekly', remainingFraction: 0.8 }],
+    }));
+    const harness = createCodexQuotaHarness();
+    const stats = harness.families(accounts);
+    expect(stats.map((stat: any) => [stat.name, stat.total])).toEqual([['Gemini Models', 8], ['Gemini 4 Hydrogen', 2]]);
+    expect(stats[1].quotaPools).toEqual(['Gemini Models']);
+    expect(stats[1].familyData.accounts.map((row: any) => row.email)).toEqual(accounts.slice(0, 2).map(account => account.email));
+    const html = harness.renderGoogle(accounts.slice(2));
+    expect(html).toContain('gemini-4-hydrogen-sonar');
+    expect(html).not.toContain('Shared quota: Gemini Models');
+  });
+
   test('lets configuration merge, always split, or conditionally split the same models', () => {
     const accounts = ['a', 'b'].map(name => ({ email: `${name}@example.com`, healthScore: 100,
       quota: ['gemini-3.8-flash-high', 'gemini-4-hydrogen-high'].map(modelId => ({ modelId, groupName: modelId, remainingFraction: 0.5 })),

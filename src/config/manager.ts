@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { readDurableJson, writeDurableJson } from '../utils/durable-json';
 import { readFileSync } from 'node:fs';
 import { validateModelDisplayConfig } from './model-display';
+import { validateModelMetadataOverrides } from './model-metadata';
 
 const CONFIG_PATH = 'config.json';
 export const configEventBus = new EventEmitter();
@@ -38,6 +39,7 @@ const DEFAULT_CONFIG: ProxyConfig = {
     }
   },
   models: {
+    overrides: JSON.parse(readFileSync(new URL('./model-metadata-defaults.json', import.meta.url), 'utf8')),
     blacklist: [],
     routing: {
       sandboxKeywords: ['gpt', 'antigravity', 'image'],
@@ -97,6 +99,7 @@ function decodeConfig(value: unknown): Partial<ProxyConfig> {
   // Discard legacy endpoint lists, including those sent by older dashboard tabs.
   const { endpoints: _legacyEndpoints, ...current } = value as Partial<ProxyConfig> & { endpoints?: unknown };
   if (current.display !== undefined) validateModelDisplayConfig(current.display);
+  if (current.models?.overrides !== undefined) validateModelMetadataOverrides(current.models.overrides);
   return current;
 }
 

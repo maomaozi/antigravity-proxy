@@ -1,0 +1,7 @@
+{
+  "gemini-4-hydrogen-sonar": {
+    "name": "Gemini 4 Hydrogen Sonar",
+    "thinkingLevels": ["low", "medium", "high"],
+    "defaultThinkingLevel": "low"
+  }
+}

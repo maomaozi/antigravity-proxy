@@ -15,7 +15,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
 - **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for unused Google quota pools and Codex 5-hour windows. Google activation selects an advertised chat model per independent pool, including Claude/Opus and dedicated model quotas such as Argon. Shared pools receive one request, exhausted pools are skipped, and quotas are refreshed after activation. The first check runs 10 minutes after server startup.
-- **Antigravity Routing**: Uses the verified Hub 2.31.2 request format and discovers account-specific Gemini 4 Hydrogen, Argon, Orchestrator, and Claude Sonnet/Opus 5.5 models. Hydrogen supports the XHigh thinking tier.
+- **Antigravity Routing**: Uses the verified Hub 2.31.2 request format and discovers account-specific Gemini 4 Hydrogen, Hydrogen Sonar, Argon, Orchestrator, and Claude Sonnet/Opus 5.5 models. Standard Hydrogen supports XHigh; Sonar exposes Low/Medium/High with Low as its default.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs. Configurable rules merge or separate quota cards and account details, counting each account once per displayed group and identifying shared quota sources.
 - **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account and pool in SQLite. Google requests always use `daily-cloudcode-pa.googleapis.com`; retries switch accounts on that host.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
@@ -158,7 +158,7 @@ determines its displayed availability.
 
 | Pool | Models sharing the pool |
 | --- | --- |
-| Gemini Models | Gemini 3.8 Flash tiers, Gemini 4 Hydrogen tiers, Flash Worker, and Gemini 3.1 Flash Image; older API-compatible Gemini models also use this pool |
+| Gemini Models | Gemini 3.8 Flash tiers, standard Gemini 4 Hydrogen tiers, Hydrogen Sonar, Flash Worker, and Gemini 3.1 Flash Image; older API-compatible Gemini models also use this pool |
 | Claude and GPT models | Claude Sonnet and Opus across available versions and tiers, plus GPT-OSS 120B |
 | Gemini 4 Argon | Argon tiers and Orchestrator (Argon), on accounts whose quota summary advertises a dedicated Argon pool |
 
@@ -169,9 +169,11 @@ shows 100% remaining.
 
 ### Configurable Model Display
 
-Display grouping and quota accounting are separate. By default, Hydrogen gets
-its own card only when it is supported by fewer accounts than its underlying
-Gemini pool. Its card counts only supporting accounts and shows
+Display grouping and quota accounting are separate. By default, standard
+Hydrogen gets its own card only when it is supported by fewer accounts than
+its underlying Gemini pool. The rule excludes Sonar, which stays in the
+common Gemini card. The Hydrogen card counts only accounts advertising its
+standard tiers, even when all accounts advertise Sonar, and shows
 **Shared quota: Gemini Models**. Its balance is a view of that existing pool,
 not additional quota that can be summed with the Gemini card.
 
@@ -190,7 +192,7 @@ The same settings are stored in `config.json` under `display`; after editing
 that file directly, restart the service to load the changes. Defaults are in
 [model-display-defaults.json](src/config/model-display-defaults.json).
 
-For example, this partial configuration separates Hydrogen only when its
+For example, this partial configuration separates standard Hydrogen only when its
 supporting account set differs from that of its quota pool:
 
 ```json
@@ -199,7 +201,7 @@ supporting account set differs from that of its quota pool:
     "groups": [
       {
         "name": "Gemini 4 Hydrogen",
-        "patterns": ["^gemini-4-hydrogen(?:-|$)"],
+        "patterns": ["^gemini-4-hydrogen(?!-sonar(?:-|$))(?:-|$)"],
         "separateWhen": "different-accounts"
       }
     ]
@@ -241,6 +243,66 @@ then reload the Playground model catalog. Older Hub client identifiers do not
 receive this model from upstream. Its advertised quota matches Argon;
 delegated Hydrogen work may also consume Gemini quota, which has not been
 verified through generation-side quota measurements.
+
+### Hydrogen Sonar
+
+Sonar's proxy model ID is `antigravity-gemini-4-hydrogen-sonar`. It appears
+after an eligible account advertises it. Sonar and standard Hydrogen have
+distinct routing IDs: a standard Hydrogen request only uses accounts that
+advertise the requested standard tier. It does not fall back to Sonar when
+those accounts are unavailable. Both use the account's shared Gemini quota.
+
+Playground and `/v1/models` expose Sonar's verified **low / medium / high**
+thinking levels, with **low** selected by default. `xhigh` is rejected locally
+with HTTP 400; standard Hydrogen retains XHigh support. For Chat Completions:
+
+```json
+{
+  "model": "antigravity-gemini-4-hydrogen-sonar",
+  "messages": [{ "role": "user", "content": "Write a Rust quicksort." }],
+  "reasoning_effort": "medium",
+  "max_tokens": 4096
+}
+```
+
+For `/v1/responses`, use `"reasoning": { "effort": "medium" }` and
+`max_output_tokens`. The proxy keeps the Sonar routing ID while setting the
+upstream thinking level. It honors the caller's output limit and caps it at
+the account's discovered model limit: Sonar currently advertises 65,536
+output tokens, compared with 262,144 for standard Hydrogen.
+
+High is accepted upstream, but in two quicksort probes on 2026-11-17 it spent
+8,189 thinking tokens and reached `MAX_TOKENS` under an 8,192 generation
+limit without producing usable code. Low and Medium completed normally.
+Thinking consumes generation capacity; selecting High does not automatically
+increase the caller's limit. These observations do not establish an
+equivalent standard Hydrogen tier or a different quota billing multiplier.
+
+Verified metadata supplements are stored in `models.overrides` in
+`config.json`; defaults are in
+[model-metadata-defaults.json](src/config/model-metadata-defaults.json):
+
+```json
+{
+  "models": {
+    "overrides": {
+      "gemini-4-hydrogen-sonar": {
+        "name": "Gemini 4 Hydrogen Sonar",
+        "thinkingLevels": ["low", "medium", "high"],
+        "defaultThinkingLevel": "low"
+      }
+    }
+  }
+}
+```
+
+Keys are normalized upstream IDs without the `antigravity-` prefix. These
+settings enrich discovered entries and validate explicit reasoning effort;
+they do not add an undiscovered model, change its routing ID, or grant an
+account access to standard Hydrogen. Update them through `POST /api/config`
+and reload the Playground catalog, or restart after editing `config.json`.
+The same configuration mechanism can describe future models without adding
+model-specific branches to the frontend or router.
 
 ### Native Request Format
 

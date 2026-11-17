@@ -6,6 +6,7 @@ import { refreshAccessToken } from "../auth/oauth";
 import { ANTIGRAVITY_BASE_URL } from "./endpoints";
 import {
   getUnavailableModelError,
+  getModelMetadataOverride,
   normalizeModelId,
   findAccountModel,
   getModelFamilyName,
@@ -192,7 +193,7 @@ export async function fetchQuota(
     const models = modelEntries(data).filter(([id, model]) => isPublicModel(id, model));
     account.availableModels = models.map(([id, model]) => ({
       id: normalizeModelId(id),
-      name: model.displayMetadata?.label || model.displayName || id,
+      name: getModelMetadataOverride(id)?.name || model.displayMetadata?.label || model.displayName || id,
       supportsThinking: model.supportsThinking === true,
       maxOutputTokens: typeof model.maxOutputTokens === "number" ? model.maxOutputTokens : undefined,
       modelEnum: typeof model.model === "string" ? model.model : undefined,

@@ -2,7 +2,7 @@ import { getSignature, cacheSignature } from "./cache";
 import { cleanJSONSchemaForAntigravity } from "./schema";
 import { ClaudeToolSchemaError, normalizeClaudeToolSchema, toClaudeJSONSchema } from "./claude-schema";
 import { getProxyConfig } from "../config/manager";
-import { getUnavailableModelError, isModernGeminiModel, type DiscoveredModel } from "../models";
+import { getUnavailableModelError, getModelMetadataOverride, getModelReasoningError, isModernGeminiModel, type DiscoveredModel } from "../models";
 import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
 import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionChunk } from "../api/openai/chat";
 import { antigravityThinkingLevel, createAntigravityRequestContext } from "./antigravity-protocol";
@@ -88,6 +88,8 @@ export function validateCompletionRequestForGoogle(request: CompletionRequest): 
   if (typeof request.model !== "string" || !request.model.trim()) return "model is required.";
   const modelError = getUnavailableModelError(request.model);
   if (modelError) return modelError;
+  const reasoningError = getModelReasoningError(request.model, request.reasoningEffort);
+  if (reasoningError) return reasoningError;
   if (!Array.isArray(request.messages) || request.messages.length === 0) return "messages must be a non-empty array.";
   if (request.model.toLowerCase().includes("claude")) {
     try {
@@ -213,7 +215,7 @@ export function transformCompletionToGoogleBody(
     : undefined;
   let extractedTier = thinkingTierMatch
     ? thinkingTierMatch[1]
-    : (tierMatch ? tierMatch[1] : requestTier);
+    : (tierMatch ? tierMatch[1] : requestTier || getModelMetadataOverride(request.model)?.defaultThinkingLevel);
 
   // Stable proxy IDs hide Antigravity's changing runtime IDs. Some display
   // tiers intentionally map to unexpectedly named backend models.

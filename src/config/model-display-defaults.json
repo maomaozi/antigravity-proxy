@@ -25,7 +25,7 @@
   "groups": [
     {
       "name": "Gemini 4 Hydrogen",
-      "patterns": ["^gemini-4-hydrogen(?:-|$)"],
+      "patterns": ["^gemini-4-hydrogen(?!-sonar(?:-|$))(?:-|$)"],
       "separateWhen": "different-accounts"
     },
     {

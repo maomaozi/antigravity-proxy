@@ -1,4 +1,5 @@
 import type { AntigravityAccount } from "./auth/types";
+import { getProxyConfig } from "./config/manager";
 
 export interface SupportedModel {
   id: string;
@@ -62,6 +63,19 @@ export function normalizeModelId(id: string): string {
 
 export function modelBaseId(id: string): string {
   return normalizeModelId(id).replace(/-(?:thinking-)?(?:low|medium|high|xhigh|tiered)$/, "").replace(/-thinking$/, "");
+}
+
+export function getModelMetadataOverride(id: string) {
+  const overrides = getProxyConfig().models.overrides || {};
+  return overrides[normalizeModelId(id)] || overrides[modelBaseId(id)];
+}
+
+export function getModelReasoningError(id: string, effort?: string): string | undefined {
+  const levels = getModelMetadataOverride(id)?.thinkingLevels;
+  const selected = normalizeModelId(id).match(/-(low|medium|high|xhigh)$/)?.[1] || effort?.trim().toLowerCase();
+  if (levels && selected && !levels.includes(selected)) {
+    return `Model '${id}' does not support reasoning effort '${selected}'. Supported levels: ${levels.join(', ')}.`;
+  }
 }
 
 export function getModelFamilyName(name: string): string {
@@ -170,7 +184,16 @@ export function getAvailableModelCatalog(accounts: AntigravityAccount[]): Suppor
       }
     }
   }
-  return [...catalog.values()];
+  // Enrich discovered entries only; overrides never advertise undiscovered models.
+  return [...catalog.values()].map(model => {
+    const override = getModelMetadataOverride(model.id);
+    return override ? {
+      ...model,
+      name: override.name ?? model.name,
+      thinkingLevels: override.thinkingLevels ?? model.thinkingLevels,
+      defaultThinkingLevel: override.defaultThinkingLevel ?? model.defaultThinkingLevel,
+    } : model;
+  });
 }
 
 export function getAccountModelFamily(account: AntigravityAccount, id: string): string {
