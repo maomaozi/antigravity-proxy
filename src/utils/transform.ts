@@ -6,6 +6,7 @@ import { getUnavailableModelError, isModernGeminiModel, type DiscoveredModel } f
 import type { CompletionChunk, CompletionFinishReason, CompletionRequest, CompletionStreamEvent, CompletionUsage } from "../core/completion";
 import { adaptChatCompletionRequest, createChatCompletionStreamEncoder, encodeChatCompletionChunk } from "../api/openai/chat";
 import { antigravityThinkingLevel, createAntigravityRequestContext } from "./antigravity-protocol";
+import { replaceSystemPromptIdentity } from "./prompt-identity";
 
 const TOOL_NAME_REMAP_CACHE = new Map<string, string>();
 const SANITIZED_TOOL_NAME_CACHE = new Map<string, string>();
@@ -97,7 +98,7 @@ export function validateCompletionRequestForGoogle(request: CompletionRequest): 
     }
   }
 
-  const messages = request.messages.filter(message => message?.role !== "system");
+  const messages = request.messages.filter(message => message?.role !== "system" && message?.role !== "developer");
   const lastMessage = messages.at(-1);
   if (!lastMessage) return "At least one non-system message is required.";
   const isModernGeminiRequest = isModernGeminiModel(request.model);
@@ -309,9 +310,9 @@ export function transformCompletionToGoogleBody(
     extractedTier ||= discoveredModel.id.match(/-(low|medium|high|xhigh)$/)?.[1];
   }
 
-  // Extract system instruction (like plugin)
-  const systemMessage = request.messages.find(m => m.role === "system");
-  const otherMessages = request.messages.filter(m => m.role !== "system");
+  // Extract system instruction (merge multiple system/developer messages if present)
+  const systemMessages = request.messages.filter(m => m.role === "system" || m.role === "developer");
+  const otherMessages = request.messages.filter(m => m.role !== "system" && m.role !== "developer");
 
   // OpenAI-compatible clients such as OpenCode omit `name` from role=tool
   // messages. Recover it from the preceding assistant tool call using the
@@ -459,9 +460,31 @@ export function transformCompletionToGoogleBody(
       else thinkingBudget = 16000;
   }
   
-  const systemInstruction = systemMessage
-    ? { parts: [{ text: systemMessage.content }] }
-    : undefined;
+  const mergedSystemText = systemMessages
+    .map(msg => {
+      if (typeof msg.content === "string") return msg.content;
+      if (Array.isArray(msg.content)) {
+        return msg.content.filter(part => part?.type === "text").map(part => part.text ?? "").join("");
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+  let systemInstruction: { parts: Array<{ text: any }> } | undefined;
+  if (mergedSystemText) {
+    const replacement = replaceSystemPromptIdentity(mergedSystemText);
+    if (replacement.totalHits > 0) {
+      const ruleSummary = Object.entries(replacement.ruleHits)
+        .map(([ruleId, count]) => `${ruleId}:${count}`)
+        .join(",");
+      console.log(
+        `[SystemPrompt] Applied identity template rules (version=${replacement.version}, hits=${replacement.totalHits}, rules=${ruleSummary})`,
+      );
+    }
+    systemInstruction = { parts: [{ text: replacement.text }] };
+  } else if (systemMessages.length > 0) {
+    systemInstruction = { parts: [{ text: systemMessages[0]!.content }] };
+  }
 
   const requestedMaxTokens = Number(request.maxOutputTokens);
   const defaultMaxOutputTokens = discoveredModel?.maxOutputTokens || (isThinkingModel ? 64000 : 4096);

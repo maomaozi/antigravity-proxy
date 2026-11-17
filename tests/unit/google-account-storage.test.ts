@@ -32,15 +32,44 @@ describe("Google account storage", () => {
     expect(loaded.accounts[1]!.disabled).toBe(true);
   });
 
-  test("migrates old account-wide TOS detections without changing manual disables", async () => {
+  test("migrates old account-wide TOS detections to persistent service isolation without changing manual disables", async () => {
     const {path,storage} = await fixture();
     const legacy = {...account(),disabled:true,suspension:{reason:'tos_violation',detectedAt:123}};
     await storage.save({accounts:[legacy,{...account(),email:'manual@example.com',disabled:true}]});
     const loaded = await storage.load();
     expect(loaded.accounts[0]!.disabled).toBe(false);
-    expect(loaded.accounts[0]!.suspension).toBeUndefined();
+    expect(loaded.accounts[0]!.suspension).toMatchObject({
+      service: 'antigravity',
+      status: 'suspended',
+      reason: 'tos_violation',
+      detectedAt: 123,
+    });
     expect(loaded.accounts[1]!.disabled).toBe(true);
-    expect((await new GoogleAccountStorage(path).load()).accounts[0]!.disabled).toBe(false);
+    const reloaded = await new GoogleAccountStorage(path).load();
+    expect(reloaded.accounts[0]!.disabled).toBe(false);
+    expect(reloaded.accounts[0]!.suspension?.status).toBe('suspended');
+  });
+
+  test("migrates legacy poolSuspensions TOS entries into persistent Antigravity isolation", async () => {
+    const {path,storage} = await fixture();
+    const legacy = account();
+    legacy.poolSuspensions = {
+      'Gemini Models': {
+        reason: 'tos_violation',
+        model: 'gemini-3.8-flash-tiered',
+        detectedAt: 100,
+        retryAt: 200,
+      },
+    };
+    await storage.save({accounts:[legacy]});
+    const loaded = await new GoogleAccountStorage(path).load();
+    expect(loaded.accounts[0]!.suspension).toMatchObject({
+      service: 'antigravity',
+      status: 'suspended',
+      reason: 'tos_violation',
+      detectedAt: 100,
+      model: 'gemini-3.8-flash-tiered',
+    });
   });
 
   test("migrates legacy arrays and separates credentials from runtime state", async () => {

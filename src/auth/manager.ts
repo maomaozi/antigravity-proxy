@@ -1,12 +1,31 @@
-import { accountSupportsModel, getAccountModelQuotas, getAccountQuotaWindows, getModelFamilyName, getAccountModelFamily, getAccountModelPool, isAccountPoolSuspended } from "../models";
+import {
+  accountSupportsModel,
+  findAccountModel,
+  getAccountModelQuotas,
+  getAccountQuotaWindows,
+  getModelFamilyName,
+  getAccountModelFamily,
+  getAccountModelPool,
+  isAccountPoolSuspended,
+  isAccountTosSuspended,
+} from "../models";
 import { type AntigravityAccount, type PoolSuspension } from "./types";
-import { loadConfig, saveConfig } from "./storage";
+import { loadConfig, migrateAccountTosSuspension, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
-import { generateFingerprint } from "../utils/headers";
+import { generateFingerprint, getAntigravityNativeHeaders } from "../utils/headers";
 import { getProxyConfig } from "../config/manager";
-import { deleteSessionBindingsForAccount, getSessionBinding } from "../session/store";
+import {
+  clearTerminatedTosGuardsForAccount,
+  deleteSessionBindingsForAccount,
+  getSessionBinding,
+  getSessionRoutingGuard,
+} from "../session/store";
 import { EventEmitter } from "events";
 import { rendezvousScore } from "../utils/hash";
+import { ANTIGRAVITY_STREAM_URL } from "../api/endpoints";
+import { transformCompletionToGoogleBody } from "../utils/transform";
+import { parseGoogleError } from "../utils/errors";
+import { randomUUID } from "node:crypto";
 
 let accounts: AntigravityAccount[] = [];
 const cooldownMap = new Map<string, number>();
@@ -20,11 +39,12 @@ export function getFamilyName(modelName: string, account?: AntigravityAccount): 
 
 export async function initManager() {
   const config = await loadConfig();
-  accounts = config.accounts || [];
+  accounts = (config.accounts || []).map(account => migrateAccountTosSuspension(account));
   console.log(`[Manager] Loaded ${accounts.length} accounts from storage.`);
 }
 
 export function getAccounts() { return accounts; }
+
 export async function setAccountDisabled(
   email: string,
   disabled: boolean,
@@ -32,7 +52,9 @@ export async function setAccountDisabled(
   const account = accounts.find(candidate => candidate.email === email);
   if (!account) return false;
   account.disabled = disabled;
-  delete account.suspension;
+  if (account.suspension?.reason !== "tos_violation") {
+    delete account.suspension;
+  }
   if (disabled) deleteSessionBindingsForAccount(email, 'sandbox');
   await saveAccounts(accounts);
   return true;
@@ -48,20 +70,172 @@ export async function suspendAccountPool(
   const account = accounts.find(candidate => candidate.email === email);
   if (!account) return;
   const detectedAt = Date.now();
+  const isTos = suspension.reason === "tos_violation";
   account.poolSuspensions ||= {};
   account.poolSuspensions[getAccountModelPool(account, model)] = {
-    ...suspension, model, detectedAt, retryAt: detectedAt + POOL_SUSPENSION_RETRY_MS,
+    ...suspension,
+    model,
+    detectedAt,
+    retryAt: isTos ? Number.MAX_SAFE_INTEGER : detectedAt + POOL_SUSPENSION_RETRY_MS,
+    ...(isTos ? { permanent: true } : {}),
   };
+  if (isTos) {
+    account.suspension = {
+      service: "antigravity",
+      status: "suspended",
+      reason: "tos_violation",
+      ...(suspension.message ? { message: suspension.message } : {}),
+      ...(suspension.appealUrl ? { appealUrl: suspension.appealUrl } : {}),
+      detectedAt,
+      model,
+    };
+  }
   await saveAccounts(accounts);
 }
 
 export async function clearAccountPoolSuspension(email: string, model: string): Promise<void> {
   const account = accounts.find(candidate => candidate.email === email);
   if (!account?.poolSuspensions) return;
+  if (isAccountTosSuspended(account)) {
+    // Persistent TOS isolation can only be cleared after explicit manual recovery
+    // and controlled verification.
+    return;
+  }
   const pool = getAccountModelPool(account, model);
-  if (!account.poolSuspensions[pool]) return;
+  const existing = account.poolSuspensions[pool];
+  if (!existing || existing.reason === "tos_violation" || existing.permanent) return;
   delete account.poolSuspensions[pool];
   await saveAccounts(accounts);
+}
+
+/**
+ * Step 1 of manual TOS recovery: marks the suspended account as pending controlled
+ * verification while keeping persistent TOS isolation active until verification succeeds.
+ */
+export async function beginAccountTosRecovery(email: string): Promise<boolean> {
+  const account = accounts.find(candidate => candidate.email === email);
+  if (!account || !isAccountTosSuspended(account)) return false;
+  migrateAccountTosSuspension(account);
+  account.suspension = {
+    ...(account.suspension || {
+      service: "antigravity",
+      reason: "tos_violation",
+      detectedAt: Date.now(),
+    }),
+    service: "antigravity",
+    status: "pending_verification",
+  };
+  await saveAccounts(accounts);
+  return true;
+}
+
+/**
+ * Step 2 of manual TOS recovery: completes or reverts TOS recovery after a controlled
+ * verification probe. Isolation is only removed if `beginAccountTosRecovery` was initiated
+ * and `verified` is true.
+ */
+export async function completeAccountTosRecovery(
+  email: string,
+  verified: boolean,
+  failureDetails?: { message?: string; appealUrl?: string; model?: string },
+): Promise<boolean> {
+  const account = accounts.find(candidate => candidate.email === email);
+  if (!account || !isAccountTosSuspended(account)) return false;
+  migrateAccountTosSuspension(account);
+  if (account.suspension?.status !== "pending_verification") {
+    return false;
+  }
+  if (!verified) {
+    account.suspension = {
+      ...account.suspension,
+      status: "suspended",
+      ...(failureDetails?.message ? { message: failureDetails.message } : {}),
+      ...(failureDetails?.appealUrl ? { appealUrl: failureDetails.appealUrl } : {}),
+      ...(failureDetails?.model ? { model: failureDetails.model } : {}),
+    };
+    await saveAccounts(accounts);
+    return false;
+  }
+
+  delete account.suspension;
+  if (account.poolSuspensions) {
+    for (const [pool, entry] of Object.entries(account.poolSuspensions)) {
+      if (entry?.reason === "tos_violation") {
+        delete account.poolSuspensions[pool];
+      }
+    }
+    if (Object.keys(account.poolSuspensions).length === 0) {
+      delete account.poolSuspensions;
+    }
+  }
+  clearTerminatedTosGuardsForAccount(email);
+  await saveAccounts(accounts);
+  return true;
+}
+
+/**
+ * Executes explicit manual TOS recovery with a single controlled verification request.
+ * Retains full TOS isolation if the verification probe fails.
+ */
+export async function verifyAndRecoverTosAccount(
+  email: string,
+  options: { model?: string; fetchImpl?: typeof fetch } = {},
+): Promise<boolean> {
+  const account = accounts.find(candidate => candidate.email === email);
+  if (!account || account.disabled || !isAccountTosSuspended(account)) return false;
+  if (account.suspension?.status !== "pending_verification") {
+    await beginAccountTosRecovery(email);
+  }
+  const probeModel =
+    options.model
+    || account.suspension?.model
+    || account.availableModels?.[0]?.id
+    || "gemini-3.8-flash-tiered";
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  try {
+    const ready = await ensureAccountReady(account, false, true);
+    if (!ready?.accessToken || !ready.projectId) {
+      await completeAccountTosRecovery(email, false, { model: probeModel });
+      return false;
+    }
+    const body = transformCompletionToGoogleBody(
+      {
+        model: probeModel,
+        messages: [{ role: "user", content: "." }],
+        stream: false,
+        maxOutputTokens: 64,
+      },
+      ready.projectId,
+      "",
+      randomUUID(),
+      false,
+      findAccountModel(ready, probeModel),
+    );
+    const response = await fetchImpl(ANTIGRAVITY_STREAM_URL, {
+      method: "POST",
+      headers: getAntigravityNativeHeaders(ready.accessToken),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await response.text().catch(() => "");
+    if (!response.ok || /"error"\s*:|"response\.failed"/.test(text)) {
+      const parsed = parseGoogleError(text);
+      await completeAccountTosRecovery(email, false, {
+        message: parsed.message,
+        appealUrl: parsed.appealUrl,
+        model: probeModel,
+      });
+      return false;
+    }
+    return await completeAccountTosRecovery(email, true);
+  } catch (error: any) {
+    await completeAccountTosRecovery(email, false, {
+      message: error?.message,
+      model: probeModel,
+    });
+    return false;
+  }
 }
 
 export async function saveAccounts(newAccounts: AntigravityAccount[]) {
@@ -140,7 +314,7 @@ export function flagAccountChallenge(email: string, pool: 'sandbox', modelFamily
   }
 }
 
-function isAccountQuotaExhausted(account: AntigravityAccount, model?: string): boolean {
+export function isAccountQuotaExhausted(account: AntigravityAccount, model?: string): boolean {
   let config: ReturnType<typeof getProxyConfig>;
   try { config = getProxyConfig(); } catch { return false; }
   const threshold = config.features.softQuotaThresholdPercent;
@@ -220,10 +394,61 @@ export async function getBestAccount(
   const now = Date.now();
   const routingModel = model && reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort) && !/-(low|medium|high)$/.test(model)
     ? `${model}-${reasoningEffort}` : model;
-  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !excludeEmails.includes(a.email)
-    && (!routingModel || !isAccountPoolSuspended(a, routingModel, now)));
-  
+
   if (pool) {
+    let schedulingConfig: ReturnType<typeof getProxyConfig>['scheduling'] | undefined;
+    try { schedulingConfig = getProxyConfig().scheduling; } catch {}
+    const maxWaitMs = Math.min((schedulingConfig?.maxCacheFirstWaitSeconds || 3) * 1000, 3000);
+
+    // 1. Check persistent routing guard first.
+    const guard = sessionKey && model ? getSessionRoutingGuard(sessionKey, model) : null;
+    if (guard) {
+      if (guard.status === "terminated_tos") {
+        return null;
+      }
+      if (guard.status === "protected_429") {
+        if (guard.retryAt && guard.retryAt > now) {
+          return null;
+        }
+        // After retryAt, only the guarded account A may be probed; never fail over to B.
+        if (excludeEmails.includes(guard.accountEmail)) {
+          return null;
+        }
+        const guardedAccount = accounts.find(a =>
+          a.email === guard.accountEmail
+          && a.refreshToken
+          && !a.disabled
+          && !a.challenge
+          && (!routingModel || !isAccountPoolSuspended(a, routingModel, now))
+          && (!model || accountSupportsModel(a, model, reasoningEffort))
+        );
+        if (!guardedAccount) return null;
+        const cooldownKey = `${guardedAccount.email}|${pool}|${getFamilyName(model || "Other", guardedAccount)}`;
+        const expiry = cooldownMap.get(cooldownKey);
+        if (expiry && expiry > now) {
+          const waitMs = expiry - now;
+          if (waitMs > maxWaitMs) return null;
+          if (signal?.aborted) {
+            throw new DOMException("Request was aborted by the client", "AbortError");
+          }
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, waitMs);
+            signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              reject(new DOMException("Request was aborted by the client", "AbortError"));
+            }, { once: true });
+          });
+          cooldownMap.delete(cooldownKey);
+        } else if (expiry) {
+          cooldownMap.delete(cooldownKey);
+        }
+        return await ensureAccountReady(guardedAccount);
+      }
+    }
+
+    const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !excludeEmails.includes(a.email)
+      && (!routingModel || !isAccountPoolSuspended(a, routingModel, now)));
+
     let candidates = usable.filter(a => {
       if (model && !accountSupportsModel(a, model, reasoningEffort)) return false;
       if (isAccountQuotaExhausted(a, routingModel)) return false;
@@ -231,12 +456,9 @@ export async function getBestAccount(
       return !expiry || expiry <= now;
     });
 
-    let schedulingConfig: ReturnType<typeof getProxyConfig>['scheduling'] | undefined;
-    try { schedulingConfig = getProxyConfig().scheduling; } catch {}
-
     const binding = sessionKey && model ? getSessionBinding(sessionKey, model) : null;
-    const stickyEmail = binding?.accountEmail;
-    if (stickyEmail && excludeEmails.length === 0) {
+    const stickyEmail = guard?.accountEmail || binding?.accountEmail;
+    if (stickyEmail && !excludeEmails.includes(stickyEmail)) {
       const stickyAccount = usable.find(a =>
         a.email === stickyEmail &&
         (!model || accountSupportsModel(a, model, reasoningEffort)) &&
@@ -249,9 +471,10 @@ export async function getBestAccount(
           if (expiry) cooldownMap.delete(cooldownKey);
           const ready = await ensureAccountReady(stickyAccount);
           if (ready) return ready;
+          // Pinned account refresh failure must not silently jump to B without exhausting A's budget.
+          if (guard) return null;
         } else {
           const waitMs = expiry - now;
-          const maxWaitMs = Math.min((schedulingConfig?.maxCacheFirstWaitSeconds || 3) * 1000, 3000);
           if (waitMs <= maxWaitMs) {
             console.log(`[CacheFirst] Waiting ${Math.ceil(waitMs / 1000)}s for session-bound account ${stickyEmail}...`);
             if (signal?.aborted) {
@@ -267,8 +490,11 @@ export async function getBestAccount(
             cooldownMap.delete(cooldownKey);
             const ready = await ensureAccountReady(stickyAccount);
             if (ready) return ready;
+            if (guard) return null;
           } else {
-            console.log(`[CacheFirst] Session-bound account ${stickyEmail} cooldown (${Math.ceil(waitMs / 1000)}s) exceeds max wait (3s); switching account.`);
+            // Do not switch accounts in an active session merely because the pinned account is cooling down.
+            console.log(`[CacheFirst] Session-bound account ${stickyEmail} cooldown (${Math.ceil(waitMs / 1000)}s) exceeds max wait (${maxWaitMs / 1000}s); keeping session pinned.`);
+            return null;
           }
         }
       }
@@ -320,8 +546,15 @@ export async function prepareAccountForRequest(email: string, forceRefresh = fal
   return account ? ensureAccountReady(account, forceRefresh) : null;
 }
 
-async function ensureAccountReady(account: AntigravityAccount, forceRefresh = false): Promise<AntigravityAccount | null> {
+async function ensureAccountReady(
+  account: AntigravityAccount,
+  forceRefresh = false,
+  allowPendingTosVerification = false,
+): Promise<AntigravityAccount | null> {
   if (account.disabled) return null;
+  if (isAccountTosSuspended(account) && !(allowPendingTosVerification && account.suspension?.status === "pending_verification")) {
+    return null;
+  }
   const now = Date.now();
   const config = getProxyConfig();
   const needsRefresh = forceRefresh || !account.accessToken || (account.expiresAt && account.expiresAt < now + config.tokens.expiryBufferMs);
@@ -439,7 +672,7 @@ export async function updateAccountProject(email: string, projectId: string) {
 }
 
 export function getEarliestReset(pool: 'sandbox', model?: string): string | null {
-  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && a.quota);
+  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !isAccountTosSuspended(a) && a.quota);
   if (usable.length === 0) return null;
   let resetTimes: number[] = [];
   for (const acc of usable) {

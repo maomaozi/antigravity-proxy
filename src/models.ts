@@ -140,10 +140,18 @@ export function getAccountQuotaWindows(account: AntigravityAccount, id: string) 
   return [];
 }
 
+export function isAccountTosSuspended(account: AntigravityAccount): boolean {
+  if (account.suspension?.reason === "tos_violation") return true;
+  for (const suspension of Object.values(account.poolSuspensions || {})) {
+    if (suspension?.reason === "tos_violation") return true;
+  }
+  return false;
+}
+
 export function getAvailableModelCatalog(accounts: AntigravityAccount[]): SupportedModel[] {
   const catalog = new Map(SUPPORTED_MODELS.map(model => [model.id, { ...model }]));
   for (const account of accounts) {
-    if (account.disabled || account.challenge || !account.refreshToken) continue;
+    if (account.disabled || account.challenge || !account.refreshToken || isAccountTosSuspended(account)) continue;
     for (const model of account.availableModels || []) {
       if (getUnavailableModelError(model.id) || /image/i.test(model.id) || SUPPORTED_MODELS.some(known => known.name === model.name)) continue;
       // Keep tier IDs as well as a convenient base alias for newly discovered models.
@@ -179,8 +187,11 @@ export function getAccountModelPool(account: AntigravityAccount, id: string): st
 }
 
 export function isAccountPoolSuspended(account: AntigravityAccount, id: string, now = Date.now()): boolean {
+  if (isAccountTosSuspended(account)) return true;
   const suspension = account.poolSuspensions?.[getAccountModelPool(account, id)];
-  return !!suspension && suspension.retryAt > now;
+  if (!suspension) return false;
+  if (suspension.reason === "tos_violation" || suspension.permanent) return true;
+  return suspension.retryAt > now;
 }
 
 export function updateQuotaFamilies(account: AntigravityAccount): void {

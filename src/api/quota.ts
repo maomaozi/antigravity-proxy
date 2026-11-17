@@ -4,13 +4,113 @@ import { getAccounts, saveAccounts } from "../auth/manager";
 import { parseGoogleError } from "../utils/errors";
 import { refreshAccessToken } from "../auth/oauth";
 import { ANTIGRAVITY_BASE_URL } from "./endpoints";
-import { getUnavailableModelError, normalizeModelId, findAccountModel, getModelFamilyName, updateQuotaFamilies, type DiscoveredModel } from "../models";
+import {
+  getUnavailableModelError,
+  normalizeModelId,
+  findAccountModel,
+  getModelFamilyName,
+  getAccountModelQuotas,
+  getAccountQuotaWindows,
+  isAccountTosSuspended,
+  updateQuotaFamilies,
+  type DiscoveredModel,
+} from "../models";
+
+export const QUOTA_FRESHNESS_MAX_AGE_MS = 60_000;
+export const OBVIOUSLY_SUFFICIENT_QUOTA_THRESHOLD = 0.05;
+
+export interface AccountModelQuotaEvaluation {
+  targetModel: string;
+  quotaFresh: boolean;
+  windowsFresh: boolean;
+  hasMatchedQuotas: boolean;
+  hasMatchedWindows: boolean;
+  obviouslySufficient: boolean;
+  confirmedExhausted: boolean;
+  needsRefresh: boolean;
+  earliestResetSeconds?: number;
+}
+
+export function evaluateAccountModelQuotaState(
+  account: AntigravityAccount,
+  model: string,
+  reasoningEffort?: string,
+  now = Date.now(),
+): AccountModelQuotaEvaluation {
+  const discovered = findAccountModel(account, model, reasoningEffort);
+  const routingModel = discovered?.id
+    || (reasoningEffort && /^(low|medium|high|xhigh)$/i.test(reasoningEffort) && !/-(low|medium|high|xhigh)$/i.test(model)
+      ? `${model}-${reasoningEffort.toLowerCase()}`
+      : model);
+
+  const quotas = getAccountModelQuotas(account, routingModel);
+  const windows = getAccountQuotaWindows(account, routingModel);
+
+  const quotaFresh =
+    typeof account.quotaUpdatedAt === "number"
+    && Number.isFinite(account.quotaUpdatedAt)
+    && now - account.quotaUpdatedAt >= -5_000
+    && now - account.quotaUpdatedAt <= QUOTA_FRESHNESS_MAX_AGE_MS;
+
+  const windowsFresh =
+    typeof account.quotaWindowsUpdatedAt === "number"
+    && Number.isFinite(account.quotaWindowsUpdatedAt)
+    && now - account.quotaWindowsUpdatedAt >= -5_000
+    && now - account.quotaWindowsUpdatedAt <= QUOTA_FRESHNESS_MAX_AGE_MS;
+
+  const hasMatchedQuotas = quotas.length > 0;
+  const hasMatchedWindows = windows.length > 0;
+
+  const quotaExhausted = quotaFresh && hasMatchedQuotas && quotas.some(q => q.remainingFraction <= 0);
+  const windowExhausted = windowsFresh && hasMatchedWindows && windows.some(w => w.remainingFraction <= 0);
+  const confirmedExhausted = quotaExhausted || windowExhausted;
+
+  const obviouslySufficient =
+    quotaFresh
+    && windowsFresh
+    && hasMatchedQuotas
+    && hasMatchedWindows
+    && !confirmedExhausted
+    && quotas.every(q => q.remainingFraction > OBVIOUSLY_SUFFICIENT_QUOTA_THRESHOLD)
+    && windows.every(w => w.remainingFraction > OBVIOUSLY_SUFFICIENT_QUOTA_THRESHOLD);
+
+  const needsRefresh = !quotaFresh || !windowsFresh || !hasMatchedQuotas || !hasMatchedWindows;
+
+  let earliestResetSeconds: number | undefined;
+  const exhaustedItems = [
+    ...(quotaFresh ? quotas.filter(q => q.remainingFraction <= 0) : []),
+    ...(windowsFresh ? windows.filter(w => w.remainingFraction <= 0) : []),
+  ];
+  for (const item of exhaustedItems) {
+    if (item.resetTime) {
+      const resetMs = Date.parse(item.resetTime);
+      if (Number.isFinite(resetMs) && resetMs > now) {
+        const secs = Math.ceil((resetMs - now) / 1000);
+        if (earliestResetSeconds === undefined || secs < earliestResetSeconds) {
+          earliestResetSeconds = secs;
+        }
+      }
+    }
+  }
+
+  return {
+    targetModel: routingModel,
+    quotaFresh,
+    windowsFresh,
+    hasMatchedQuotas,
+    hasMatchedWindows,
+    obviouslySufficient,
+    confirmedExhausted,
+    needsRefresh,
+    earliestResetSeconds,
+  };
+}
 
 export async function fetchQuotaWindows(
   account: AntigravityAccount,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AntigravityAccount['quotaWindows'] | null> {
-  if (account.disabled || !account.accessToken) return null;
+  if (account.disabled || isAccountTosSuspended(account) || !account.accessToken) return null;
   try {
     const response = await fetchImpl(`${ANTIGRAVITY_BASE_URL}/v1internal:retrieveUserQuotaSummary`, {
       method: 'POST',
@@ -41,6 +141,7 @@ export async function fetchQuotaWindows(
         });
       }
     }
+    account.quotaWindowsUpdatedAt = Date.now();
     return windows;
   } catch (error) {
     console.error(`Error fetching quota windows for ${account.email}`, error);
@@ -53,7 +154,7 @@ export async function fetchQuota(
   retry = true,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AntigravityAccount['quota'] | null> {
-  if (account.disabled || !account.projectId || !account.accessToken) return null;
+  if (account.disabled || isAccountTosSuspended(account) || !account.projectId || !account.accessToken) return null;
 
   try {
     const res = await fetchImpl(`${ANTIGRAVITY_BASE_URL}/v1internal:fetchAvailableModels`, {
@@ -101,6 +202,7 @@ export async function fetchQuota(
     for (const key of Object.keys(account.capabilities || {})) {
       if (findAccountModel(account, key)) delete account.capabilities![key];
     }
+    account.quotaUpdatedAt = Date.now();
     updateQuotaFamilies({ ...account, quota: parsed });
     return parsed;
   } catch (e) {
@@ -238,13 +340,57 @@ export function parseQuotaResponse(data: any): AntigravityAccount['quota'] | nul
     return results;
 }
 
+const accountOnDemandRefreshInFlight = new Map<string, Promise<boolean>>();
+
+/**
+ * Single-flight on-demand quota + quotaWindows refresh for a specific account when a 429
+ * encounters missing, stale (>60s), or conflicting quota data. Concurrent callers and outer
+ * retries join the same in-flight promise instead of triggering duplicate refreshes.
+ */
+export function refreshAccountQuotaSingleFlight(
+  account: AntigravityAccount,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  if (account.disabled || isAccountTosSuspended(account) || !account.projectId || !account.accessToken) {
+    return Promise.resolve(false);
+  }
+  const existing = accountOnDemandRefreshInFlight.get(account.email);
+  if (existing) return existing;
+
+  const task = (async () => {
+    const [quota, windows] = await Promise.all([
+      fetchQuota(account, true, fetchImpl),
+      fetchQuotaWindows(account, fetchImpl),
+    ]);
+    let changed = false;
+    if (quota !== null) {
+      account.quota = quota;
+      changed = true;
+    }
+    if (windows !== null) {
+      account.quotaWindows = windows;
+      changed = true;
+    }
+    if (changed) {
+      updateQuotaFamilies(account);
+      await saveAccounts(getAccounts());
+    }
+    return quota !== null && windows !== null;
+  })().finally(() => {
+    accountOnDemandRefreshInFlight.delete(account.email);
+  });
+
+  accountOnDemandRefreshInFlight.set(account.email, task);
+  return task;
+}
+
 let quotaRefreshInFlight: Promise<void> | null = null;
 
 async function performQuotaRefresh(): Promise<void> {
     const accounts = getAccounts();
     let changed = false;
     await Promise.all(accounts.map(async acc => {
-        if (!acc.disabled && acc.projectId) {
+        if (!acc.disabled && !isAccountTosSuspended(acc) && acc.projectId) {
             const quota = await fetchQuota(acc);
             const windows = await fetchQuotaWindows(acc);
             if (windows !== null) {

@@ -264,7 +264,7 @@ describe("completion failure classification", () => {
     expect(result.body.error.code).toBe("account_verification_required");
   });
 
-  test("third-party pool suspension blocks aliases and siblings but preserves Gemini and dedicated pools", async () => {
+  test("non-TOS third-party pool suspension blocks aliases and siblings but preserves Gemini and dedicated pools", async () => {
     const first = getAccounts()[0]!;
     first.quotaWindows = [
       {groupName: 'Gemini Models', window: 'weekly', remainingFraction: 1},
@@ -272,7 +272,7 @@ describe("completion failure classification", () => {
     ];
     recordSessionBinding({ identity: {key:'pool-sticky', id:'pool-sticky', source:'test', inferred:false},
       accountEmail:first.email, model:'antigravity-claude-opus-4-6-thinking', modelFamily:'Claude Opus 4.6', pool:'sandbox' });
-    await suspendAccountPool(first.email, 'claude-sonnet-4-6', {reason:'tos_violation'});
+    await suspendAccountPool(first.email, 'claude-sonnet-4-6', {reason:'temporary_pool_restriction'});
     expect(getAccountModelPool(first, 'antigravity-claude-opus-4-6-thinking')).toBe('Claude and GPT models');
     for (const blocked of ['antigravity-claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'antigravity-gpt-oss-120b']) {
       expect(await getBestAccount('sandbox', blocked, 'pool-sticky')).toBeNull();
@@ -287,31 +287,33 @@ describe("completion failure classification", () => {
     expect(isAccountPoolSuspended(first, 'claude-sonnet-4-6')).toBe(true);
   });
 
-  test("a dedicated Argon pool remains independent from Gemini's shared pool", async () => {
+  test("a dedicated Argon pool remains independent from Gemini's shared pool for non-TOS restrictions", async () => {
     const first = getAccounts()[0]!;
     first.availableModels = [{id:'gemini-4-argon-high',name:'Gemini 4 Argon (High)'}, {id:'gemini-3.8-flash-tiered',name:'Gemini 3.8 Flash'}];
     first.quota = [{groupName:'Gemini 4 Argon (High)',modelId:'gemini-4-argon-high',limitName:'Gemini 4 Argon',limit:'',usage:'',quotaLeft:'100%',resetIn:'Ready',remainingFraction:1}];
     first.quotaWindows = [{groupName:'Gemini Models',window:'weekly',remainingFraction:1}, {groupName:'Gemini 4 Argon',window:'weekly',remainingFraction:1}];
-    await suspendAccountPool(first.email, 'gemini-4-argon-high', {reason:'tos_violation'});
+    await suspendAccountPool(first.email, 'gemini-4-argon-high', {reason:'temporary_pool_restriction'});
     expect(getAccountModelPool(first, 'antigravity-gemini-4-argon')).toBe('Gemini 4 Argon');
     expect(await getBestAccount('sandbox', 'antigravity-gemini-4-argon',undefined,[],true,undefined,undefined,'high')).toBeNull();
     expect((await getBestAccount('sandbox', model))?.email).toBe(first.email);
   });
 
-  test("a failed recovery renews only that pool's retry deadline", async () => {
+  test("TOS_VIOLATION isolates Antigravity persistently and resists 10-minute expiry until controlled recovery", async () => {
     const first = getAccounts()[0]!;
-    await suspendAccountPool(first.email, model, {reason:'tos_violation'});
+    await suspendAccountPool(first.email, model, {reason:'tos_violation', appealUrl:'https://forms.gle/appeal'});
     first.poolSuspensions!['Gemini Models']!.retryAt = 0;
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(suspensionResponse());
-    await expect(activateGoogleModelWindow(first, model)).rejects.toThrow('403');
-    expect(first.poolSuspensions!['Gemini Models']!.retryAt).toBeGreaterThan(Date.now());
     expect(first.disabled).not.toBe(true);
-    expect((await getBestAccount('sandbox', 'claude-sonnet-4-6'))?.email).toBe(first.email);
+    expect(first.suspension).toMatchObject({ service: 'antigravity', status: 'suspended', reason: 'tos_violation' });
+    expect(isAccountPoolSuspended(first, model)).toBe(true);
+    expect(await activateGoogleModelWindow(first, model)).toBe(false);
+    expect(await getBestAccount('sandbox', 'claude-sonnet-4-6')).toBeNull();
+    await resetAccount(first.email);
+    expect(isAccountPoolSuspended(first, model)).toBe(true);
   });
 
-  test("expired suspension is retried and cleared by a successful generation", async () => {
+  test("expired non-TOS pool suspension is retried and cleared by a successful generation", async () => {
     const first = getAccounts()[0]!;
-    await suspendAccountPool(first.email, model, {reason:'tos_violation'});
+    await suspendAccountPool(first.email, model, {reason:'temporary_pool_restriction'});
     first.poolSuspensions!['Gemini Models']!.retryAt = Date.now() - 1;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
       `data: ${JSON.stringify({candidates:[{content:{role:'model',parts:[{text:'OK'}]},finishReason:'STOP'}]})}\n\n`,
@@ -385,29 +387,43 @@ describe("completion failure classification", () => {
     }
   });
 
-  test.each([false, true])("switches from a suspended account to a healthy account (stream=%s)", async stream => {
-    const first = getAccounts()[0];
+  test.each([false, true])("TOS_VIOLATION stops rotation immediately without touching healthy accounts (stream=%s)", async stream => {
+    const first = getAccounts()[0]!;
     const healthy = account("healthy-fallback@example.com");
     healthy.lastUsed = Date.now();
     getAccounts().push(healthy);
-    getProxyConfig().retry.maxAttempts = 2;
+    getProxyConfig().retry.maxAttempts = 3;
     fetchSpy = spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(suspensionResponse())
       .mockResolvedValueOnce(new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`));
     try {
+      const identity = { key: `tos-stop-${stream}`, id: `tos-stop-${stream}`, source: "test", inferred: false };
       const execution = await executeCompletion({
         request: { model, messages: [{ role: "user", content: "OK" }], stream },
-        sessionIdentity: { key: "suspension-fallback", id: "suspension-fallback", source: "test", inferred: false },
+        sessionIdentity: identity,
         requestId: "suspension-test", requestStartedAt: Date.now(),
       });
-      const result = execution.kind === "stream" ? await collectCompletionStream(execution.stream)
-        : execution.kind === "result" ? execution.result : null;
-      expect(result?.text).toBe("OK");
+      expect(execution.kind).toBe("error");
+      if (execution.kind === "error") {
+        expect(execution.response.status).toBe(403);
+        const body = await execution.response.json() as any;
+        expect(body.error.code).toBe("pool_suspended");
+      }
+      // Outer retry on the same session must also return 403 without hitting B.
+      const retryExecution = await executeCompletion({
+        request: { model, messages: [{ role: "user", content: "OK" }], stream },
+        sessionIdentity: identity,
+        requestId: "suspension-test-retry", requestStartedAt: Date.now(),
+      });
+      expect(retryExecution.kind).toBe("error");
+      if (retryExecution.kind === "error") {
+        expect(retryExecution.response.status).toBe(403);
+      }
       expect(first.disabled).not.toBe(true);
+      expect(first.suspension?.status).toBe("suspended");
       expect(isAccountPoolSuspended(first, model)).toBe(true);
       expect(healthy.disabled).toBeUndefined();
-      expect(getSessionBinding("suspension-fallback", model)?.accountEmail).toBe(healthy.email);
-      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
     } finally {
       deleteSessionBindingsForAccount(healthy.email);
     }
@@ -422,7 +438,8 @@ describe("completion failure classification", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test.each([false, true])("Sonnet 5.5 quota failover ignores legacy endpoints and updates affinity (stream=%s)", async stream => {
+  test.each([false, true])("Sonnet 5.5 confirmed quota failover ignores legacy endpoints and updates affinity (stream=%s)", async stream => {
+    getProxyConfig().retry.maxAttempts = 2;
     const sonnet = "antigravity-claude-sonnet-5-5";
     const first = getAccounts()[0]!;
     const healthy = account("sonnet-fallback@example.com");
@@ -432,11 +449,33 @@ describe("completion failure classification", () => {
     }
     getAccounts().push(healthy);
     for (const endpoint of [ANTIGRAVITY_STREAM_URL, "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"]) {
-      const identity = { key: "sonnet-failover", id: "sonnet-failover", source: "test", inferred: false };
+      // Start with stale/non-zero quota so sticky session tries `first`, then on-demand refresh confirms exhaustion.
+      first.quotaUpdatedAt = undefined;
+      first.quotaWindowsUpdatedAt = undefined;
+      first.quota = [{
+        groupName: "Claude Sonnet 5.5", limit: "100", usage: "50", limitName: "claude",
+        remainingFraction: 0.5, quotaLeft: "50%", resetIn: "1h", modelId: "claude-sonnet-5-5-high",
+        modelIds: ["claude-sonnet-5-5-high"],
+      }];
+      first.quotaWindows = [{ groupName: "Claude and GPT models", window: "5h", remainingFraction: 0.5 }];
+      const identity = { key: `sonnet-failover-${endpoint}`, id: `sonnet-failover-${endpoint}`, source: "test", inferred: false };
       recordSessionBinding({ identity, accountEmail: first.email, model: sonnet,
         modelFamily: "Claude Sonnet 5.5", pool: "sandbox", endpoint });
       fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const urlStr = String(url);
         const token = new Headers(init?.headers).get("Authorization");
+        if (urlStr.includes("fetchAvailableModels")) {
+          return Response.json({
+            models: {
+              "claude-sonnet-5-5-high": { displayName: "Claude Sonnet 5.5 (High)", quotaInfo: { remainingFraction: 0, quotaResetTime: "3856s" } },
+            },
+          });
+        }
+        if (urlStr.includes("retrieveUserQuotaSummary")) {
+          return Response.json({
+            groups: [{ displayName: "Claude and GPT models", buckets: [{ window: "5h", remainingFraction: 0 }] }],
+          });
+        }
         if (token === "Bearer access") return Response.json({ error: {
           code: 429, status: "RESOURCE_EXHAUSTED", message: "Individual quota reached.",
           details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "3856.218183766s" }],
@@ -455,14 +494,15 @@ describe("completion failure classification", () => {
         const result = execution.kind === "stream" ? await collectCompletionStream(execution.stream)
           : execution.kind === "result" ? execution.result : null;
         expect(result?.text).toBe("OK");
-        expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => call[0])).toEqual([ANTIGRAVITY_STREAM_URL, ANTIGRAVITY_STREAM_URL]);
+        const generationCalls = fetchSpy.mock.calls.filter((call: Parameters<typeof fetch>) => String(call[0]).includes("streamGenerateContent"));
+        expect(generationCalls.map((call: Parameters<typeof fetch>) => call[0])).toEqual([ANTIGRAVITY_STREAM_URL, ANTIGRAVITY_STREAM_URL]);
         expect(getSessionBinding(identity.key, sonnet)).toMatchObject({ accountEmail: healthy.email, endpoint: ANTIGRAVITY_STREAM_URL });
         expect(healthy.cooldowns?.["sandbox|Claude Sonnet 5.5"]).toBeUndefined();
       } finally {
-        for (const a of [first, healthy]) {
-          clearCooldown(a.email, "sandbox", "Claude Sonnet 5.5");
-          deleteSessionBindingsForAccount(a.email);
-        }
+        clearCooldown(first.email, "sandbox", "Claude Sonnet 5.5");
+        clearCooldown(healthy.email, "sandbox", "Claude Sonnet 5.5");
+        deleteSessionBindingsForAccount(first.email);
+        deleteSessionBindingsForAccount(healthy.email);
         fetchSpy.mockRestore();
         fetchSpy = undefined;
       }
@@ -482,38 +522,33 @@ describe("completion failure classification", () => {
     expect(result.body.error).toMatchObject({ type: "rate_limit_error", code: "rate_limit_exceeded" });
   });
 
-  test.each(["server", "network"])("rotates accounts after a %s failure and quota exhaustion using only the default endpoint", async failure => {
+  test.each(["server", "network"])("retries ordinary %s failures up to 3 times on A before switching to B", async failure => {
+    getProxyConfig().retry.maxAttempts = 4;
     const second = account("endpoint-second@example.com");
-    const third = account("endpoint-third@example.com");
     second.accessToken = "second-access";
-    third.accessToken = "third-access";
     second.projectId = "second-project";
-    third.projectId = "third-project";
     second.lastUsed = Date.now();
-    third.lastUsed = second.lastUsed + 1;
-    getAccounts().push(second, third);
-    const identity = { key: "endpoint-failover", id: "endpoint-failover", source: "test", inferred: false };
+    getAccounts().push(second);
+    const identity = { key: `endpoint-failover-${failure}`, id: `endpoint-failover-${failure}`, source: "test", inferred: false };
     fetchSpy = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network request"));
-    if (failure === "server") {
-      fetchSpy.mockResolvedValueOnce(Response.json({ error: { status: "UNAVAILABLE" } }, { status: 503 }));
-    } else {
-      fetchSpy.mockRejectedValueOnce(new Error("Connection refused"));
+    for (let i = 0; i < 3; i++) {
+      if (failure === "server") {
+        fetchSpy.mockResolvedValueOnce(Response.json({ error: { status: "UNAVAILABLE" } }, { status: 503 }));
+      } else {
+        fetchSpy.mockRejectedValueOnce(new Error("Connection refused"));
+      }
     }
-    fetchSpy
-      .mockResolvedValueOnce(Response.json({ error: { status: "RESOURCE_EXHAUSTED" } }, { status: 429 }))
-      .mockResolvedValueOnce(new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`));
+    fetchSpy.mockResolvedValueOnce(new Response(`data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] })}\n\n`));
     try {
       const execution = await executeCompletion({
         request: { model, messages: [{ role: "user", content: "OK" }], stream: false },
         sessionIdentity: identity, requestId: "endpoint-failover-test", requestStartedAt: Date.now(),
       });
       expect(execution.kind).toBe("result");
-      expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => call[0])).toEqual(Array(3).fill(ANTIGRAVITY_STREAM_URL));
+      expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => call[0])).toEqual(Array(4).fill(ANTIGRAVITY_STREAM_URL));
       expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => new Headers(call[1]?.headers).get("Authorization")))
-        .toEqual(["Bearer access", "Bearer second-access", "Bearer third-access"]);
-      expect(fetchSpy.mock.calls.map((call: Parameters<typeof fetch>) => JSON.parse(String(call[1]?.body)).project))
-        .toEqual(getAccounts().map(a => a.projectId));
-      expect(getSessionBinding(identity.key, model)).toMatchObject({ accountEmail: third.email, endpoint: ANTIGRAVITY_STREAM_URL });
+        .toEqual(["Bearer access", "Bearer access", "Bearer access", "Bearer second-access"]);
+      expect(getSessionBinding(identity.key, model)).toMatchObject({ accountEmail: second.email, endpoint: ANTIGRAVITY_STREAM_URL });
     } finally {
       clearCooldown(second.email, "sandbox", "Gemini Models");
       for (const a of getAccounts()) deleteSessionBindingsForAccount(a.email);
@@ -610,8 +645,8 @@ describe("completion failure classification", () => {
     }, { status: 400 });
   }
 
-  test("recovers a generic Gemini 400 on another account using the default endpoint", async () => {
-    getProxyConfig().retry.maxAttempts = 3;
+  test("does not rotate accounts on generic Gemini 400 invalid argument", async () => {
+    getProxyConfig().retry.maxAttempts = 5;
     const healthy = account("generic-400-fallback@example.com");
     healthy.accessToken = "healthy-access";
     healthy.lastUsed = Date.now();
@@ -625,32 +660,20 @@ describe("completion failure classification", () => {
     const execution = await executeCompletion({
       request: { model, messages: [{ role: "user", content: "OK" }], stream: true },
       sessionIdentity: { key: "failure-regression", id: "failure-regression", source: "test", inferred: false },
-      requestId: "generic-400-recovery", requestStartedAt: Date.now(),
+      requestId: "generic-400-no-rotation", requestStartedAt: Date.now(),
     });
-    expect(execution.kind).toBe("stream");
-    if (execution.kind !== "stream") throw new Error("Expected recovered stream");
-    expect(execution.attempts).toBe(2);
-    expect((await collectCompletionStream(execution.stream)).text).toBe("Recovered");
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    const [first, second] = fetchSpy.mock.calls;
-    expect(second![0]).toBe(first![0]);
-    // The envelope gets a new requestId, while model input remains identical.
-    const firstBody = JSON.parse(String(first![1]?.body));
-    const secondBody = JSON.parse(String(second![1]?.body));
-    expect(secondBody.request.labels.cascade_id).toBe(firstBody.request.labels.cascade_id);
-    expect(secondBody.request.labels.trajectory_id).not.toBe(firstBody.request.labels.trajectory_id);
-    for (const body of [firstBody, secondBody]) {
-      delete body.request.labels.trajectory_id;
-      delete body.request.labels.request_id;
+    expect(execution.kind).toBe("error");
+    if (execution.kind === "error") {
+      expect(execution.response.status).toBe(400);
+      const body = await execution.response.json() as any;
+      expect(body.error.code).toBe("invalid_argument");
+      expect(body.error.attempts).toHaveLength(1);
     }
-    expect(secondBody.request).toEqual(firstBody.request);
-    expect(secondBody.project).toBe(firstBody.project);
-    expect(secondBody.model).toBe(firstBody.model);
-    expect(new Headers(second![1]?.headers).get("Authorization")).toBe("Bearer healthy-access");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     deleteSessionBindingsForAccount(healthy.email);
   });
 
-  test("retries a persistent generic Gemini 400 only once and preserves the error", async () => {
+  test("returns generic Gemini 400 immediately without cross-account retry", async () => {
     getProxyConfig().retry.maxAttempts = 5;
     getAccounts().push(account("generic-400-second@example.com"));
     fetchSpy = spyOn(globalThis, "fetch")
@@ -659,8 +682,8 @@ describe("completion failure classification", () => {
     const result = await run();
     expect(result.status).toBe(400);
     expect(result.body.error.code).toBe("invalid_argument");
-    expect(result.body.error.attempts).toHaveLength(2);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result.body.error.attempts).toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(getAccounts()[0].healthScore).toBe(100);
     expect(getAccounts()[0].capabilities?.[model]).toBeUndefined();
   });

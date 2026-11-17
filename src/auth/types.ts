@@ -27,6 +27,17 @@ export interface PoolSuspension {
   detectedAt: number;
   retryAt: number;
   model: string;
+  permanent?: boolean;
+}
+
+export interface ServiceSuspension {
+  service?: "antigravity";
+  status?: "suspended" | "pending_verification";
+  reason: string;
+  message?: string;
+  appealUrl?: string;
+  detectedAt: number;
+  model?: string;
 }
 
 export interface AntigravityAccount {
@@ -38,13 +49,8 @@ export interface AntigravityAccount {
   managedProjectId?: string;
   disabled?: boolean;
   poolSuspensions?: Record<string, PoolSuspension>;
-  /** Legacy account-wide detection, migrated on load. */
-  suspension?: {
-    reason: string;
-    message?: string;
-    appealUrl?: string;
-    detectedAt: number;
-  };
+  /** Persistent Antigravity service suspension (e.g. TOS_VIOLATION). */
+  suspension?: ServiceSuspension;
   
   // Routing health stats
   healthScore: number;
@@ -68,7 +74,9 @@ export interface AntigravityAccount {
   capabilities?: Record<string, boolean>;
   availableModels?: DiscoveredModel[];
   
-  // Quota info (cached)
+  // Quota info (cached) and independent successful collection timestamps
+  quotaUpdatedAt?: number;
+  quotaWindowsUpdatedAt?: number;
   quotaWindows?: Array<{
     groupName: string;
     window: '5h' | 'weekly';

@@ -1,4 +1,4 @@
-import { accountSupportsModel, findAccountModel, getAccountQuotaWindows, getModelFamilyName, updateQuotaFamilies, isAccountPoolSuspended } from "../models";
+import { accountSupportsModel, findAccountModel, getAccountQuotaWindows, getModelFamilyName, updateQuotaFamilies, isAccountPoolSuspended, isAccountTosSuspended } from "../models";
 import { transformCompletionToGoogleBody } from "../utils/transform";
 import { randomUUID } from "node:crypto";
 import {
@@ -59,7 +59,7 @@ function activationModelRank(model: string): number {
 
 /** One request per independent pool, never one hard-coded model per account. */
 export function getGoogleActivationTargets(account: AntigravityAccount): GoogleActivationTarget[] {
-  if (account.disabled || account.challenge || !account.refreshToken) return [];
+  if (account.disabled || account.challenge || !account.refreshToken || isAccountTosSuspended(account)) return [];
   const targets = new Map<string, GoogleActivationTarget>();
   const active = new Set<string>();
   for (const quota of account.quota || []) {
@@ -120,7 +120,7 @@ export async function activateGoogleModelWindow(
   model: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
-  if (!accountSupportsModel(account, model) || account.disabled || account.challenge || isAccountPoolSuspended(account, model)) return false;
+  if (!accountSupportsModel(account, model) || account.disabled || account.challenge || isAccountTosSuspended(account) || isAccountPoolSuspended(account, model)) return false;
   const send = async (forceRefresh: boolean): Promise<Response | null> => {
     const ready = await prepareAccountForRequest(account.email, forceRefresh);
     if (!ready?.accessToken || !ready.projectId) return null;
@@ -262,11 +262,11 @@ export async function runQuotaWindowActivationCheck(
 
   for (const account of runtime.listGoogleAccounts()) {
     summary.googleChecked++;
-    if (account.disabled || account.challenge) continue;
+    if (account.disabled || account.challenge || isAccountTosSuspended(account)) continue;
     const recoveryModels = new Set<string>();
     for (const suspension of Object.values(account.poolSuspensions || {})) {
-      // Image generation has a separate request format and is retried on demand.
-      if (suspension.retryAt > Date.now() || /image/i.test(suspension.model)) continue;
+      // TOS violations are persistently isolated and never auto-recover after 10 minutes.
+      if (suspension.reason === "tos_violation" || suspension.permanent || suspension.retryAt > Date.now() || /image/i.test(suspension.model)) continue;
       recoveryModels.add(suspension.model);
       try {
         await runtime.activateGoogle(account, suspension.model);

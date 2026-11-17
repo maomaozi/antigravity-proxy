@@ -111,6 +111,103 @@ export interface RequestTokenUsageSummary {
   averageTokensPerSecond: number | null;
 }
 
+export type SessionRoutingGuardStatus = "pinned" | "protected_429" | "terminated_tos";
+
+export interface SessionRoutingGuard {
+  sessionKey: string;
+  model: string;
+  accountEmail: string;
+  status: SessionRoutingGuardStatus;
+  reason: string | null;
+  errorCode: string | null;
+  errorStatus: number | null;
+  errorMessage: string | null;
+  appealUrl: string | null;
+  retryAt: number | null;
+  probeInProgress: boolean;
+  requestDigest: string | null;
+  attemptsUsed: number;
+  accountAttemptsUsed: number;
+  accountsTouched: string[];
+  budgetExhaustedUntil: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface UpsertRoutingGuardInput {
+  sessionScopeKey: string;
+  digestScopeKey?: string;
+  model: string;
+  accountEmail: string;
+  status?: SessionRoutingGuardStatus;
+  reason?: string | null;
+  errorCode?: string | null;
+  errorStatus?: number | null;
+  errorMessage?: string | null;
+  appealUrl?: string | null;
+  retryAt?: number | null;
+  probeInProgress?: boolean;
+  requestDigest?: string | null;
+  attemptsUsed?: number;
+  accountAttemptsUsed?: number;
+  accountsTouched?: string[];
+  budgetExhaustedUntil?: number | null;
+  now?: number;
+}
+
+interface RoutingGuardRow {
+  session_key: string;
+  model: string;
+  account_email: string;
+  status: SessionRoutingGuardStatus;
+  reason: string | null;
+  error_code: string | null;
+  error_status: number | null;
+  error_message: string | null;
+  appeal_url: string | null;
+  retry_at: number | null;
+  probe_in_progress: number;
+  request_digest: string | null;
+  attempts_used: number;
+  account_attempts_used: number;
+  accounts_touched: string;
+  budget_exhausted_until: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function mapGuardRow(row: RoutingGuardRow): SessionRoutingGuard {
+  let accountsTouched: string[] = [];
+  try {
+    const parsed = JSON.parse(row.accounts_touched || "[]");
+    if (Array.isArray(parsed)) {
+      accountsTouched = parsed.filter((item): item is string => typeof item === "string");
+    }
+  } catch {
+    accountsTouched = [];
+  }
+  return {
+    sessionKey: row.session_key,
+    model: row.model,
+    accountEmail: row.account_email,
+    status: row.status,
+    reason: row.reason ?? null,
+    errorCode: row.error_code ?? null,
+    errorStatus: row.error_status ?? null,
+    errorMessage: row.error_message ?? null,
+    appealUrl: row.appeal_url ?? null,
+    retryAt: row.retry_at ?? null,
+    probeInProgress: row.probe_in_progress === 1,
+    requestDigest: row.request_digest ?? null,
+    attemptsUsed: row.attempts_used ?? 0,
+    accountAttemptsUsed: row.account_attempts_used ?? 0,
+    accountsTouched,
+    budgetExhaustedUntil: row.budget_exhausted_until ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 interface BindingRow {
   id: number;
   session_key: string;
@@ -292,6 +389,32 @@ export class SessionBindingStore {
         ON request_token_usage(account_email, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_request_token_usage_session_model
         ON request_token_usage(session_key, model);
+
+      CREATE TABLE IF NOT EXISTS session_routing_guards (
+        session_key TEXT NOT NULL,
+        model TEXT NOT NULL,
+        account_email TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pinned' CHECK (status IN ('pinned', 'protected_429', 'terminated_tos')),
+        reason TEXT,
+        error_code TEXT,
+        error_status INTEGER,
+        error_message TEXT,
+        appeal_url TEXT,
+        retry_at INTEGER,
+        probe_in_progress INTEGER NOT NULL DEFAULT 0,
+        request_digest TEXT,
+        attempts_used INTEGER NOT NULL DEFAULT 0,
+        account_attempts_used INTEGER NOT NULL DEFAULT 0,
+        accounts_touched TEXT NOT NULL DEFAULT '[]',
+        budget_exhausted_until INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_key, model)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_routing_guards_account
+        ON session_routing_guards(account_email);
+      CREATE INDEX IF NOT EXISTS idx_session_routing_guards_updated_at
+        ON session_routing_guards(updated_at DESC);
     `);
 
     let usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
@@ -683,12 +806,206 @@ export class SessionBindingStore {
     return this.db.query("DELETE FROM session_bindings WHERE id = ?").run(id).changes > 0;
   }
 
+  getRoutingGuard(sessionKey: string, model: string): SessionRoutingGuard | null {
+    const row = this.db.query<RoutingGuardRow, [string, string]>(`
+      SELECT * FROM session_routing_guards
+      WHERE session_key = ? AND model = ?
+      LIMIT 1
+    `).get(sessionKey, model.toLowerCase());
+    return row ? mapGuardRow(row) : null;
+  }
+
+  findRoutingGuard(sessionScopeKey: string, digestScopeKey: string | undefined, model: string): SessionRoutingGuard | null {
+    const primary = this.getRoutingGuard(sessionScopeKey, model);
+    if (primary) return primary;
+    if (digestScopeKey && digestScopeKey !== sessionScopeKey) {
+      return this.getRoutingGuard(digestScopeKey, model);
+    }
+    return null;
+  }
+
+  upsertRoutingGuard(input: UpsertRoutingGuardInput): SessionRoutingGuard {
+    const now = Number.isFinite(input.now) ? Math.trunc(input.now!) : Date.now();
+    const model = input.model.toLowerCase();
+    const status = input.status ?? "pinned";
+    const accountsTouchedJson = JSON.stringify(
+      Array.isArray(input.accountsTouched) && input.accountsTouched.length > 0
+        ? [...new Set(input.accountsTouched)]
+        : [input.accountEmail],
+    );
+
+    const writeKey = (key: string) => {
+      this.db.query(`
+        INSERT INTO session_routing_guards (
+          session_key, model, account_email, status, reason, error_code, error_status,
+          error_message, appeal_url, retry_at, probe_in_progress, request_digest,
+          attempts_used, account_attempts_used, accounts_touched, budget_exhausted_until,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_key, model) DO UPDATE SET
+          account_email = excluded.account_email,
+          status = excluded.status,
+          reason = excluded.reason,
+          error_code = excluded.error_code,
+          error_status = excluded.error_status,
+          error_message = excluded.error_message,
+          appeal_url = excluded.appeal_url,
+          retry_at = excluded.retry_at,
+          probe_in_progress = excluded.probe_in_progress,
+          request_digest = COALESCE(excluded.request_digest, session_routing_guards.request_digest),
+          attempts_used = excluded.attempts_used,
+          account_attempts_used = excluded.account_attempts_used,
+          accounts_touched = excluded.accounts_touched,
+          budget_exhausted_until = excluded.budget_exhausted_until,
+          updated_at = excluded.updated_at
+      `).run(
+        key,
+        model,
+        input.accountEmail,
+        status,
+        input.reason ?? null,
+        input.errorCode ?? null,
+        input.errorStatus ?? null,
+        input.errorMessage ?? null,
+        input.appealUrl ?? null,
+        input.retryAt ?? null,
+        input.probeInProgress ? 1 : 0,
+        input.requestDigest ?? null,
+        Math.max(0, Math.trunc(input.attemptsUsed ?? 0)),
+        Math.max(0, Math.trunc(input.accountAttemptsUsed ?? 0)),
+        accountsTouchedJson,
+        input.budgetExhaustedUntil ?? null,
+        now,
+        now,
+      );
+    };
+
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      writeKey(input.sessionScopeKey);
+      if (input.digestScopeKey && input.digestScopeKey !== input.sessionScopeKey) {
+        writeKey(input.digestScopeKey);
+      }
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+
+    return this.getRoutingGuard(input.sessionScopeKey, model)!;
+  }
+
+  tryAcquireRoutingGuardProbe(
+    sessionScopeKey: string,
+    digestScopeKey: string | undefined,
+    model: string,
+    now = Date.now(),
+  ): boolean {
+    const normalizedModel = model.toLowerCase();
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      const result = this.db.query(`
+        UPDATE session_routing_guards
+        SET probe_in_progress = 1, updated_at = ?
+        WHERE session_key = ?
+          AND model = ?
+          AND status = 'protected_429'
+          AND retry_at IS NOT NULL
+          AND retry_at <= ?
+          AND probe_in_progress = 0
+      `).run(now, sessionScopeKey, normalizedModel, now);
+
+      if (result.changes > 0) {
+        if (digestScopeKey && digestScopeKey !== sessionScopeKey) {
+          this.db.query(`
+            UPDATE session_routing_guards
+            SET probe_in_progress = 1, updated_at = ?
+            WHERE session_key = ? AND model = ?
+          `).run(now, digestScopeKey, normalizedModel);
+        }
+        this.db.exec("COMMIT;");
+        return true;
+      }
+
+      if (digestScopeKey && digestScopeKey !== sessionScopeKey) {
+        const fallbackResult = this.db.query(`
+          UPDATE session_routing_guards
+          SET probe_in_progress = 1, updated_at = ?
+          WHERE session_key = ?
+            AND model = ?
+            AND status = 'protected_429'
+            AND retry_at IS NOT NULL
+            AND retry_at <= ?
+            AND probe_in_progress = 0
+        `).run(now, digestScopeKey, normalizedModel, now);
+        if (fallbackResult.changes > 0) {
+          this.db.exec("COMMIT;");
+          return true;
+        }
+      }
+
+      this.db.exec("COMMIT;");
+      return false;
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  releaseRoutingGuardProbe(
+    sessionScopeKey: string,
+    digestScopeKey: string | undefined,
+    model: string,
+    now = Date.now(),
+  ): void {
+    const normalizedModel = model.toLowerCase();
+    this.db.query(`
+      UPDATE session_routing_guards
+      SET probe_in_progress = 0, updated_at = ?
+      WHERE session_key = ? AND model = ?
+    `).run(now, sessionScopeKey, normalizedModel);
+    if (digestScopeKey && digestScopeKey !== sessionScopeKey) {
+      this.db.query(`
+        UPDATE session_routing_guards
+        SET probe_in_progress = 0, updated_at = ?
+        WHERE session_key = ? AND model = ?
+      `).run(now, digestScopeKey, normalizedModel);
+    }
+  }
+
+  deleteRoutingGuard(sessionScopeKey: string, digestScopeKey: string | undefined, model: string): void {
+    const normalizedModel = model.toLowerCase();
+    this.db.query("DELETE FROM session_routing_guards WHERE session_key = ? AND model = ?").run(
+      sessionScopeKey,
+      normalizedModel,
+    );
+    if (digestScopeKey && digestScopeKey !== sessionScopeKey) {
+      this.db.query("DELETE FROM session_routing_guards WHERE session_key = ? AND model = ?").run(
+        digestScopeKey,
+        normalizedModel,
+      );
+    }
+  }
+
+  clearTerminatedTosGuardsForAccount(email: string): number {
+    return this.db.query(
+      "DELETE FROM session_routing_guards WHERE account_email = ? AND status = 'terminated_tos'",
+    ).run(email).changes;
+  }
+
   deleteForAccount(email: string, pool?: SessionPool): number {
-    if (pool) return this.db.query("DELETE FROM session_bindings WHERE account_email = ? AND pool = ?").run(email, pool).changes;
+    if (pool) {
+      if (pool === "sandbox") {
+        this.db.query("DELETE FROM session_routing_guards WHERE account_email = ?").run(email);
+      }
+      return this.db.query("DELETE FROM session_bindings WHERE account_email = ? AND pool = ?").run(email, pool).changes;
+    }
+    this.db.query("DELETE FROM session_routing_guards WHERE account_email = ?").run(email);
     return this.db.query("DELETE FROM session_bindings WHERE account_email = ?").run(email).changes;
   }
 
   clear(): number {
+    this.db.query("DELETE FROM session_routing_guards").run();
     return this.db.query("DELETE FROM session_bindings").run().changes;
   }
 
@@ -697,6 +1014,7 @@ export class SessionBindingStore {
   }
 
   pruneOlderThan(timestamp: number): number {
+    this.db.query("DELETE FROM session_routing_guards WHERE updated_at < ? AND status != 'terminated_tos'").run(timestamp);
     return this.db.query("DELETE FROM session_bindings WHERE updated_at < ?").run(timestamp).changes;
   }
 
@@ -760,4 +1078,50 @@ export function listRequestTokenUsage(options?: RequestTokenUsageListOptions) {
 
 export function clearRequestTokenUsage(): number {
   return initSessionBindingStore().clearRequestTokenUsage();
+}
+
+export function getSessionRoutingGuard(sessionKey: string, model: string): SessionRoutingGuard | null {
+  return initSessionBindingStore().getRoutingGuard(sessionKey, model);
+}
+
+export function findSessionRoutingGuard(
+  sessionScopeKey: string,
+  digestScopeKey: string | undefined,
+  model: string,
+): SessionRoutingGuard | null {
+  return initSessionBindingStore().findRoutingGuard(sessionScopeKey, digestScopeKey, model);
+}
+
+export function upsertSessionRoutingGuard(input: UpsertRoutingGuardInput): SessionRoutingGuard {
+  return initSessionBindingStore().upsertRoutingGuard(input);
+}
+
+export function tryAcquireSessionRoutingGuardProbe(
+  sessionScopeKey: string,
+  digestScopeKey: string | undefined,
+  model: string,
+  now?: number,
+): boolean {
+  return initSessionBindingStore().tryAcquireRoutingGuardProbe(sessionScopeKey, digestScopeKey, model, now);
+}
+
+export function releaseSessionRoutingGuardProbe(
+  sessionScopeKey: string,
+  digestScopeKey: string | undefined,
+  model: string,
+  now?: number,
+): void {
+  initSessionBindingStore().releaseRoutingGuardProbe(sessionScopeKey, digestScopeKey, model, now);
+}
+
+export function deleteSessionRoutingGuard(
+  sessionScopeKey: string,
+  digestScopeKey: string | undefined,
+  model: string,
+): void {
+  initSessionBindingStore().deleteRoutingGuard(sessionScopeKey, digestScopeKey, model);
+}
+
+export function clearTerminatedTosGuardsForAccount(email: string): number {
+  return initSessionBindingStore().clearTerminatedTosGuardsForAccount(email);
 }

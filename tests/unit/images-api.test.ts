@@ -43,7 +43,7 @@ function fixture() {
 }
 
 describe("Images API", () => {
-  test("skips manual disables and isolates image pool suspensions", async () => {
+  test("skips manual disables, enforces persistent TOS isolation, and isolates non-TOS image pool suspensions", async () => {
     const f = fixture();
     f.accounts[0]!.disabled = true;
     f.accounts[1]!.disabled = true;
@@ -56,9 +56,16 @@ describe("Images API", () => {
     expect(await response.json()).toMatchObject({ error: { code: "pool_suspended" } });
     expect(f.accounts[2]!.disabled).not.toBe(true);
     expect((await handleImageGeneration(request({ model: "image-model", prompt: "test" }), f.runtime)).status).toBe(403);
+    expect((await handleImageGeneration(request({ model: "another-image-model", prompt: "test" }), f.runtime)).status).toBe(403);
     expect(f.prepared).toHaveLength(1);
+
+    // Non-TOS pool suspension still isolates only the affected image pool.
+    f.accounts[2]!.poolSuspensions = {
+      "image-model": { reason: "temporary_pool_restriction", model: "image-model", detectedAt: Date.now(), retryAt: Date.now() + 600_000 },
+    };
     f.runtime.fetch = (async () => success()) as ImageGenerationRuntime['fetch'];
-    expect((await handleImageGeneration(request({model:'another-image-model',prompt:'test'}), f.runtime)).status).toBe(200);
+    expect((await handleImageGeneration(request({ model: "image-model", prompt: "test" }), f.runtime)).status).toBe(403);
+    expect((await handleImageGeneration(request({ model: "another-image-model", prompt: "test" }), f.runtime)).status).toBe(200);
     expect(f.prepared).toHaveLength(2);
   });
 

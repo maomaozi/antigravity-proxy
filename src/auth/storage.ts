@@ -6,7 +6,22 @@ interface StorageFormat {
     accounts: AntigravityAccount[];
 }
 
-const runtimeKeys = ["healthScore", "modelScores", "lastUsed", "tokenUsage", "consecutiveFailures", "cooldowns", "history", "challenge", "capabilities", "availableModels", "quota", "quotaWindows"] as const;
+const runtimeKeys = [
+  "healthScore",
+  "modelScores",
+  "lastUsed",
+  "tokenUsage",
+  "consecutiveFailures",
+  "cooldowns",
+  "history",
+  "challenge",
+  "capabilities",
+  "availableModels",
+  "quota",
+  "quotaWindows",
+  "quotaUpdatedAt",
+  "quotaWindowsUpdatedAt",
+] as const;
 type RuntimeAccount = Pick<AntigravityAccount, "email"> & Partial<Pick<AntigravityAccount, typeof runtimeKeys[number]>>;
 
 function decodeAccounts(value: unknown): StorageFormat {
@@ -21,6 +36,42 @@ function decodeState(value: unknown): { accounts: RuntimeAccount[] } {
   const accounts = (value as { accounts?: RuntimeAccount[] } | null)?.accounts;
   if (!Array.isArray(accounts) || !accounts.every(account => account && typeof account.email === "string")) throw new Error("Invalid Google runtime state");
   return { accounts };
+}
+
+export function migrateAccountTosSuspension(account: AntigravityAccount): AntigravityAccount {
+  if (account.suspension?.reason === "tos_violation") {
+    // Legacy TOS detections used disabled=true; keep Antigravity service isolated
+    // without marking the entire Google account as manually disabled across products.
+    if (account.disabled === true) {
+      account.disabled = false;
+    }
+    account.suspension = {
+      service: "antigravity",
+      status: account.suspension.status === "pending_verification" ? "pending_verification" : "suspended",
+      reason: "tos_violation",
+      ...(account.suspension.message ? { message: account.suspension.message } : {}),
+      ...(account.suspension.appealUrl ? { appealUrl: account.suspension.appealUrl } : {}),
+      detectedAt: account.suspension.detectedAt || Date.now(),
+      ...(account.suspension.model ? { model: account.suspension.model } : {}),
+    };
+  }
+
+  const tosPoolEntries = Object.values(account.poolSuspensions || {}).filter(
+    entry => entry && entry.reason === "tos_violation",
+  );
+  if (tosPoolEntries.length > 0 && account.suspension?.reason !== "tos_violation") {
+    const primary = tosPoolEntries[0]!;
+    account.suspension = {
+      service: "antigravity",
+      status: "suspended",
+      reason: "tos_violation",
+      ...(primary.message ? { message: primary.message } : {}),
+      ...(primary.appealUrl ? { appealUrl: primary.appealUrl } : {}),
+      detectedAt: primary.detectedAt || Date.now(),
+      ...(primary.model ? { model: primary.model } : {}),
+    };
+  }
+  return account;
 }
 
 export class GoogleAccountStorage {
@@ -41,14 +92,7 @@ export class GoogleAccountStorage {
       const state = states.find(candidate => candidate.email === account.email);
       const merged = { ...account, healthScore: account.healthScore ?? 100, lastUsed: account.lastUsed ?? 0, tokenUsage: account.tokenUsage ?? 0 };
       if (state) for (const key of runtimeKeys) if (Object.hasOwn(state, key)) (merged as any)[key] = state[key];
-      // Old detections have no model/pool evidence and cannot justify blocking
-      // every pool. Leave manual disables intact and rediscover access normally.
-      if (merged.suspension?.reason === "tos_violation") {
-        merged.disabled = false;
-        delete merged.suspension;
-        console.log(`[Storage] Cleared legacy account-wide suspension for ${merged.email}; pool access will be checked independently.`);
-      }
-      return merged;
+      return migrateAccountTosSuspension(merged);
     }) };
     // Migrate legacy combined files and establish backups before serving requests.
     await this.save(result);
@@ -58,8 +102,8 @@ export class GoogleAccountStorage {
   save(config: StorageFormat): Promise<void> {
     const snapshot = decodeAccounts(JSON.parse(JSON.stringify(config)));
     const credentials = { accounts: snapshot.accounts.map(account => {
-      // Keep manual disables and pool suspensions with credentials so losing
-      // runtime metrics cannot clear access restrictions.
+      // Keep manual disables, service suspensions, and pool suspensions with credentials
+      // so losing runtime metrics cannot clear access restrictions.
       const credential = { ...account };
       for (const key of runtimeKeys) delete (credential as any)[key];
       return credential;

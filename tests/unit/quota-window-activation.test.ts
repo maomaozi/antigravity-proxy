@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
 import { fetchQuota, fetchQuotaWindows } from "../../src/api/quota";
 import {
+  getGoogleActivationTargets,
   isCodexFiveHourWindowInactive,
   isGoogleGeminiWindowInactive,
   runQuotaWindowActivationCheck,
@@ -71,10 +72,31 @@ describe("quota window activation", () => {
     expect(summary.failures).toBe(0);
   });
 
-  test("rechecks expired pool suspensions even when quota windows are already active", async () => {
-    const account = googleAccount('recover@example.com', 0.5);
+  test("skips TOS-isolated accounts permanently in quota refresh, discovery, and activation even when retryAt has passed", async () => {
+    const account = googleAccount('tos@example.com', 1);
     const pool = 'Gemini Models';
     account.poolSuspensions = {[pool]: {reason:'tos_violation',model:'gemini-3.8-flash-tiered',detectedAt:1,retryAt:0}};
+    account.suspension = {service:'antigravity',status:'suspended',reason:'tos_violation',detectedAt:1};
+    const unexpectedFetch = (async () => { throw new Error("Unexpected quota request"); }) as unknown as typeof fetch;
+    expect(await fetchQuota(account, true, unexpectedFetch)).toBeNull();
+    expect(await fetchQuotaWindows(account, unexpectedFetch)).toBeNull();
+    expect(getGoogleActivationTargets(account)).toEqual([]);
+
+    const calls:string[] = [];
+    const runtime:WindowActivationRuntime = {
+      refreshGoogleQuotas:async()=>{}, listGoogleAccounts:()=>[account], getCodexUsageSnapshots:async()=>[],
+      activateGoogle:async(a,model)=>{calls.push(model); return true;},
+      activateCodex:async()=>true, refreshCodexUsage:async()=>{},
+    };
+    await runQuotaWindowActivationCheck(runtime);
+    expect(calls).toEqual([]);
+    expect(account.suspension?.status).toBe('suspended');
+  });
+
+  test("rechecks expired non-TOS pool suspensions even when quota windows are already active", async () => {
+    const account = googleAccount('recover@example.com', 0.5);
+    const pool = 'Gemini Models';
+    account.poolSuspensions = {[pool]: {reason:'temporary_restriction',model:'gemini-3.8-flash-tiered',detectedAt:1,retryAt:0}};
     const calls:string[] = [];
     const runtime:WindowActivationRuntime = {
       refreshGoogleQuotas:async()=>{}, listGoogleAccounts:()=>[account], getCodexUsageSnapshots:async()=>[],
@@ -84,7 +106,7 @@ describe("quota window activation", () => {
     await runQuotaWindowActivationCheck(runtime);
     expect(calls).toEqual(['gemini-3.8-flash-tiered']);
     expect(account.poolSuspensions).toEqual({});
-    account.poolSuspensions = {[pool]: {reason:'tos_violation',model:'gemini-3.8-flash-tiered',detectedAt:Date.now(),retryAt:Date.now()+600000}};
+    account.poolSuspensions = {[pool]: {reason:'temporary_restriction',model:'gemini-3.8-flash-tiered',detectedAt:Date.now(),retryAt:Date.now()+600000}};
     await runQuotaWindowActivationCheck(runtime);
     expect(calls).toHaveLength(1);
     account.disabled = true;
