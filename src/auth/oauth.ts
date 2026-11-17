@@ -1,4 +1,4 @@
-import { OAUTH_CONFIG, getImpersonationHeaders } from "../utils/headers";
+import { OAUTH_CONFIG, getAntigravityNativeHeaders } from "../utils/headers";
 import { type GoogleTokenResponse } from "./types";
 import { ANTIGRAVITY_BASE_URL } from "../api/endpoints";
 
@@ -55,32 +55,29 @@ export async function refreshAccessToken(refreshToken: string): Promise<GoogleTo
   return await res.json() as GoogleTokenResponse;
 }
 
-export async function getProjectId(accessToken: string): Promise<string> {
-  const ideTypes = ["VSCODE", "JETBRAINS", "CLOUD_SHELL", "IDE_UNSPECIFIED"];
-  
-  for (const ideType of ideTypes) {
-    try {
-      const res = await fetch(`${ANTIGRAVITY_BASE_URL}/v1internal:loadCodeAssist`, {
-        method: "POST",
-        headers: getImpersonationHeaders(accessToken),
-        body: JSON.stringify({
-          metadata: { ideType: ideType, platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI" }
-        })
-      });
+export async function getProjectId(accessToken: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  try {
+    // Hub uses ANTIGRAVITY. Legacy IDE identities can return HTTP 200 with
+    // UNSUPPORTED_CLIENT and no project, rather than an HTTP error.
+    const res = await fetchImpl(`${ANTIGRAVITY_BASE_URL}/v1internal:loadCodeAssist`, {
+      method: "POST",
+      headers: getAntigravityNativeHeaders(accessToken),
+      body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } }),
+      signal: AbortSignal.timeout(15000),
+    });
 
-      if (res.ok) {
-        const data = await res.json() as any;
-        const project = data?.cloudaicompanionProject;
-        const projectId = typeof project === "string" ? project : project?.id;
-        
-        if (projectId) {
-          console.log(`[OAuth] Discovered Project ID using ${ideType}: ${projectId}`);
-          return projectId;
-        }
+    if (res.ok) {
+      const data = await res.json() as any;
+      const project = data?.cloudaicompanionProject;
+      const projectId = typeof project === "string" ? project : project?.id;
+
+      if (typeof projectId === "string" && projectId) {
+        console.log("[OAuth] Discovered Project ID using ANTIGRAVITY");
+        return projectId;
       }
-    } catch (e) {
-      console.warn(`[OAuth] Failed to fetch project ID with ${ideType}:`, e);
     }
+  } catch (e) {
+    console.warn("[OAuth] Failed to fetch project ID with ANTIGRAVITY:", e);
   }
 
   return "";

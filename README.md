@@ -250,12 +250,15 @@ device headers are omitted. Agent requests use the native request envelope,
 slash-delimited request IDs, stable signed decimal session IDs, and model
 labels. Caller messages and tools remain the source of the request content.
 
+OAuth project discovery also uses native Hub headers and
+`metadata.ideType: "ANTIGRAVITY"`. Legacy IDE identities can receive HTTP 200
+with `UNSUPPORTED_CLIENT` and no project ID.
+
 Thinking levels use native uppercase enum names; Hydrogen `xhigh` is encoded
 as numeric enum value `100`. Claude 5.5 uses thinking levels, while legacy
 Claude models retain their thinking budgets. GPT-OSS Medium uses the native
 8192-token thinking budget. Function tools are emitted as one declaration per
 tool entry, while the proxy retains its JSON Schema compatibility handling.
-See [the protocol verification notes](docs/antigravity-2.31.2-protocol.md).
 
 Chat and Responses failures preserve their cause in `error.code`:
 
@@ -344,7 +347,6 @@ parameter-group rules are added to the tool description; compatible `allOf`
 constraints are intersected. Arguments keep their original flat structure.
 Unsupported combinations fail locally with the tool name. This rewrite relaxes
 some union constraints, so tool executors must still validate original schemas.
-See the [Claude schema compatibility analysis](docs/claude-tool-schema.md).
 
 Client-executed `tool_search` is supported with `execution: "client"`, a
 description, and a parameters schema. The proxy maps it to a Google function
@@ -358,8 +360,7 @@ on the Antigravity path.
 For Codex to offer tool discovery, set `"supports_search_tool": true` on the
 existing model entry in the JSON catalog selected by `model_catalog_json`.
 This is Codex model metadata, not a proxy `config.json` setting; the proxy's
-OpenAI `/v1/models` listing does not configure it. See the
-[implementation analysis and Gemini 3.8 Flash measurements](docs/tool-context-and-search.md).
+OpenAI `/v1/models` listing does not configure it.
 
 `parallel_tool_calls: false` returns at most one client tool call per response,
 including streaming responses. Google has no equivalent request flag, so the
