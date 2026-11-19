@@ -59,6 +59,7 @@ export interface ModelsConfig {
 
 export interface ModelMetadataOverride {
   name?: string;
+  quotaPool?: string;
   thinkingLevels?: string[];
   defaultThinkingLevel?: string;
 }

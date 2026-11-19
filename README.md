@@ -158,7 +158,7 @@ determines its displayed availability.
 
 | Pool | Models sharing the pool |
 | --- | --- |
-| Gemini Models | Gemini 3.8 Flash tiers, standard Gemini 4 Hydrogen tiers, Hydrogen Sonar, Flash Worker, and Gemini 3.1 Flash Image; older API-compatible Gemini models also use this pool |
+| Gemini Models | Gemini 3.8 Flash, Gemini 4 Hydrogen, Hydrogen Sonar, Gemini 4 Neon, Orchestrator (Neon), Flash Worker, Gemini 3.1 Flash Image, and older API-compatible Gemini models |
 | Claude and GPT models | Claude Sonnet and Opus across available versions and tiers, plus GPT-OSS 120B |
 | Gemini 4 Argon | Argon tiers and Orchestrator (Argon), on accounts whose quota summary advertises a dedicated Argon pool |
 
@@ -176,6 +176,10 @@ common Gemini card. The Hydrogen card counts only accounts advertising its
 standard tiers, even when all accounts advertise Sonar, and shows
 **Shared quota: Gemini Models**. Its balance is a view of that existing pool,
 not additional quota that can be summed with the Gemini card.
+
+The default **Gemini 4 Neon** display group combines Neon and Orchestrator
+(Neon) when their supporting accounts cover only part of the Gemini pool.
+Its 5-hour and weekly bars show those accounts' shared Gemini balances.
 
 Claude versions are separated when their supporting accounts differ. Sonnet
 and Opus share a card within each version because they use the same quota
@@ -234,15 +238,13 @@ Policies can also be updated with `POST /api/config` using a partial
 `{"display": ...}` body. `GET /api/model-display` returns the effective policy
 without exposing unrelated settings.
 
-Orchestrator is listed as **Orchestrator (Argon)** in Playground and in the
-appropriate quota card. Its proxy ID is
-`antigravity-gemini-pro-orchestrator-g1-pro`. It appears after quota discovery
-for an eligible account. Discovery refreshes at startup and on the configured
-quota refresh interval; use **Refresh usage** to reload its latest snapshot,
-then reload the Playground model catalog. Older Hub client identifiers do not
-receive this model from upstream. Its advertised quota matches Argon;
-delegated Hydrogen work may also consume Gemini quota, which has not been
-verified through generation-side quota measurements.
+Playground lists **Orchestrator (Argon)** as
+`antigravity-gemini-pro-orchestrator-g1-pro` and **Orchestrator (Neon)** as
+`antigravity-gemini-pro-orchestrator-neon`. Discovery exposes each route on
+eligible accounts. Standard Neon is available as `antigravity-gemini-4-neon`
+with Low, Medium, High (default), and XHigh. Discovery refreshes at startup
+and on the quota refresh interval. Use **Refresh usage** to reload the
+snapshot, then reload the Playground model catalog.
 
 ### Hydrogen Sonar
 
@@ -301,6 +303,9 @@ settings enrich discovered entries and validate explicit reasoning effort;
 they do not add an undiscovered model, change its routing ID, or grant an
 account access to standard Hydrogen. Update them through `POST /api/config`
 and reload the Playground catalog, or restart after editing `config.json`.
+The optional `quotaPool` field matches a model to a pool in the upstream quota
+summary. The default Neon and Orchestrator (Neon) entries use `Gemini Models`,
+so routing checks both the 5-hour and weekly windows for each account.
 The same configuration mechanism can describe future models without adding
 model-specific branches to the frontend or router.
 

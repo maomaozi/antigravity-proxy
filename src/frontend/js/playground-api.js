@@ -85,7 +85,7 @@ export function classifyModel(model, mode = 'chat') {
             isTierAlias,
             tierLabel,
             summary: id.includes('orchestrator')
-                ? 'Argon orchestrator with Hydrogen workers'
+                ? `Plans with ${name.match(/^Orchestrator \(([^)]+)\)$/i)?.[1] || 'Gemini'} and delegates execution to Hydrogen`
                 : isArgon
                 ? 'Next-gen frontier reasoning & multimodal synthesis'
                 : isLite

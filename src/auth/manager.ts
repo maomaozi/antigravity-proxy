@@ -357,10 +357,17 @@ export type AccountSelectionFailure =
   | "rate_limit_exceeded"
   | "no_available_accounts";
 
+function quotaRoutingModel(model?: string, reasoningEffort?: string): string | undefined {
+  const effort = reasoningEffort?.toLowerCase();
+  if (model && effort && /^(low|medium|high|xhigh)$/.test(effort) && !/-(low|medium|high|xhigh)$/i.test(model)) {
+    return `${model}-${effort}`;
+  }
+  return model;
+}
+
 /** Explain failed selection using the same capability, quota and cooldown state. */
 export function getAccountSelectionFailure(pool: "sandbox", model: string, reasoningEffort?: string): AccountSelectionFailure {
-  const routingModel = model && reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort) && !/-(low|medium|high)$/.test(model)
-    ? `${model}-${reasoningEffort}` : model;
+  const routingModel = quotaRoutingModel(model, reasoningEffort)!;
   const configured = accounts.filter(account => account.refreshToken);
   if (configured.length === 0) return "no_accounts";
   const supported = configured.filter(account => accountSupportsModel(account, model, reasoningEffort));
@@ -392,8 +399,7 @@ export async function getBestAccount(
 ): Promise<AntigravityAccount | null> {
   if (accounts.length === 0) return null;
   const now = Date.now();
-  const routingModel = model && reasoningEffort && /^(low|medium|high)$/.test(reasoningEffort) && !/-(low|medium|high)$/.test(model)
-    ? `${model}-${reasoningEffort}` : model;
+  const routingModel = quotaRoutingModel(model, reasoningEffort);
 
   if (pool) {
     let schedulingConfig: ReturnType<typeof getProxyConfig>['scheduling'] | undefined;

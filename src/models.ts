@@ -79,6 +79,8 @@ export function getModelReasoningError(id: string, effort?: string): string | un
 }
 
 export function getModelFamilyName(name: string): string {
+  const configuredPool = getModelMetadataOverride(name)?.quotaPool;
+  if (configuredPool) return configuredPool;
   const n = normalizeModelId(name).replace(/[ .]/g, "-");
   if (/^gemini-4-hydrogen(?:-|$)/.test(n)) return "Gemini Models";
   if (n === "gemini-pro-orchestrator-g1-pro") return "Gemini 4 Argon";
@@ -197,6 +199,8 @@ export function getAvailableModelCatalog(accounts: AntigravityAccount[]): Suppor
 }
 
 export function getAccountModelFamily(account: AntigravityAccount, id: string): string {
+  const configuredPool = getModelMetadataOverride(id)?.quotaPool;
+  if (configuredPool) return getAccountQuotaWindows(account, id)[0]?.groupName || configuredPool;
   return getAccountModelQuotas(account, id)[0]?.familyName || getModelFamilyName(id);
 }
 
@@ -227,7 +231,8 @@ export function updateQuotaFamilies(account: AntigravityAccount): void {
 }
 
 export function isModernGeminiModel(id: string): boolean {
-  if (/^gemini-(?:pro-orchestrator-g1-pro|flash-worker-agy)$/.test(normalizeModelId(id))) return true;
-  const generation = normalizeModelId(id).match(/^gemini-(\d+)/)?.[1];
+  const model = normalizeModelId(id);
+  if (model.startsWith("gemini-pro-orchestrator-") || model === "gemini-flash-worker-agy") return true;
+  const generation = model.match(/^gemini-(\d+)/)?.[1];
   return generation !== undefined && Number(generation) >= 3;
 }

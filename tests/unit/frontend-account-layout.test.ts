@@ -48,6 +48,26 @@ function createCodexQuotaHarness(display = mergedDisplay) {
 }
 
 describe("dashboard account provider layout", () => {
+  test('shows Neon and its Orchestrator together with the shared Gemini windows of supporting accounts', () => {
+    const broad = 'gemini-4-hydrogen-sonar';
+    const neon = 'gemini-4-neon-xhigh';
+    const orchestrator = 'gemini-pro-orchestrator-neon';
+    const accounts = Array.from({ length: 7 }, (_, index) => ({
+      email: `neon-${index}@example.com`, healthScore: 100,
+      availableModels: [{ id: neon, name: 'Gemini 4 Neon (XHigh)' }, { id: orchestrator, name: 'Orchestrator (Neon)' }],
+      quota: [{ modelIds: index < 2 ? [broad, neon, orchestrator] : [broad], groupName: 'Gemini Models', remainingFraction: 0.9 }],
+      quotaWindows: [
+        { groupName: 'Gemini Models', window: '5h', remainingFraction: 0.9 },
+        { groupName: 'Gemini Models', window: 'weekly', remainingFraction: index < 2 ? 0.6 : 0.3 },
+      ],
+    }));
+    const harness = createCodexQuotaHarness(defaultDisplay);
+    const stats = harness.families(accounts);
+    expect(stats.map((stat: any) => [stat.name, stat.total])).toEqual([['Gemini Models', 7], ['Gemini 4 Neon', 2]]);
+    expect(stats[1]).toMatchObject({ availability: 60, quotaPools: ['Gemini Models'], windowStats: [{ label: '5h', availability: 90 }, { label: '7d', availability: 60 }] });
+    expect(harness.renderPools(accounts)).toContain('Orchestrator (Neon)');
+  });
+
   test('merges Sonnet and Opus within each Claude version while counting shared accounts and thinking tiers once', () => {
     const accounts = Array.from({ length: 9 }, (_, index) => {
       const version = index < 6 ? '4-6' : '5-5';
