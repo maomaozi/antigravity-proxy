@@ -819,12 +819,18 @@ export function transformGoogleEventToOpenAI(
   };
 }
 
+export interface StreamUsageTiming {
+  firstTokenAt: number | null;
+  completedAt: number;
+  generationDurationMs: number | null;
+}
+
 export function createCompletionStreamTransformer(
   model: string,
   requestId: string,
   hasPriorToolCalls: boolean,
   sessionId?: string,
-  onUsage?: (usage: UpstreamTokenUsage) => void,
+  onUsage?: (usage: UpstreamTokenUsage, timing: StreamUsageTiming) => void,
 ): TransformStream<Uint8Array, CompletionStreamEvent> {
   const decoder = new TextDecoder();
   let buffer = "";
@@ -834,11 +840,19 @@ export function createCompletionStreamTransformer(
   let nextToolCallIndex = 0;
   const toolCallIndexes = new Map<string, number>();
   let hasEmittedDone = false;
+  let firstTokenAt: number | null = null;
 
-  const emitUsage = (usage: UpstreamTokenUsage | undefined) => {
+  const emitUsage = (usage: UpstreamTokenUsage | undefined, now: number) => {
     if (!usage || !onUsage) return;
+    const generationDurationMs = firstTokenAt !== null && now > firstTokenAt
+      ? now - firstTokenAt
+      : null;
     try {
-      onUsage(usage);
+      onUsage(usage, {
+        firstTokenAt,
+        completedAt: now,
+        generationDurationMs,
+      });
     } catch (error) {
       console.warn("[Usage] Failed to process upstream token metadata:", error);
     }
@@ -888,7 +902,16 @@ export function createCompletionStreamTransformer(
       if (!chunk) return;
 
       normalizeToolCallIndexes(chunk);
-      emitUsage(chunk.usage);
+      const now = Date.now();
+      const hasGeneratedContent = Boolean(
+        chunk.textDelta
+        || chunk.reasoningDelta
+        || chunk.toolCalls?.length,
+      );
+      if (hasGeneratedContent && firstTokenAt === null) {
+        firstTokenAt = now;
+      }
+      emitUsage(chunk.usage, now);
       rememberThoughtSignature(chunk);
 
       const hasMeaningfulContent = Boolean(
@@ -940,7 +963,7 @@ export function createOpenAIStreamTransformer(
   requestId: string,
   hasPriorToolCalls: boolean,
   sessionId?: string,
-  onUsage?: (usage: UpstreamTokenUsage) => void,
+  onUsage?: (usage: UpstreamTokenUsage, timing: StreamUsageTiming) => void,
 ): ReadableWritablePair<Uint8Array, Uint8Array> {
   const canonical = createCompletionStreamTransformer(
     model,

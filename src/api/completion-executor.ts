@@ -954,7 +954,7 @@ async function executeCompletionInternal({
         }, streamMs);
 
         if (request.stream) {
-          const persistStreamUsage = (usage: UpstreamTokenUsage) => {
+          const persistStreamUsage = (usage: UpstreamTokenUsage, timing: { generationDurationMs: number | null }) => {
             recordRequestTokenUsage({
               requestId,
               identity: sessionIdentity,
@@ -973,6 +973,7 @@ async function executeCompletionInternal({
               effort: extractEffort(request.reasoningEffort, request.model),
               totalTokens: usage.totalTokens,
               createdAt: requestStartedAt,
+              generationDurationMs: timing.generationDurationMs,
             });
           };
           const timeoutWatchdog = new TransformStream<Uint8Array, Uint8Array>();
@@ -1023,12 +1024,18 @@ async function executeCompletionInternal({
         }
 
         let finalTokenUsage: UpstreamTokenUsage | undefined;
+        let finalGenerationDurationMs: number | null = null;
         const completionStream = googleRes.body.pipeThrough(createCompletionStreamTransformer(
           request.model,
           requestId,
           false,
           sessionId,
-          usage => { finalTokenUsage = usage; },
+          (usage, timing) => {
+            finalTokenUsage = usage;
+            if (timing.generationDurationMs !== null) {
+              finalGenerationDurationMs = timing.generationDurationMs;
+            }
+          },
         ));
         let result: CompletionResult;
         try {
@@ -1094,6 +1101,7 @@ async function executeCompletionInternal({
             effort: extractEffort(request.reasoningEffort, request.model),
             totalTokens: finalTokenUsage.totalTokens,
             createdAt: requestStartedAt,
+            generationDurationMs: finalGenerationDurationMs,
           });
         }
         await updateAccountUsage(account.email, true, request.model, "sandbox");

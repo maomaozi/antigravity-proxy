@@ -7,6 +7,23 @@ export interface CodexNormalizedUsage {
   totalTokens: number;
 }
 
+export interface CodexStreamTiming {
+  firstTokenAt: number | null;
+  completedAt: number;
+  generationDurationMs: number | null;
+}
+
+export function isCodexGenerationEvent(type: unknown): boolean {
+  if (typeof type !== "string") return false;
+  return (
+    type.startsWith("response.output_")
+    || type.startsWith("response.content_part.")
+    || type.startsWith("response.reasoning")
+    || type.startsWith("response.function_call_")
+    || type.startsWith("response.refusal.")
+  );
+}
+
 function tokenCount(value: unknown): number {
   const numeric = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : 0;
@@ -56,9 +73,10 @@ export class CodexSSEUsageCollector {
   private readonly decoder = new TextDecoder();
   private buffer = "";
   private usage: CodexNormalizedUsage | null = null;
+  private firstTokenAt: number | null = null;
   private notified = false;
 
-  constructor(private readonly onUsage?: (usage: CodexNormalizedUsage) => void) {}
+  constructor(private readonly onUsage?: (usage: CodexNormalizedUsage, timing: CodexStreamTiming) => void) {}
 
   push(value: Uint8Array): void {
     this.buffer += this.decoder.decode(value, { stream: true });
@@ -93,13 +111,24 @@ export class CodexSSEUsageCollector {
     try {
       const payload = JSON.parse(raw);
       const type = payload?.type || parsed.event;
+      const now = Date.now();
+      if (this.firstTokenAt === null && isCodexGenerationEvent(type)) {
+        this.firstTokenAt = now;
+      }
       if (type !== "response.completed" && type !== "response.incomplete") return;
       const usage = payload?.response?.usage;
       if (usage && typeof usage === "object") {
         this.usage = normalizeCodexUsage(usage);
         if (!this.notified) {
           this.notified = true;
-          try { this.onUsage?.(this.usage); } catch {
+          const timing: CodexStreamTiming = {
+            firstTokenAt: this.firstTokenAt,
+            completedAt: now,
+            generationDurationMs: this.firstTokenAt !== null && now > this.firstTokenAt
+              ? now - this.firstTokenAt
+              : null,
+          };
+          try { this.onUsage?.(this.usage, timing); } catch {
             // Usage observation must never interfere with transparent passthrough.
           }
         }

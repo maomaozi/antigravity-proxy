@@ -1,4 +1,9 @@
-import { CodexSSEUsageCollector, type CodexNormalizedUsage } from "./usage";
+import {
+  CodexSSEUsageCollector,
+  isCodexGenerationEvent,
+  type CodexNormalizedUsage,
+  type CodexStreamTiming,
+} from "./usage";
 
 export class CodexSSEAggregationError extends Error {
   constructor(message: string) {
@@ -64,13 +69,17 @@ function failureMessage(response: any): string {
   return response?.error?.message || response?.error?.code || response?.incomplete_details?.reason || "Codex upstream returned response.failed";
 }
 
-export async function aggregateCodexResponsesSSE(response: Response): Promise<any> {
+export async function aggregateCodexResponsesSSE(
+  response: Response,
+  onTiming?: (timing: CodexStreamTiming) => void,
+): Promise<any> {
   const reader = response.body?.getReader();
   if (!reader) throw new CodexSSEAggregationError("Codex upstream response body is empty");
   const framer = new SSEFramer();
   const outputItems = new Map<number, any>();
   let terminalResponse: any | undefined;
   let terminalType: string | undefined;
+  let firstTokenAt: number | null = null;
 
   const consume = (events: ParsedSSEEvent[]): boolean => {
     for (const event of events) {
@@ -79,6 +88,10 @@ export async function aggregateCodexResponsesSSE(response: Response): Promise<an
       let payload: any;
       try { payload = JSON.parse(raw); } catch { continue; }
       const type = payload?.type || event.event;
+      const now = Date.now();
+      if (firstTokenAt === null && isCodexGenerationEvent(type)) {
+        firstTokenAt = now;
+      }
       if (type === "response.output_item.done") {
         const index = payload?.output_index;
         if (Number.isInteger(index) && index >= 0 && payload?.item !== undefined) outputItems.set(index, payload.item);
@@ -88,6 +101,15 @@ export async function aggregateCodexResponsesSSE(response: Response): Promise<an
         if (payload?.response && typeof payload.response === "object") {
           terminalType = type;
           terminalResponse = payload.response;
+          if (type !== "response.failed") {
+            onTiming?.({
+              firstTokenAt,
+              completedAt: now,
+              generationDurationMs: firstTokenAt !== null && now > firstTokenAt
+                ? now - firstTokenAt
+                : null,
+            });
+          }
           return true;
         }
       }
@@ -122,7 +144,7 @@ export async function aggregateCodexResponsesSSE(response: Response): Promise<an
 
 export function passthroughCodexSSE(
   source: ReadableStream<Uint8Array>,
-  onUsage: (usage: CodexNormalizedUsage) => void,
+  onUsage: (usage: CodexNormalizedUsage, timing: CodexStreamTiming) => void,
 ): ReadableStream<Uint8Array> {
   const collector = new CodexSSEUsageCollector(onUsage);
   return source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({

@@ -954,23 +954,28 @@ $('composer').onsubmit = async event => {
             }
             complete = true;
         } else {
-            let reasoning = '', reasoningNode;
+            let reasoning = '', reasoningNode, firstTokenAt = null;
+            const markFirstToken = () => { if (firstTokenAt === null) firstTokenAt = performance.now(); };
             const finish = result => {
                 if (result.error) throw new Error(result.error.message || 'Generation failed');
                 if (result.status === 'incomplete' || result.status === 'failed') throw new Error(`Response incomplete: ${result.incomplete_details?.reason || result.status}`);
                 text = outputText(result) || text; assistant.body.textContent = text; complete = true;
-                const elapsedSec = Math.max(0.05, (performance.now() - startedAt) / 1000);
+                const now = performance.now();
+                const elapsedSec = Math.max(0.05, (now - startedAt) / 1000);
+                const genSec = firstTokenAt !== null && now > firstTokenAt ? (now - firstTokenAt) / 1000 : null;
                 if (result.usage) {
                     const outTokens = Number(result.usage.output_tokens) || 0;
-                    const speed = outTokens > 0 ? ` · ${(outTokens / elapsedSec).toFixed(1)} tok/s` : '';
+                    const speed = outTokens > 0 && genSec ? ` · ${(outTokens / genSec).toFixed(1)} tok/s` : '';
                     note(assistant.element, `Input ${result.usage.input_tokens ?? '—'} · Output ${result.usage.output_tokens ?? '—'} tokens · ${elapsedSec.toFixed(2)}s${speed}`);
                 }
             };
             if (response.headers.get('content-type')?.includes('text/event-stream')) {
                 await consumeEvents(response, event => {
                     if (event.type === 'error' || event.type === 'response.failed') throw new Error(event.error?.message || event.response?.error?.message || event.message || 'Generation failed');
-                    if (event.type === 'response.output_text.delta') { text += event.delta || ''; assistant.body.textContent = text; }
+                    if (event.type === 'response.output_item.added' || event.type === 'response.content_part.added') markFirstToken();
+                    if (event.type === 'response.output_text.delta') { markFirstToken(); text += event.delta || ''; assistant.body.textContent = text; }
                     if (['response.reasoning_text.delta', 'response.reasoning_summary_text.delta'].includes(event.type)) {
+                        markFirstToken();
                         if (!reasoningNode) { const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Reasoning'; reasoningNode = document.createElement('pre'); details.append(summary, reasoningNode); assistant.element.insertBefore(details, assistant.body); }
                         reasoning += event.delta || ''; reasoningNode.textContent = reasoning;
                     }

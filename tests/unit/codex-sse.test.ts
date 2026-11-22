@@ -52,4 +52,33 @@ describe("Codex Responses SSE", () => {
     await reader.cancel();
     expect(observedCount).toBe(1);
   });
+
+  test("measures model generation duration from first output/reasoning event to completion, excluding TTFT", async () => {
+    const encoder = new TextEncoder();
+    let observedTiming: any = null;
+    const source = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode('event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1"}}\n\n'));
+        controller.enqueue(encoder.encode('event: response.in_progress\ndata: {"type":"response.in_progress","response":{"id":"resp_1"}}\n\n'));
+        // Simulated prefill/TTFT wait before first output event
+        await Bun.sleep(60);
+        controller.enqueue(encoder.encode('event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning"}}\n\n'));
+        // Simulated model generation time
+        await Bun.sleep(30);
+        controller.enqueue(encoder.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hello"}\n\n'));
+        controller.enqueue(encoder.encode('event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}}\n\n'));
+        controller.close();
+      },
+    });
+
+    const transformed = passthroughCodexSSE(source, (_usage, timing) => {
+      observedTiming = timing;
+    });
+    await new Response(transformed).text();
+
+    expect(observedTiming).not.toBeNull();
+    expect(observedTiming.firstTokenAt).toBeGreaterThan(0);
+    expect(observedTiming.generationDurationMs).toBeGreaterThanOrEqual(20);
+    expect(observedTiming.generationDurationMs).toBeLessThan(65);
+  });
 });

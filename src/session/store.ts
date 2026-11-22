@@ -83,6 +83,7 @@ export interface RecordRequestTokenUsageInput {
   effort?: string | null;
   totalTokens: number;
   createdAt?: number;
+  generationDurationMs?: number | null;
 }
 
 export interface RequestTokenUsageListOptions {
@@ -254,6 +255,7 @@ interface RequestTokenUsageRow {
   total_tokens: number;
   created_at: number;
   updated_at: number;
+  generation_duration_ms?: number | null;
 }
 
 function mapRow(row: BindingRow): SessionBinding {
@@ -283,7 +285,11 @@ function mapRow(row: BindingRow): SessionBinding {
 }
 
 function mapUsageRow(row: RequestTokenUsageRow): RequestTokenUsage {
-  const durationMs = row.updated_at > row.created_at ? row.updated_at - row.created_at : null;
+  const durationMs = row.generation_duration_ms !== null
+    && row.generation_duration_ms !== undefined
+    && row.generation_duration_ms > 0
+    ? row.generation_duration_ms
+    : null;
   return {
     id: row.id,
     requestId: row.request_id,
@@ -377,7 +383,8 @@ export class SessionBindingStore {
         effort TEXT,
         total_tokens INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        generation_duration_ms INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_request_token_usage_session
         ON request_token_usage(session_key, created_at DESC);
@@ -426,6 +433,10 @@ export class SessionBindingStore {
     usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
     if (!usageColumns.some(column => column.name === "effort")) {
       this.db.exec("ALTER TABLE request_token_usage ADD COLUMN effort TEXT;");
+      usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
+    }
+    if (!usageColumns.some(column => column.name === "generation_duration_ms")) {
+      this.db.exec("ALTER TABLE request_token_usage ADD COLUMN generation_duration_ms INTEGER;");
       usageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(request_token_usage)").all();
     }
     const bindingColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(session_bindings)").all();
@@ -517,7 +528,8 @@ export class SessionBindingStore {
             effort TEXT,
             total_tokens INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            generation_duration_ms INTEGER
           );
           INSERT INTO request_token_usage (
             id, request_id, session_key, session_id, session_source, session_inferred,
@@ -619,10 +631,10 @@ export class SessionBindingStore {
           session_key,
           model,
           SUM(output_tokens + reasoning_tokens) AS generated_tokens,
-          SUM(updated_at - created_at) AS duration_ms,
+          SUM(generation_duration_ms) AS duration_ms,
           COUNT(*) AS request_count
         FROM request_token_usage
-        WHERE output_tokens + reasoning_tokens > 0 AND updated_at > created_at
+        WHERE output_tokens + reasoning_tokens > 0 AND generation_duration_ms > 0
         GROUP BY session_key, model
       ) AS speed
         ON speed.session_key = session_bindings.session_key
@@ -640,6 +652,9 @@ export class SessionBindingStore {
   recordRequestTokenUsage(input: RecordRequestTokenUsageInput): RequestTokenUsage {
     const now = Date.now();
     const createdAt = Number.isFinite(input.createdAt) ? Math.trunc(input.createdAt!) : now;
+    const generationDurationMs = Number.isFinite(input.generationDurationMs) && input.generationDurationMs! > 0
+      ? Math.trunc(input.generationDurationMs!)
+      : null;
     const model = input.model.toLowerCase();
     this.db.query(`
       INSERT INTO request_token_usage (
@@ -647,8 +662,8 @@ export class SessionBindingStore {
         account_email, model, model_family, upstream_model, pool, endpoint,
         streamed, input_tokens, cached_input_tokens, cached_input_tokens_reported,
         output_tokens, reasoning_tokens, reasoning_tokens_reported, effort, total_tokens,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, generation_duration_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(request_id) DO UPDATE SET
         session_key = excluded.session_key,
         session_id = excluded.session_id,
@@ -669,7 +684,13 @@ export class SessionBindingStore {
         reasoning_tokens_reported = MAX(request_token_usage.reasoning_tokens_reported, excluded.reasoning_tokens_reported),
         effort = COALESCE(excluded.effort, request_token_usage.effort),
         total_tokens = MAX(request_token_usage.total_tokens, excluded.total_tokens),
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        generation_duration_ms = CASE
+          WHEN excluded.generation_duration_ms IS NOT NULL
+            AND (request_token_usage.generation_duration_ms IS NULL OR excluded.generation_duration_ms > request_token_usage.generation_duration_ms)
+          THEN excluded.generation_duration_ms
+          ELSE request_token_usage.generation_duration_ms
+        END
     `).run(
       input.requestId,
       input.identity.key,
@@ -693,6 +714,7 @@ export class SessionBindingStore {
       tokenCount(input.totalTokens),
       createdAt,
       now,
+      generationDurationMs,
     );
 
     const row = this.db.query<RequestTokenUsageRow, [string]>(`
@@ -768,9 +790,9 @@ export class SessionBindingStore {
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
         COALESCE(SUM(total_tokens), 0) AS total_tokens,
-        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND updated_at > created_at THEN 1 ELSE 0 END), 0) AS timed_requests,
-        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND updated_at > created_at THEN output_tokens + reasoning_tokens ELSE 0 END), 0) AS speed_generated_tokens,
-        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND updated_at > created_at THEN updated_at - created_at ELSE 0 END), 0) AS output_duration_ms
+        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND generation_duration_ms > 0 THEN 1 ELSE 0 END), 0) AS timed_requests,
+        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND generation_duration_ms > 0 THEN output_tokens + reasoning_tokens ELSE 0 END), 0) AS speed_generated_tokens,
+        COALESCE(SUM(CASE WHEN output_tokens + reasoning_tokens > 0 AND generation_duration_ms > 0 THEN generation_duration_ms ELSE 0 END), 0) AS output_duration_ms
       FROM request_token_usage ${where}
     `).get(...args);
     const requests = aggregate?.requests ?? 0;

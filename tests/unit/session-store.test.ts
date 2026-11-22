@@ -164,6 +164,7 @@ describe("session binding store", () => {
       effort: "medium",
       totalTokens: 115,
       createdAt: 1000,
+      generationDurationMs: 500,
     });
     store.recordRequestTokenUsage({
       requestId: "request-b",
@@ -177,6 +178,7 @@ describe("session binding store", () => {
       outputTokens: 20,
       totalTokens: 220,
       createdAt: 2000,
+      generationDurationMs: 1000,
     });
 
     const all = store.listRequestTokenUsage();
@@ -193,8 +195,8 @@ describe("session binding store", () => {
       reasoningTokens: 5,
       totalTokens: 335,
       timedRequests: 2,
-      outputDurationMs: expect.any(Number),
-      averageTokensPerSecond: expect.any(Number),
+      outputDurationMs: 1500,
+      averageTokensPerSecond: (35 * 1000) / 1500,
     });
     const reportedOnly = store.listRequestTokenUsage({ sessionKey: identity.key });
     expect(reportedOnly.total).toBe(1);
@@ -209,7 +211,7 @@ describe("session binding store", () => {
     expect(store.clearRequestTokenUsage()).toBe(2);
   });
 
-  test("calculates per-request and session-model weighted generated-token speed", () => {
+  test("calculates per-request and session-model weighted model generation speed and ignores legacy untimed rows", () => {
     const store = createStore();
     store.record({
       identity,
@@ -218,6 +220,42 @@ describe("session binding store", () => {
       modelFamily: "Speed Family",
       pool: "sandbox",
     });
+
+    // Legacy / untimed row without generationDurationMs should not report speed or skew averages
+    const untimed = store.recordRequestTokenUsage({
+      requestId: "request-legacy-e2e",
+      identity,
+      accountEmail: "speed@example.com",
+      model: "model-speed",
+      modelFamily: "Speed Family",
+      pool: "sandbox",
+      streamed: true,
+      inputTokens: 10,
+      outputTokens: 100,
+      totalTokens: 110,
+      createdAt: Date.now() - 10_000,
+    });
+    expect(untimed.durationMs).toBeNull();
+    expect(untimed.tokensPerSecond).toBeNull();
+
+    // Model generation duration (1000ms) is used even though E2E elapsed time is 5000ms
+    const initial = store.recordRequestTokenUsage({
+      requestId: "request-speed",
+      identity,
+      accountEmail: "speed@example.com",
+      model: "model-speed",
+      modelFamily: "Speed Family",
+      pool: "sandbox",
+      streamed: true,
+      inputTokens: 10,
+      outputTokens: 50,
+      reasoningTokens: 25,
+      reasoningTokensReported: true,
+      totalTokens: 85,
+      createdAt: Date.now() - 5000,
+      generationDurationMs: 400,
+    });
+    expect(initial.durationMs).toBe(400);
 
     const usage = store.recordRequestTokenUsage({
       requestId: "request-speed",
@@ -232,16 +270,16 @@ describe("session binding store", () => {
       reasoningTokens: 50,
       reasoningTokensReported: true,
       totalTokens: 160,
-      createdAt: Date.now() - 1000,
+      createdAt: Date.now() - 5000,
+      generationDurationMs: 1000,
     });
 
-    expect(usage.durationMs).toBeGreaterThanOrEqual(1000);
-    expect(usage.tokensPerSecond).toBeGreaterThan(135);
-    expect(usage.tokensPerSecond).toBeLessThanOrEqual(150);
+    expect(usage.durationMs).toBe(1000);
+    expect(usage.tokensPerSecond).toBeCloseTo(150, 5);
 
     const binding = store.list().bindings[0];
     expect(binding.speedRequestCount).toBe(1);
-    expect(binding.averageTokensPerSecond).toBeCloseTo(usage.tokensPerSecond!, 5);
+    expect(binding.averageTokensPerSecond).toBeCloseTo(150, 5);
   });
 });
 

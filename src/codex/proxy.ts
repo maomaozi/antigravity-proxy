@@ -176,14 +176,17 @@ export class CodexProxyService {
     try { data = await upstream.json(); } catch {
       return Response.json({ error: { message: "Codex Compact upstream returned invalid JSON", type: "upstream_error" } }, { status: 502 });
     }
-    if (data?.usage) this.recordUsage(account, request, endpoint, false, normalizeCodexUsage(data.usage));
+    if (data?.usage) this.recordUsage(account, request, endpoint, false, normalizeCodexUsage(data.usage), null);
     return new Response(JSON.stringify(data), { status: upstream.status, headers: this.jsonHeaders(upstream.headers) });
   }
 
   private async handleResponsesSuccess(upstream: Response, account: CodexAccount, request: ProxyRequest, endpoint: string): Promise<Response> {
     if (request.body?.stream === true) {
       if (!upstream.body) return Response.json({ error: { message: "Codex upstream response body is empty" } }, { status: 502 });
-      const stream = passthroughCodexSSE(upstream.body, usage => this.recordUsage(account, request, endpoint, true, usage));
+      const stream = passthroughCodexSSE(
+        upstream.body,
+        (usage, timing) => this.recordUsage(account, request, endpoint, true, usage, timing.generationDurationMs),
+      );
       const headers = new Headers(upstream.headers);
       headers.delete("content-length");
       headers.set("Content-Type", "text/event-stream");
@@ -193,17 +196,29 @@ export class CodexProxyService {
     }
 
     let data: any;
-    try { data = await aggregateCodexResponsesSSE(upstream); } catch (error: any) {
+    let generationDurationMs: number | null = null;
+    try {
+      data = await aggregateCodexResponsesSSE(upstream, timing => {
+        generationDurationMs = timing.generationDurationMs;
+      });
+    } catch (error: any) {
       if (request.signal?.aborted) {
         throw error;
       }
       return Response.json({ error: { message: error?.message || "Incomplete Codex upstream stream", type: "upstream_error" } }, { status: 502 });
     }
-    if (data?.usage) this.recordUsage(account, request, endpoint, false, normalizeCodexUsage(data.usage));
+    if (data?.usage) this.recordUsage(account, request, endpoint, false, normalizeCodexUsage(data.usage), generationDurationMs);
     return new Response(JSON.stringify(data), { status: 200, headers: this.jsonHeaders(upstream.headers) });
   }
 
-  private recordUsage(account: CodexAccount, request: ProxyRequest, endpoint: string, streamed: boolean, usage: CodexNormalizedUsage): void {
+  private recordUsage(
+    account: CodexAccount,
+    request: ProxyRequest,
+    endpoint: string,
+    streamed: boolean,
+    usage: CodexNormalizedUsage,
+    generationDurationMs: number | null,
+  ): void {
     const rawEffort = request.body?.reasoning?.effort ?? request.body?.reasoning_effort;
     const effort = typeof rawEffort === "string" && rawEffort.trim()
       ? rawEffort.trim().toLowerCase()
@@ -221,6 +236,7 @@ export class CodexProxyService {
       effort,
       ...usage,
       createdAt: request.requestStartedAt,
+      generationDurationMs,
     });
   }
 
