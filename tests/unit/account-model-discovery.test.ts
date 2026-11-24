@@ -140,6 +140,43 @@ describe("account-specific models and quotas", () => {
     expect(validateCompletionRequestForGoogle({ model: orchestrator, messages: [{ role: "assistant", content: "Continue" }], stream: true })).toContain("cannot end with a model/assistant turn");
   });
 
+  test("maps the current Carbon and Argon routes to the reported Gemini windows", async () => {
+    const carbon = "gemini-4-carbon-high";
+    const carbonOrchestrator = "gemini-pro-orchestrator";
+    const argon = "gemini-4-argon-high";
+    const argonOrchestrator = "gemini-pro-orchestrator-argon";
+    const legacyArgon = "antigravity-gemini-pro-orchestrator-g1-pro";
+    const a = await discover(Object.fromEntries([carbon, carbonOrchestrator, argon, argonOrchestrator]
+      .map(id => [id, { ...model(id, 0.9), thinkingLevel: 3 }])));
+    a.quotaWindows = [
+      { groupName: "Gemini Models", window: "5h", remainingFraction: 0.9 },
+      { groupName: "Gemini Models", window: "weekly", remainingFraction: 0 },
+    ];
+    a.quotaUpdatedAt = a.quotaWindowsUpdatedAt = Date.now();
+    updateQuotaFamilies(a);
+    for (const id of [carbon, carbonOrchestrator, argon, argonOrchestrator, legacyArgon]) {
+      expect(accountSupportsModel(a, id)).toBe(true);
+      expect(getAccountModelPool(a, id)).toBe("Gemini Models");
+      expect(getAccountQuotaWindows(a, id).map(window => window.window)).toEqual(["5h", "weekly"]);
+      expect(evaluateAccountModelQuotaState(a, id).confirmedExhausted).toBe(true);
+    }
+    expect(a.quota?.every(q => q.familyName === "Gemini Models")).toBe(true);
+
+    const selected = findAccountModel(a, legacyArgon);
+    expect(transformCompletionToGoogleBody({ model: legacyArgon, messages: [{ role: "user", content: "OK" }], stream: true },
+      "project", "", undefined, false, selected).model).toBe(argonOrchestrator);
+    expect(getAvailableModelCatalog([a]).some(entry => entry.id === legacyArgon)).toBe(false);
+    expect(validateCompletionRequestForGoogle({ model: carbonOrchestrator, messages: [{ role: "assistant", content: "OK" }], stream: true }))
+      .toContain("cannot end with a model/assistant turn");
+
+    const legacy = await discover({ "gemini-pro-orchestrator-g1-pro": model("Orchestrator (Argon)") });
+    expect(findAccountModel(legacy, legacyArgon)?.id).toBe("gemini-pro-orchestrator-g1-pro");
+    expect(accountSupportsModel(legacy, argonOrchestrator)).toBe(false);
+    a.quotaWindows.push({ groupName: "Gemini 4 Argon", window: "weekly", remainingFraction: 0.5 });
+    expect(getAccountModelPool(a, legacyArgon)).toBe("Gemini 4 Argon");
+    expect(getAccountModelPool(a, carbonOrchestrator)).toBe("Gemini Models");
+  });
+
   test("uses the native GPT-OSS thinking budget after discovery", async () => {
     const a = await discover({ "gpt-oss-120b-medium": model("GPT-OSS-120B") });
     const body = transformCompletionToGoogleBody({

@@ -15,7 +15,7 @@ This project is strongly inspired by [opencode-antigravity-auth](https://github.
 - **Account Rotation & Health Scoring**: Automatically rotates multiple Google accounts, penalizing those with errors and favoring healthy ones.
 - **Quota Management**: Real-time monitoring and automatic cooldowns (backoff) on `429 Too Many Requests` errors.
 - **Quota Window Activation**: Treats untouched Google/Codex windows as ready instead of counting down, and checks every 10 minutes for unused Google quota pools and Codex 5-hour windows. Google activation selects an advertised chat model per independent pool, including Claude/Opus and dedicated model quotas such as Argon. Shared pools receive one request, exhausted pools are skipped, and quotas are refreshed after activation. The first check runs 10 minutes after server startup.
-- **Antigravity Routing**: Uses the verified Hub 2.31.2 request format and discovers account-specific Gemini 4 Hydrogen, Hydrogen Sonar, Argon, Orchestrator, and Claude Sonnet/Opus 5.5 models. Standard Hydrogen supports XHigh; Sonar exposes Low/Medium/High with Low as its default.
+- **Antigravity Routing**: Uses the verified Hub 2.31.2 request format and discovers account-specific Gemini 4 Hydrogen, Hydrogen Sonar, Argon, Carbon, Neon, Orchestrator, and Claude Sonnet/Opus 5.5 models. Standard Hydrogen supports XHigh. Sonar exposes Low/Medium/High with Low as its default.
 - **Integrated Dashboard**: Manage accounts, monitor health, and view real-time logs. Configurable rules merge or separate quota cards and account details, counting each account once per displayed group and identifying shared quota sources.
 - **Persistent Session Affinity**: Recognizes OpenCode, Codex, and OpenAI cache identifiers and keeps each session/model bound to its successful account and pool in SQLite. Google requests always use `daily-cloudcode-pa.googleapis.com`; retries switch accounts on that host.
 - **Automatic Project Discovery**: Auto-detects Google Cloud Project IDs via Cloud SDK impersonation.
@@ -158,14 +158,14 @@ determines its displayed availability.
 
 | Pool | Models sharing the pool |
 | --- | --- |
-| Gemini Models | Gemini 3.8 Flash, Gemini 4 Hydrogen, Hydrogen Sonar, Gemini 4 Neon, Orchestrator (Neon), Flash Worker, Gemini 3.1 Flash Image, and older API-compatible Gemini models |
+| Gemini Models | Gemini 3.8 Flash, Gemini 4 Hydrogen, Hydrogen Sonar, Gemini 4 Carbon, Gemini 4 Neon, Orchestrator (Carbon), Orchestrator (Neon), Flash Worker, Gemini 3.1 Flash Image, and older API-compatible Gemini models. Argon tiers and Orchestrator (Argon) also share this pool when the account reports no dedicated Argon pool. |
 | Claude and GPT models | Claude Sonnet and Opus across available versions and tiers, plus GPT-OSS 120B |
 | Gemini 4 Argon | Argon tiers and Orchestrator (Argon), on accounts whose quota summary advertises a dedicated Argon pool |
 
-Some plans include Argon in the common Gemini pool. Pool membership follows
-the account's quota summary rather than assuming every account has a separate
-Argon allowance. A weekly limit of zero blocks the pool even if another window
-shows 100% remaining.
+The accounts checked on 2026-11-24 reported shared Gemini windows for Carbon,
+Argon, and all three Orchestrator routes. The proxy also handles accounts that
+report a dedicated Argon pool. A weekly limit of zero blocks its pool even if
+another window shows 100% remaining.
 
 ### Configurable Model Display
 
@@ -177,9 +177,11 @@ standard tiers, even when all accounts advertise Sonar, and shows
 **Shared quota: Gemini Models**. Its balance is a view of that existing pool,
 not additional quota that can be summed with the Gemini card.
 
-The default **Gemini 4 Neon** display group combines Neon and Orchestrator
-(Neon) when their supporting accounts cover only part of the Gemini pool.
-Its 5-hour and weekly bars show those accounts' shared Gemini balances.
+The default **Gemini 4 Neon**, **Gemini 4 Carbon**, and **Gemini 4 Argon**
+display groups pair each model family with its Orchestrator when only some
+accounts in the pool support them. **Flash Worker** follows the same account
+coverage rule. Each card shows the 5-hour and weekly balances of the
+accounts that support its models, using their reported quota pools.
 
 Claude versions are separated when their supporting accounts differ. Sonnet
 and Opus share a card within each version because they use the same quota
@@ -238,13 +240,21 @@ Policies can also be updated with `POST /api/config` using a partial
 `{"display": ...}` body. `GET /api/model-display` returns the effective policy
 without exposing unrelated settings.
 
-Playground lists **Orchestrator (Argon)** as
-`antigravity-gemini-pro-orchestrator-g1-pro` and **Orchestrator (Neon)** as
-`antigravity-gemini-pro-orchestrator-neon`. Discovery exposes each route on
-eligible accounts. Standard Neon is available as `antigravity-gemini-4-neon`
-with Low, Medium, High (default), and XHigh. Discovery refreshes at startup
-and on the quota refresh interval. Use **Refresh usage** to reload the
-snapshot, then reload the Playground model catalog.
+Playground lists the Orchestrator routes advertised by eligible accounts.
+Discovery refreshes at startup and on the quota refresh interval. Use
+**Refresh usage** to reload the snapshot, then reload the Playground model
+catalog.
+
+| Route | Proxy ID | Advertised level |
+| --- | --- | --- |
+| Orchestrator (Carbon) | `antigravity-gemini-pro-orchestrator` | High |
+| Orchestrator (Argon) | `antigravity-gemini-pro-orchestrator-argon` | High |
+| Orchestrator (Neon) | `antigravity-gemini-pro-orchestrator-neon` | XHigh |
+
+Existing requests for `antigravity-gemini-pro-orchestrator-g1-pro` use the
+old route where it is still advertised and otherwise use the current Argon
+route on accounts that advertise it. The catalog lists the old ID only if
+upstream discovery returns it.
 
 ### Hydrogen Sonar
 
@@ -298,16 +308,21 @@ Verified metadata supplements are stored in `models.overrides` in
 }
 ```
 
-Keys are normalized upstream IDs without the `antigravity-` prefix. These
-settings enrich discovered entries and validate explicit reasoning effort;
-they do not add an undiscovered model, change its routing ID, or grant an
-account access to standard Hydrogen. Update them through `POST /api/config`
-and reload the Playground catalog, or restart after editing `config.json`.
-The optional `quotaPool` field matches a model to a pool in the upstream quota
-summary. The default Neon and Orchestrator (Neon) entries use `Gemini Models`,
-so routing checks both the 5-hour and weekly windows for each account.
-The same configuration mechanism can describe future models without adding
-model-specific branches to the frontend or router.
+Keys are normalized upstream IDs without the `antigravity-` prefix.
+Metadata enriches discovered entries and validates explicit reasoning effort.
+Update it through `POST /api/config` and reload the Playground catalog, or
+restart after editing `config.json`.
+
+- `quotaPool` matches a model to an account's reported quota windows.
+  Carbon and Neon, including their Orchestrator routes, default to
+  `Gemini Models`.
+- `fallbackQuotaPool` is checked when the account reports neither an explicit
+  model pool nor the configured primary pool. Argon and its Orchestrator
+  routes use this to find the shared `Gemini Models` windows when the
+  dedicated pool is absent.
+- `fallbackModelId` accepts an older request ID when the account advertises
+  the configured replacement. It uses a normalized upstream ID and preserves
+  exact matches. Model catalog entries still come from discovery.
 
 ### Native Request Format
 
@@ -699,16 +714,19 @@ Add the following provider to your `~/.config/opencode/opencode.json` under the 
 
 ### Current Antigravity Catalog
 
-The following catalog was checked on **2026-11-08 (Asia/Singapore)** using
-Antigravity Hub **2.29.0** discovery requests across four enabled accounts.
-The chat rows use base proxy IDs; account-specific tier IDs are also listed by
-`/v1/models`. Discovery confirms that an account is offered a model, while
-generation remains subject to its access, quota, and upstream capacity.
+The Carbon, Argon, Neon, and Orchestrator routes were checked on
+**2026-11-24 (Asia/Singapore)** using Antigravity Hub **2.35.0** discovery
+requests across nine enabled accounts. The chat rows use base proxy IDs.
+`/v1/models` also lists account-specific tier IDs and the Orchestrator routes
+above. Generation remains subject to account access, quota, and upstream
+capacity.
 
 | Model | Proxy ID | Catalog status |
 | --- | --- | --- |
 | Gemini 3.8 Flash | `antigravity-gemini-3.8-flash` | Recommended; default High |
+| Gemini 4 Carbon | `antigravity-gemini-4-carbon` | Account-specific; Low / Medium / High; default High |
 | Gemini 4 Argon | `antigravity-gemini-4-argon` | Account-specific; Low / Medium / High; default High |
+| Gemini 4 Neon | `antigravity-gemini-4-neon` | Account-specific; Low / Medium / High / XHigh; default High |
 | Gemini 3.5 Flash Lite | `antigravity-gemini-3.5-flash-lite` | Discovered; default Low |
 | Gemini 3.1 Flash Lite | `antigravity-gemini-3.1-flash-lite` | Discovered; default Low |
 | Gemini 3 Flash | `antigravity-gemini-3-flash` | Compatibility model; default Low |
@@ -720,11 +738,9 @@ generation remains subject to its access, quota, and upstream capacity.
 | GPT-OSS 120B | `antigravity-gpt-oss-120b` | Discovered; fixed Medium |
 | Gemini 3.1 Flash Image (Nano Banana 2) | `gemini-3.1-flash-image` | Image generation and reference-image editing |
 
-Argon and Claude 5.5 were offered on one of the four checked accounts; the other
-three offered Claude 4.6 and had Argon disabled. Model access is determined per
-account. Image models use `/v1/images/generations` and the image-generation
-selector rather than the chat catalog. Codex models are configured separately
-under `codex.models` and are also included in `/v1/models`.
+Image models use `/v1/images/generations` and the image-generation selector.
+Codex models are configured under `codex.models` and are also included in
+`/v1/models`.
 
 **Gemini 3.5 Flash is retired; Gemini 3.5 Flash Lite remains available.** The
 former model's Low / Medium / High backends return a retirement notice with HTTP
@@ -736,14 +752,11 @@ The old `gemini-2.5-flash`, `gemini-2.5-flash-lite`, and
 `gemini-2.5-flash-thinking` IDs are labeled **Gemini 3.5 Flash Lite** upstream.
 They remain accepted as upstream aliases and are not listed as separate models.
 The proxy discovers each account's current public models when refreshing quotas.
-Model discovery and quota queries use the verified Antigravity Hub 2.29.0 native
-request headers (Linux ARM build `1013064288`).
-Enabled account-specific models, including Gemini 4 Argon and newer Claude models,
-appear in `/v1/models` and Playground automatically. Tiered models also get a base
-alias (for example `antigravity-gemini-4-argon`) with available thinking levels.
-Requests use only accounts advertising the requested model and preserve its actual
-upstream ID. Argon's dedicated weekly quota is displayed and enforced separately
-from the common Gemini pool. Disabled and internal models remain excluded.
+Enabled account-specific models appear in `/v1/models` and Playground
+automatically. Tiered models also get a base alias such as
+`antigravity-gemini-4-carbon` with available thinking levels. Requests use
+accounts advertising the selected upstream model. Disabled and internal
+models remain excluded.
 Gemini 3.6 Flash, 3.7 Flash, and 3.1 Pro remain retired/absent.
 
 Playground's existing model selector lists chat models and their thinking levels.
@@ -762,7 +775,9 @@ thinking level to the model ID:
 | Model | Levels | Default |
 | --- | --- | --- |
 | `antigravity-gemini-3.8-flash` | `low`, `medium`, `high` | `high` |
+| `antigravity-gemini-4-carbon` | `low`, `medium`, `high` when discovered | `high` |
 | `antigravity-gemini-4-argon` | `low`, `medium`, `high` when discovered | `high` |
+| `antigravity-gemini-4-neon` | `low`, `medium`, `high`, `xhigh` when discovered | `high` |
 | `antigravity-gemini-3.5-flash-lite` | `low`, `medium`, `high` | `low` |
 | `antigravity-gemini-3.1-flash-lite` | `low`, `medium`, `high` | `low` |
 | `antigravity-gemini-3-flash` | `low`, `medium`, `high` | `low` |

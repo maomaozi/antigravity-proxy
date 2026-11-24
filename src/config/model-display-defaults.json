@@ -5,7 +5,7 @@
   },
   "poolRules": [
     {
-      "patterns": ["^gemini-4-argon(?:-|$)", "^gemini-pro-orchestrator-g1-pro$", "orchestrator.*argon"],
+      "patterns": ["^gemini-4-argon(?:-|$)", "^gemini-pro-orchestrator-(?:argon|g1-pro)$", "orchestrator.*argon"],
       "pools": ["Gemini 4 Argon", "Gemini Models"]
     },
     {
@@ -34,6 +34,21 @@
       "separateWhen": "different-accounts"
     },
     {
+      "name": "Gemini 4 Carbon",
+      "patterns": ["^gemini-4-carbon(?:-|$)", "^gemini-pro-orchestrator$"],
+      "separateWhen": "different-accounts"
+    },
+    {
+      "name": "Gemini 4 Argon",
+      "patterns": ["^gemini-4-argon(?:-|$)", "^gemini-pro-orchestrator-(?:argon|g1-pro)$"],
+      "separateWhen": "different-accounts"
+    },
+    {
+      "name": "Flash Worker",
+      "patterns": ["^gemini-flash-worker-agy$"],
+      "separateWhen": "different-accounts"
+    },
+    {
       "name": "Claude 4.6",
       "patterns": ["^claude-(?:sonnet|opus)-4[.-]6(?:-|$)"],
       "separateWhen": "different-accounts"
@@ -49,5 +64,5 @@
       "separateWhen": "always"
     }
   ],
-  "groupOrder": ["Gemini Models", "Gemini 4 Hydrogen", "Gemini 4 Neon", "Claude 4.6", "Claude 5.5", "GPT-OSS 120B", "Claude and GPT models", "Gemini 4 Argon"]
+  "groupOrder": ["Gemini Models", "Gemini 4 Hydrogen", "Gemini 4 Neon", "Gemini 4 Carbon", "Gemini 4 Argon", "Flash Worker", "Claude 4.6", "Claude 5.5", "GPT-OSS 120B", "Claude and GPT models"]
 }

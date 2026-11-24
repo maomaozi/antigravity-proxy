@@ -68,6 +68,36 @@ describe("dashboard account provider layout", () => {
     expect(harness.renderPools(accounts)).toContain('Orchestrator (Neon)');
   });
 
+  test('separates Carbon, Argon and Flash Worker by account coverage within the shared Gemini pool', () => {
+    const families = [
+      { name: 'Gemini 4 Carbon', ids: ['gemini-4-carbon-low', 'gemini-4-carbon-high', 'gemini-pro-orchestrator'], members: [0, 1] },
+      { name: 'Gemini 4 Argon', ids: ['gemini-4-argon-high', 'gemini-pro-orchestrator-argon'], members: [1, 2] },
+      { name: 'Flash Worker', ids: ['gemini-flash-worker-agy'], members: [0] },
+    ];
+    const accounts = [0.8, 0.6, 0.2, 0.1].map((remainingFraction, index) => ({
+      email: `gemini-${index}@example.com`, healthScore: 100,
+      quota: [{
+        groupName: 'Gemini Models', remainingFraction,
+        modelIds: ['gemini-3.8-flash-high', ...families.filter(family => family.members.includes(index)).flatMap(family => family.ids)],
+      }],
+      quotaWindows: [
+        { groupName: 'Gemini Models', window: '5h', remainingFraction: 0.9 },
+        { groupName: 'Gemini Models', window: 'weekly', remainingFraction },
+      ],
+    }));
+    const harness = createCodexQuotaHarness(defaultDisplay);
+    const stats = harness.families(accounts);
+    expect(stats.map((stat: any) => [stat.name, stat.total, stat.availability])).toEqual([
+      ['Gemini Models', 4, 43], ['Gemini 4 Carbon', 2, 70], ['Gemini 4 Argon', 2, 40], ['Flash Worker', 1, 80],
+    ]);
+    for (const family of families) {
+      const stat = stats.find((entry: any) => entry.name === family.name);
+      expect(stat.quotaPools).toEqual(['Gemini Models']);
+      expect(stat.familyData.accounts.map((row: any) => row.email)).toEqual(family.members.map(index => accounts[index]!.email));
+      expect(stat.windowStats).toMatchObject([{ label: '5h', availability: 90 }, { label: '7d', availability: stat.availability }]);
+    }
+  });
+
   test('merges Sonnet and Opus within each Claude version while counting shared accounts and thinking tiers once', () => {
     const accounts = Array.from({ length: 9 }, (_, index) => {
       const version = index < 6 ? '4-6' : '5-5';
@@ -209,7 +239,7 @@ describe("dashboard account provider layout", () => {
     const harness = createCodexQuotaHarness();
     const stats = harness.families([account]);
     expect(stats.map((stat: any) => [stat.name, stat.total, stat.availability])).toEqual([
-      ['Gemini Models', 1, 60], ['Claude and GPT models', 1, 40], ['Gemini 4 Argon', 1, 20],
+      ['Gemini Models', 1, 60], ['Gemini 4 Argon', 1, 20], ['Claude and GPT models', 1, 40],
     ]);
     expect(harness.google([account], 'Gemini 4 Hydrogen').family.accounts).toHaveLength(1);
     const html = harness.renderPools([account]);

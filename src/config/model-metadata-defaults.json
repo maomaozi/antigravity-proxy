@@ -1,4 +1,23 @@
 {
+  "gemini-4-carbon": {
+    "quotaPool": "Gemini Models"
+  },
+  "gemini-pro-orchestrator": {
+    "quotaPool": "Gemini Models"
+  },
+  "gemini-4-argon": {
+    "quotaPool": "Gemini 4 Argon",
+    "fallbackQuotaPool": "Gemini Models"
+  },
+  "gemini-pro-orchestrator-argon": {
+    "quotaPool": "Gemini 4 Argon",
+    "fallbackQuotaPool": "Gemini Models"
+  },
+  "gemini-pro-orchestrator-g1-pro": {
+    "quotaPool": "Gemini 4 Argon",
+    "fallbackQuotaPool": "Gemini Models",
+    "fallbackModelId": "gemini-pro-orchestrator-argon"
+  },
   "gemini-4-neon": {
     "quotaPool": "Gemini Models"
   },

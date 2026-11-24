@@ -60,6 +60,8 @@ export interface ModelsConfig {
 export interface ModelMetadataOverride {
   name?: string;
   quotaPool?: string;
+  fallbackQuotaPool?: string;
+  fallbackModelId?: string;
   thinkingLevels?: string[];
   defaultThinkingLevel?: string;
 }

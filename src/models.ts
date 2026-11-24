@@ -83,7 +83,6 @@ export function getModelFamilyName(name: string): string {
   if (configuredPool) return configuredPool;
   const n = normalizeModelId(name).replace(/[ .]/g, "-");
   if (/^gemini-4-hydrogen(?:-|$)/.test(n)) return "Gemini Models";
-  if (n === "gemini-pro-orchestrator-g1-pro") return "Gemini 4 Argon";
   const claude = n.match(/claude-(sonnet|opus)-(\d+)-(\d+)/);
   if (claude) return `Claude ${claude[1] === "opus" ? "Opus" : "Sonnet"} ${claude[2]}.${claude[3]}`;
   // New Gemini generations may have their own pool; never merge them into Flash.
@@ -105,12 +104,16 @@ export function findAccountModel(account: AntigravityAccount, id: string, effort
   if (exact) return exact;
   const base = modelBaseId(id);
   const matches = models.filter(model => modelBaseId(model.id) === base);
-  const tier = normalized.match(/-(low|medium|high|xhigh)$/)?.[1] || effort || "high";
-  return matches.find(model => model.id === `${base}-tiered`)
+  const requestedTier = normalized.match(/-(low|medium|high|xhigh)$/)?.[1];
+  const tier = requestedTier || effort || "high";
+  const matchingTier = matches.find(model => model.id === `${base}-tiered`)
     || matches.find(model => model.id === `${base}-${tier}`)
     || matches.find(model => model.id === `${base}-thinking-${tier}`)
     || matches.find(model => model.id === base || model.id === `${base}-thinking`)
-    || (!normalized.match(/-(low|medium|high|xhigh)$/) && !effort ? matches.at(-1) : undefined);
+    || (!requestedTier && !effort ? matches.at(-1) : undefined);
+  if (matchingTier) return matchingTier;
+  const fallbackId = getModelMetadataOverride(id)?.fallbackModelId;
+  return fallbackId ? models.find(model => model.id === fallbackId) : undefined;
 }
 
 export function getAccountModelQuotas(account: AntigravityAccount, id: string) {
@@ -149,8 +152,8 @@ export function getAccountQuotaWindows(account: AntigravityAccount, id: string) 
   if (specific.length) return specific;
   const familyWindows = windows.filter(window => groupKey(window.groupName) === groupKey(family));
   if (familyWindows.length) return familyWindows;
-  // Paid Pro has a dedicated Argon pool; other plans can include it in Gemini.
-  if (family === "Gemini 4 Argon") return windows.filter(window => groupKey(window.groupName) === "geminimodels");
+  const fallbackPool = getModelMetadataOverride(id)?.fallbackQuotaPool;
+  if (fallbackPool) return windows.filter(window => groupKey(window.groupName) === groupKey(fallbackPool));
   // The upstream summary explicitly declares the common third-party pool.
   if (/^Claude |^GPT/.test(family)) return windows.filter(window => /claude.*gpt|gpt.*claude/i.test(window.groupName));
   return [];
@@ -225,14 +228,16 @@ export function updateQuotaFamilies(account: AntigravityAccount): void {
   for (const quota of account.quota || []) {
     if (!quota.modelId) continue;
     const windows = getAccountQuotaWindows(account, quota.modelId);
-    const dedicated = windows.find(window => !/^(gemini models|claude and gpt models)$/i.test(window.groupName));
-    quota.familyName = dedicated?.groupName || getModelFamilyName(quota.modelId);
+    const pool = getModelMetadataOverride(quota.modelId)?.quotaPool
+      ? windows[0]
+      : windows.find(window => !/^(gemini models|claude and gpt models)$/i.test(window.groupName));
+    quota.familyName = pool?.groupName || getModelFamilyName(quota.modelId);
   }
 }
 
 export function isModernGeminiModel(id: string): boolean {
   const model = normalizeModelId(id);
-  if (model.startsWith("gemini-pro-orchestrator-") || model === "gemini-flash-worker-agy") return true;
+  if (model === "gemini-pro-orchestrator" || model.startsWith("gemini-pro-orchestrator-") || model === "gemini-flash-worker-agy") return true;
   const generation = model.match(/^gemini-(\d+)/)?.[1];
   return generation !== undefined && Number(generation) >= 3;
 }
