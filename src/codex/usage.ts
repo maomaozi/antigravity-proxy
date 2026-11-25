@@ -71,12 +71,20 @@ function parseBlock(block: string): ParsedSSEEvent | null {
 
 export class CodexSSEUsageCollector {
   private readonly decoder = new TextDecoder();
+  private readonly startedAt: number;
   private buffer = "";
   private usage: CodexNormalizedUsage | null = null;
   private firstTokenAt: number | null = null;
   private notified = false;
 
-  constructor(private readonly onUsage?: (usage: CodexNormalizedUsage, timing: CodexStreamTiming) => void) {}
+  constructor(
+    private readonly onUsage?: (usage: CodexNormalizedUsage, timing: CodexStreamTiming) => void,
+    startedAt?: number,
+  ) {
+    this.startedAt = typeof startedAt === "number" && Number.isFinite(startedAt)
+      ? startedAt
+      : Date.now();
+  }
 
   push(value: Uint8Array): void {
     this.buffer += this.decoder.decode(value, { stream: true });
@@ -124,8 +132,8 @@ export class CodexSSEUsageCollector {
           const timing: CodexStreamTiming = {
             firstTokenAt: this.firstTokenAt,
             completedAt: now,
-            generationDurationMs: this.firstTokenAt !== null && now > this.firstTokenAt
-              ? now - this.firstTokenAt
+            generationDurationMs: now > this.startedAt
+              ? now - this.startedAt
               : null,
           };
           try { this.onUsage?.(this.usage, timing); } catch {

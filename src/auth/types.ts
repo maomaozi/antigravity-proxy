@@ -22,6 +22,7 @@ export interface DeviceFingerprint {
 
 export interface PoolSuspension {
   reason: string;
+  status?: "suspended" | "pending_verification";
   message?: string;
   appealUrl?: string;
   detectedAt: number;
@@ -48,8 +49,9 @@ export interface AntigravityAccount {
   projectId?: string;
   managedProjectId?: string;
   disabled?: boolean;
+  disabledPools?: string[];
   poolSuspensions?: Record<string, PoolSuspension>;
-  /** Persistent Antigravity service suspension (e.g. TOS_VIOLATION). */
+  /** Legacy Antigravity suspension with no recorded model or pool. */
   suspension?: ServiceSuspension;
   
   // Routing health stats

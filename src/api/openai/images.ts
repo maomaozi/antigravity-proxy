@@ -4,7 +4,7 @@ import type { AntigravityAccount, PoolSuspension } from "../../auth/types";
 import { getProxyConfig } from "../../config/manager";
 import { generateFingerprint, getAntigravityNativeHeaders } from "../../utils/headers";
 import { parseGoogleError } from "../../utils/errors";
-import { isAccountPoolSuspended } from "../../models";
+import { isAccountPoolDisabled, isAccountPoolSuspended } from "../../models";
 import { ANTIGRAVITY_IMAGE_URL } from "../endpoints";
 
 const IMAGE_SIZES = new Set(["512", "1K", "2K", "4K"]);
@@ -107,7 +107,10 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(runtime.getTimeoutMs())]);
   try {
     signal.throwIfAborted();
-    const enabled = runtime.getAccounts().filter(a => a.refreshToken && !a.disabled && !a.challenge);
+    const allAccounts = runtime.getAccounts();
+    const activeAccounts = allAccounts.filter(a => a.refreshToken && !a.disabled && !a.challenge);
+    const enabled = activeAccounts.filter(a => !isAccountPoolDisabled(a, body.model, allAccounts));
+    if (activeAccounts.length && !enabled.length) return error("All accounts supporting this image model pool are disabled.", 503, "accounts_disabled");
     const candidates = enabled.filter(a => !isAccountPoolSuspended(a, body.model));
     if (enabled.length && !candidates.length) return error("Access to this image model pool is suspended. Other pools remain available.", 403, "pool_suspended");
     const requestId = `img-${crypto.randomUUID()}`;
@@ -116,7 +119,7 @@ export async function handleImageGeneration(req: Request, runtime: ImageGenerati
       signal.throwIfAborted();
       const selected = candidates.splice(runtime.randomIndex(candidates.length), 1)[0]!;
       let account = await runtime.prepareAccount(selected.email);
-      if (!account?.accessToken || !account.projectId) continue;
+      if (!account?.accessToken || !account.projectId || isAccountPoolSuspended(account, body.model)) continue;
       account.fingerprint ||= generateFingerprint(account.email);
       const upstreamBody = {
         project: account.projectId,

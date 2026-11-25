@@ -16,6 +16,7 @@ let activeCodexLoginId = null;
 let codexLoginPollTimer = null;
 let usageDisplayRefreshInFlight = null;
 let usageRefreshLabelTimer = null;
+let googleAccountsRevision = 0;
 const modelDisplay = globalThis.AntigravityModelDisplay;
 
 const $ = (id) => document.getElementById(id);
@@ -33,12 +34,17 @@ function isCodexProviderEnabled() {
     return currentConfig?.codex?.enabled !== false;
 }
 
+function isGooglePoolDisabled(account, poolName) {
+    return Array.isArray(account?.disabledPools) && account.disabledPools.includes(poolName);
+}
+
 function isGoogleAccountActive(account) {
-    if (!account?.refreshToken || account.disabled || account.challenge) return false;
+    if (!account?.refreshToken || account.disabled || account.challenge || account.suspension?.reason === 'tos_violation') return false;
     const families = [...new Set(modelDisplay.visibleQuotas(account).map(quota => getQuotaFamilyName(quota, account)))];
     if (!families.length) return true;
     const now = Date.now();
     return families.some(family => {
+        if (isGooglePoolDisabled(account, family) || getGooglePoolStatus(account, family) === 'SUSPENDED') return false;
         const quotas = modelDisplay.visibleQuotas(account).filter(quota => getQuotaFamilyName(quota, account) === family);
         if (quotas.length && quotas.every(quota => Number(quota.remainingFraction) <= 0)) return false;
         if (getGoogleQuotaWindows(account, family).some(window => window.remainingFraction <= 0)) return false;
@@ -48,7 +54,7 @@ function isGoogleAccountActive(account) {
 }
 
 function codexAccountState(account) {
-    if (!isCodexProviderEnabled()) return { key: 'disabled', label: 'Disabled' };
+    if (!isCodexProviderEnabled() || account.disabled) return { key: 'disabled', label: 'Disabled' };
     const now = Date.now();
     const windows = codexQuotaWindows(account.usage);
     const quotaBlocked = account.usage?.limitReached === true
@@ -138,9 +144,20 @@ function getGooglePoolWindows(account, familyName) {
     return (account.quotaWindows || []).filter(window => pools.includes(window.groupName) && !window.disabled);
 }
 
-function getGooglePoolSuspension(account, familyName) {
-    const suspensions = getDisplayQuotaPools(account, familyName).map(pool => account.poolSuspensions?.[pool]).filter(Boolean);
-    return suspensions.find(suspension => suspension.retryAt > Date.now()) || suspensions[0];
+function isPoolSuspensionActive(suspension, now = Date.now()) {
+    return Boolean(suspension && (suspension.reason === 'tos_violation' || suspension.permanent || suspension.retryAt > now));
+}
+
+function getGooglePoolStatus(account, familyName) {
+    if (account.suspension?.reason === 'tos_violation') return 'SUSPENDED';
+    const quotas = modelDisplay.visibleQuotas(account).filter(quota => getQuotaFamilyName(quota, account) === familyName);
+    const pools = new Set(quotas.length ? quotas.map(quota =>
+        account.routingPools?.[quota.modelId || quota.groupName] || modelDisplay.quotaPool(account, quota)
+    ) : getDisplayQuotaPools(account, familyName));
+    const suspensions = [...pools].map(pool => account.poolSuspensions?.[pool]);
+    const active = suspensions.filter(suspension => isPoolSuspensionActive(suspension)).length;
+    if (active) return active === pools.size ? 'SUSPENDED' : 'PARTIALLY SUSPENDED';
+    return suspensions.some(Boolean) ? 'RECHECK PENDING' : 'OK';
 }
 
 function getGoogleQuotaWindows(account, familyName) {
@@ -422,9 +439,13 @@ function calculateFamilyStats(accounts) {
             availability: total ? Math.round(totalQuota / total * 100) : 0,
             healthy: familyData.accounts.filter(account => {
                 const fullAccount = accounts.find(candidate => candidate.email === account.email);
-                const suspension = fullAccount && getGooglePoolSuspension(fullAccount, name);
-                return healthyEmails.has(account.email) && !fullAccount.disabled && !fullAccount.challenge
-                    && (!suspension || suspension.retryAt <= Date.now());
+                return fullAccount && healthyEmails.has(account.email) && !fullAccount.disabled && !fullAccount.challenge
+                    && !isGooglePoolDisabled(fullAccount, name)
+                    && getGooglePoolStatus(fullAccount, name) !== 'SUSPENDED';
+            }).length,
+            disabledCount: familyData.accounts.filter(account => {
+                const fullAccount = accounts.find(candidate => candidate.email === account.email);
+                return Boolean(fullAccount && (fullAccount.disabled || isGooglePoolDisabled(fullAccount, name)));
             }).length,
             total,
             familyData,
@@ -458,8 +479,9 @@ function calculateCodexFamilyStat() {
                 remaining: Math.max(0, Math.min(100, 100 - used)),
             };
         }).filter(Boolean);
+        const isDisabled = Boolean(account.disabled);
         const quotaBlocked = account.usage?.limitReached === true || account.usage?.allowed === false || measured.some(item => item.remaining <= 0);
-        const unavailable = Number(account.cooldownUntil || 0) > now || quotaBlocked || (!account.usage && account.available === false);
+        const unavailable = isDisabled || Number(account.cooldownUntil || 0) > now || quotaBlocked || (!account.usage && account.available === false);
 
         let availability = null;
         let resetTime = null;
@@ -501,6 +523,7 @@ function calculateCodexFamilyStat() {
             avgQuota: availability === null ? 0 : Math.round(availability),
             resetTime,
             isUnavailable: unavailable,
+            isDisabled,
             hasQuota: availability !== null,
             windows: measured.map(item => ({
                 label: item.label,
@@ -528,6 +551,7 @@ function calculateCodexFamilyStat() {
         provider: 'codex',
         availability: measuredAccounts ? Math.round(availabilitySum / measuredAccounts) : 0,
         healthy: healthyCount,
+        disabledCount: globalCodexAccounts.filter(account => Boolean(account.disabled)).length,
         total: globalCodexAccounts.length,
         models: [...globalCodexModels].sort(),
         familyData: { accounts: familyAccounts, earliestReset },
@@ -574,9 +598,8 @@ function renderFamilyGrid(stats) {
             ? stat.total > 0 && stat.healthy === 0
             : accountsWithFamily.length > 0 && accountsWithFamily.every(acc => {
                 const sboxExp = globalCooldowns[`${acc.email}|sandbox|${stat.name}`];
-                const suspension = getGooglePoolSuspension(acc, stat.name);
-                return acc.disabled || acc.challenge || (sboxExp && sboxExp > Date.now())
-                    || (suspension && suspension.retryAt > Date.now());
+                return acc.disabled || acc.challenge || isGooglePoolDisabled(acc, stat.name) || (sboxExp && sboxExp > Date.now())
+                    || getGooglePoolStatus(acc, stat.name) === 'SUSPENDED';
             });
 
         let indicatorColor = allAccountsDownForFamily ? 'text-rose-500' : (stat.availability > 50 ? 'text-emerald-500' : (stat.availability < 20 ? 'text-rose-500' : 'text-zinc-400 dark:text-zinc-300'));
@@ -613,7 +636,7 @@ function renderFamilyGrid(stats) {
                 <div class="flex items-start justify-between mb-4">
                     <div>
                         <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">${escapeHtml(stat.name)}</div>
-                        <div class="text-[8px] text-zinc-500 mb-1">${stat.total} ACCOUNTS</div>
+                        <div class="text-[8px] text-zinc-500 mb-1">${stat.total} ACCOUNTS${stat.disabledCount ? ` · <span class="text-amber-600 dark:text-amber-400">${stat.disabledCount} DISABLED</span>` : ''}</div>
                         ${stat.quotaPools?.some(pool => pool !== stat.name) ? `<div class="text-[8px] text-zinc-500 mb-1">Shared quota: ${escapeHtml(stat.quotaPools.join(', '))}</div>` : ''}
                         <div class="flex items-baseline gap-2">
                             <span class="text-2xl font-bold ${indicatorColor} tracking-tighter">${stat.availability}%</span>
@@ -646,8 +669,14 @@ function renderFamilyGrid(stats) {
                                  const fullAcc = stat.provider === 'codex'
                                      ? globalCodexAccounts.find(a => a.email === acc.email)
                                      : globalAccounts.find(a => a.email === acc.email);
-                            let isCooldown = Boolean(stat.provider === 'codex' && acc.isUnavailable);
+                            let isCooldown = Boolean(stat.provider === 'codex' && acc.isUnavailable && !acc.isDisabled);
                             let remaining = 0;
+                            const isPoolDisabled = stat.provider === 'codex'
+                                ? Boolean(acc.isDisabled || fullAcc?.disabled)
+                                : Boolean(fullAcc && isGooglePoolDisabled(fullAcc, stat.name));
+                            const isGloballyDisabled = stat.provider !== 'codex' && Boolean(fullAcc?.disabled);
+                            const poolStatus = stat.provider !== 'codex' && fullAcc ? getGooglePoolStatus(fullAcc, stat.name) : 'OK';
+                            const suspensionLabel = poolStatus === 'SUSPENDED' ? 'POOL SUSPENDED' : poolStatus;
                             
                             if (fullAcc && stat.provider !== 'codex') {
                                 const expiry = getCategoryCooldown(acc.email, stat.name, fullAcc.quota || []);
@@ -662,10 +691,20 @@ function renderFamilyGrid(stats) {
                                 : "grid grid-cols-[minmax(0,72px)_minmax(36px,1fr)_max-content] sm:grid-cols-[minmax(0,88px)_minmax(48px,1fr)_max-content] items-center gap-2 py-1 px-2 -mx-2 rounded hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors";
                             let textClass = "text-zinc-600 dark:text-zinc-400";
                             
-                            if (isCooldown) {
+                            if (isPoolDisabled || isGloballyDisabled) {
+                                rowClass += " opacity-60";
+                                textClass = "text-zinc-400 dark:text-zinc-600 line-through";
+                            } else if (isCooldown) {
                                 rowClass += " bg-rose-50 dark:bg-rose-950/10";
                                 textClass = "text-rose-500 font-bold";
                             }
+
+                            const encodedEmail = encodeURIComponent(acc.email);
+                            const encodedPool = encodeURIComponent(stat.name);
+                            const poolToggleOnclick = stat.provider === 'codex'
+                                ? `event.stopPropagation(); setCodexAccountDisabled(decodeURIComponent('${encodedEmail}'), ${!isPoolDisabled})`
+                                : `event.stopPropagation(); setGoogleAccountPoolDisabled(decodeURIComponent('${encodedEmail}'), decodeURIComponent('${encodedPool}'), ${!isPoolDisabled})`;
+                            const poolToggleBtn = `<button onclick="${poolToggleOnclick}" class="shrink-0 px-1.5 py-0.5 rounded border text-[8px] font-bold uppercase tracking-wider transition-colors ${isPoolDisabled ? 'border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30' : 'border-zinc-200 dark:border-zinc-800 text-zinc-400 hover:text-rose-500 hover:border-rose-300 dark:hover:border-rose-900'}" title="${isPoolDisabled ? 'Enable account for this pool' : 'Disable account for this pool (10-min activation unaffected)'}">${isPoolDisabled ? 'Enable' : 'Disable'}</button>`;
 
                             const resetSummary = acc.windows?.length
                                 ? `<div class="space-y-1">${acc.windows.map(window => `<div class="grid grid-cols-[20px_minmax(0,1fr)_26px_44px] items-center gap-x-1 text-[8px] font-bold tabular-nums whitespace-nowrap">
@@ -676,19 +715,29 @@ function renderFamilyGrid(stats) {
                                     <span class="text-right ${window.remaining < 20 ? 'text-rose-500' : 'text-zinc-500'}">${window.remaining}%</span>
                                     <span class="text-right ${isCooldown ? 'text-rose-500' : 'text-zinc-500'}">${window.resetTime ? formatCompactReset(window.resetTime) : 'Ready'}</span>
                                 </div>`).join('')}</div>`
-                                : `<div class="text-[9px] ${isCooldown ? 'text-rose-500' : 'text-zinc-500'} font-bold tabular-nums whitespace-nowrap text-right">
-                                    ${isCooldown ? 'WAIT' : (acc.resetTime ? formatReset(new Date(acc.resetTime).toISOString()) : 'Ready')}
+                                : `<div class="flex items-center justify-end gap-1.5">
+                                    <div class="text-[9px] ${isCooldown ? 'text-rose-500' : 'text-zinc-500'} font-bold tabular-nums whitespace-nowrap text-right">
+                                        ${isPoolDisabled ? 'DISABLED' : (isCooldown ? 'WAIT' : (acc.resetTime ? formatReset(new Date(acc.resetTime).toISOString()) : 'Ready'))}
+                                    </div>
+                                    ${poolToggleBtn}
                                 </div>`;
 
                             return `
                             <div class="${rowClass}">
-                                <div class="text-[10px] ${textClass} truncate">
-                                    ${acc.email.split('@')[0]}
-                                </div>
-                                ${stat.provider !== 'codex' && fullAcc && getGooglePoolSuspension(fullAcc, stat.name) ? '<span class="text-[8px] text-rose-500">POOL SUSPENDED</span>' : ''}
                                 ${acc.windows?.length
-                                    ? resetSummary
-                                    : `<div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 rounded-none overflow-hidden">
+                                    ? `<div class="flex items-center justify-between gap-2 min-w-0">
+                                        <div class="flex items-center gap-1.5 min-w-0">
+                                            <span class="text-[10px] ${textClass} truncate">${escapeHtml(acc.email.split('@')[0])}</span>
+                                            ${isPoolDisabled ? '<span class="shrink-0 text-[8px] font-bold text-amber-600 dark:text-amber-400">DISABLED</span>' : ''}
+                                            ${poolStatus !== 'OK' ? `<span class="shrink-0 text-[8px] text-rose-500">${suspensionLabel}</span>` : ''}
+                                        </div>
+                                        ${poolToggleBtn}
+                                    </div>${resetSummary}`
+                                    : `<div class="text-[10px] ${textClass} truncate" title="${escapeHtml(acc.email)}">
+                                        ${escapeHtml(acc.email.split('@')[0])}
+                                    </div>
+                                    ${poolStatus !== 'OK' ? `<span class="text-[8px] text-rose-500">${suspensionLabel}</span>` : ''}
+                                    <div class="h-0.5 bg-zinc-200 dark:bg-zinc-800 rounded-none overflow-hidden">
                                         <div class="h-full ${quotaColor} rounded-none" style="width: ${acc.avgQuota}%"></div>
                                     </div>${resetSummary}`}
                             </div>
@@ -769,17 +818,20 @@ function renderAccountsTable(accounts) {
                             const windows = familyQuota.windows;
                             const best = familyQuota.avgQuota;
                             const isSandboxDown = (globalCooldowns[`${acc.email}|sandbox|${cat}`] || 0) > now;
-                            const poolSuspension = getGooglePoolSuspension(acc, cat);
-                            const isAllDown = isSandboxDown || !!poolSuspension;
+                            const poolStatus = getGooglePoolStatus(acc, cat);
+                            const isPoolDisabled = isGooglePoolDisabled(acc, cat);
+                            const isAllDown = isSandboxDown || poolStatus === 'SUSPENDED' || isPoolDisabled;
                             
                             let textColor = isAllDown ? 'text-rose-500' : (best > 50 ? 'text-emerald-500' : (best < 20 ? 'text-rose-500' : 'text-zinc-400 dark:text-zinc-300'));
                             let barColor = isAllDown ? 'bg-rose-500' : (best > 50 ? 'bg-emerald-500' : (best < 20 ? 'bg-rose-500' : 'bg-zinc-300 dark:bg-zinc-600'));
-                            let familyBorderColor = isAllDown ? 'border-rose-200 dark:border-rose-900/50' : 'border-zinc-200 dark:border-zinc-800';
+                            let familyBorderColor = isPoolDisabled ? 'border-amber-200 dark:border-amber-900/50' : (isAllDown ? 'border-rose-200 dark:border-rose-900/50' : 'border-zinc-200 dark:border-zinc-800');
 
                             const earliestFamilyReset = familyQuota.resetTime;
+                            const encodedAccEmail = encodeURIComponent(acc.email);
+                            const encodedCat = encodeURIComponent(cat);
 
                             return `
-                            <div class="bg-white dark:bg-[#0f0f0f] rounded border ${familyBorderColor} overflow-hidden group/family transition-colors p-4">
+                            <div class="bg-white dark:bg-[#0f0f0f] rounded border ${familyBorderColor} overflow-hidden group/family transition-colors p-4 ${isPoolDisabled ? 'opacity-75' : ''}">
                                 <div class="flex items-center justify-between mb-4">
                                     <div class="min-w-0 flex-grow">
                                         <div class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1 truncate">${escapeHtml(cat)}</div>
@@ -788,7 +840,8 @@ function renderAccountsTable(accounts) {
                                             <span class="text-[8px] text-zinc-500 dark:text-zinc-600 font-medium whitespace-nowrap">AVAILABILITY</span>
                                         </div>
                                     </div>
-                                    <div class="flex gap-1.5 shrink-0 ml-4">
+                                    <div class="flex items-center gap-1.5 shrink-0 ml-4">
+                                        <button onclick="event.stopPropagation(); setGoogleAccountPoolDisabled(decodeURIComponent('${encodedAccEmail}'), decodeURIComponent('${encodedCat}'), ${!isPoolDisabled})" class="px-1.5 py-0.5 rounded border text-[8px] font-bold uppercase tracking-wider transition-colors ${isPoolDisabled ? 'border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30' : 'border-zinc-200 dark:border-zinc-800 text-zinc-500 hover:text-rose-500 hover:border-rose-300 dark:hover:border-rose-900'}" title="${isPoolDisabled ? 'Enable this pool for this account' : 'Disable this pool for this account (other pools and 10-min activation unaffected)'}">${isPoolDisabled ? 'Enable' : 'Disable'}</button>
                                         <div class="flex items-center gap-1.5 px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900" title="Sandbox Pool Status">
                                             <span class="text-[8px] font-bold text-zinc-500">SBX</span>
                                             <span class="w-1.2 h-1.2 rounded-full ${isSandboxDown ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}"></span>
@@ -803,7 +856,7 @@ function renderAccountsTable(accounts) {
                                 </div>`}
                                 
                                 <div class="flex items-center justify-between mt-2.5">
-                                    <div class="text-[8px] text-zinc-500 dark:text-zinc-600 uppercase tracking-wider font-medium shrink-0">Status: ${poolSuspension ? (poolSuspension.retryAt > now ? 'SUSPENDED' : 'RECHECK PENDING') : 'OK'}</div>
+                                    <div class="text-[8px] ${isPoolDisabled ? 'text-amber-600 dark:text-amber-400 font-bold' : 'text-zinc-500 dark:text-zinc-600 font-medium'} uppercase tracking-wider shrink-0">Status: ${isPoolDisabled ? 'DISABLED' : poolStatus}</div>
                                     <div class="flex items-baseline gap-1.5 shrink-0 min-w-0">
                                         <span class="text-[7px] text-zinc-600 dark:text-zinc-700 uppercase tracking-tighter whitespace-nowrap">Quota resets in</span>
                                         <span class="text-[9px] text-zinc-500 font-bold whitespace-nowrap">${earliestFamilyReset ? formatReset(new Date(earliestFamilyReset).toISOString()) : 'Ready'}</span>
@@ -839,6 +892,10 @@ function renderAccountsTable(accounts) {
         const totalPossibleBlocks = knownFamilies.length * 2;
         const activeCooldowns = emailCooldowns.filter(k => globalCooldowns[k] > now).length;
         const isAllDownFinal = activeCooldowns >= totalPossibleBlocks && totalPossibleBlocks > 0;
+        const poolEntries = Object.entries(acc.poolSuspensions || {});
+        const suspendedPools = poolEntries.filter(([, suspension]) => isPoolSuspensionActive(suspension, now)).map(([pool]) => pool);
+        const serviceSuspension = acc.suspension?.reason === 'tos_violation' ? [['Antigravity', acc.suspension]] : [];
+
 
         return `
         <tr id="row-${safeEmail}" class="group hover:bg-zinc-100/50 dark:hover:bg-zinc-900/50 transition-colors border-b border-zinc-200/50 dark:border-zinc-800/50 last:border-0 cursor-pointer" onclick="toggleAccount('${acc.email}')">
@@ -849,7 +906,9 @@ function renderAccountsTable(accounts) {
                          <div class="font-medium text-zinc-700 dark:text-zinc-300 truncate text-xs flex items-center gap-2 group-hover:text-zinc-900 dark:group-hover:text-white transition-colors">
                              ${acc.email}
                              ${acc.disabled ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-800" title="Account disabled">DISABLED</span>` : ''}
-                             ${Object.keys(acc.poolSuspensions || {}).length ? `<span class="text-[9px] font-bold text-rose-500" title="${escapeHtml(Object.keys(acc.poolSuspensions).join(', '))}">${Object.keys(acc.poolSuspensions).length} POOL(S) SUSPENDED</span>` : ''}
+                             ${acc.disabledPools?.length ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-600 border border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800" title="Disabled pools: ${escapeHtml(acc.disabledPools.join(', '))}">${acc.disabledPools.length} POOL(S) DISABLED</span>` : ''}
+                             ${serviceSuspension.length ? '<span class="text-[9px] font-bold text-rose-500">ANTIGRAVITY SUSPENDED</span>' : ''}
+                             ${suspendedPools.length ? `<span class="text-[9px] font-bold text-rose-500" title="${escapeHtml(suspendedPools.join(', '))}">${suspendedPools.length} POOL(S) SUSPENDED</span>` : ''}
                              ${isChallenge ? `<a href="${acc.challenge.url || '#'}" target="_blank" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold ${acc.challenge.reason === 'subscription_required' ? 'bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-800' : 'bg-amber-50 text-amber-600 border border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800'} transition-colors cursor-help" onclick="event.stopPropagation()" title="${acc.challenge.message || 'Validation required'}">${acc.challenge.reason === 'subscription_required' ? 'SUB' : 'VERIFY'}</a>` : ''}
                              ${isAllDownFinal ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:text-rose-400 animate-pulse dark:border-rose-800">COOLDOWN</span>` : ''}
                         </div>
@@ -879,7 +938,15 @@ function renderAccountsTable(accounts) {
         <tr id="detail-${safeEmail}" class="${isExpanded ? '' : 'hidden'} bg-zinc-50 dark:bg-[#050505] shadow-inner transition-colors">
             <td colspan="4" class="px-6 py-6 border-b border-zinc-200 dark:border-zinc-800">
                 ${detailsHtml}
-                ${Object.entries(acc.poolSuspensions || {}).map(([pool, suspension]) => `<div class="mt-4 text-xs text-rose-600 dark:text-rose-400"><strong>${escapeHtml(pool)}</strong>: ${escapeHtml(suspension.message || suspension.reason)} <span>${suspension.retryAt > now ? `Recheck after ${escapeHtml(new Date(suspension.retryAt).toLocaleString())}` : 'Recheck pending'}</span>${/^https:\/\//i.test(suspension.appealUrl || '') ? ` <a href="${escapeHtml(suspension.appealUrl)}" target="_blank" rel="noopener noreferrer" class="underline">Submit appeal</a>` : ''}</div>`).join('')}
+                ${[...serviceSuspension, ...poolEntries].map(([pool, suspension]) => {
+                    const permanent = suspension.reason === 'tos_violation' || suspension.permanent;
+                    const status = suspension.status === 'pending_verification' ? 'Verification pending'
+                        : permanent ? 'Suspended'
+                        : isPoolSuspensionActive(suspension, now) ? `Recheck after ${new Date(suspension.retryAt).toLocaleString()}` : 'Recheck pending';
+                    const appeal = /^https:\/\//i.test(suspension.appealUrl || '')
+                        ? ` <a href="${escapeHtml(suspension.appealUrl)}" target="_blank" rel="noopener noreferrer" class="underline">Submit appeal</a>` : '';
+                    return `<div class="mt-4 text-xs text-rose-600 dark:text-rose-400"><strong>${escapeHtml(pool)}</strong>: ${escapeHtml(suspension.message || suspension.reason)} <span>${escapeHtml(status)}</span>${appeal}</div>`;
+                }).join('')}
                 <div class="mt-6 flex justify-end">
                     <button onclick="deleteAccount('${acc.email}')" class="text-[10px] text-rose-600 dark:text-rose-500 hover:text-rose-700 dark:hover:text-rose-400 font-bold uppercase tracking-wider border border-rose-200 dark:border-rose-900/30 hover:border-rose-300 dark:hover:border-rose-900/60 bg-rose-50 dark:bg-rose-950/10 hover:bg-rose-100 dark:hover:bg-rose-950/30 px-3 py-1.5 rounded transition-all">Remove Permanently</button>
                 </div>
@@ -892,8 +959,12 @@ function updateUI(data) {
     if (data.display) modelDisplay.configure(data.display);
     if (Array.isArray(data)) {
         globalAccounts = data;
+        googleAccountsRevision++;
     } else {
-        if (data.accounts) globalAccounts = data.accounts;
+        if (data.accounts) {
+            globalAccounts = data.accounts;
+            googleAccountsRevision++;
+        }
         if (data.cooldowns) globalCooldowns = data.cooldowns;
         if (data.supportedModels) globalSupportedModels = data.supportedModels.filter(modelDisplay.isVisibleModel);
         if (data.antigravity?.chatModels) globalModelNames = new Map([
@@ -949,6 +1020,51 @@ async function setGoogleAccountDisabled(email, disabled) {
         addLog(`[ACTION] ${disabled ? 'Disabled' : 'Enabled'} account ${email}`);
     } catch (error) {
         addLog(`[ERROR] Could not update account ${email}: ${error.message}`);
+    }
+}
+
+async function setGoogleAccountPoolDisabled(email, pool, disabled) {
+    try {
+        const res = await fetch(`/api/accounts/${encodeURIComponent(email)}/pools/disabled`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pool, disabled })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const target = globalAccounts.find(account => account.email === email);
+        if (target) {
+            if (data.disabledPools?.length) target.disabledPools = data.disabledPools;
+            else delete target.disabledPools;
+            renderDashboardFamilies();
+            renderAccountsTable(globalAccounts);
+            updateAccountSummary();
+        }
+        addLog(`[ACTION] ${disabled ? 'Disabled' : 'Enabled'} ${email} for pool ${pool}`);
+    } catch (error) {
+        addLog(`[ERROR] Could not update pool ${pool} for ${email}: ${error.message}`);
+    }
+}
+
+async function setCodexAccountDisabled(email, disabled) {
+    try {
+        const res = await fetch(`/api/codex/accounts/${encodeURIComponent(email)}/disabled`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disabled })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const target = globalCodexAccounts.find(account => account.email === email);
+        if (target) {
+            target.disabled = disabled;
+            target.available = !disabled && target.available;
+        }
+        renderCodexAccounts();
+        renderDashboardFamilies();
+        updateAccountSummary();
+        addLog(`[CODEX] ${disabled ? 'Disabled' : 'Enabled'} account ${email}`);
+    } catch (error) {
+        addLog(`[CODEX] Could not update account ${email}: ${error.message}`);
     }
 }
 
@@ -1155,6 +1271,7 @@ function renderCodexAccounts() {
             <td class="px-4 py-3"><span class="text-[10px] text-zinc-500 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors">${formatTimeAgo(Number(account.lastUsed || 0))}</span></td>
             <td class="px-4 py-3 text-right">
                 <div class="flex items-center justify-end gap-2" onclick="event.stopPropagation()">
+                    <button onclick="setCodexAccountDisabled(decodeURIComponent('${encodedEmail}'), ${!account.disabled})" class="text-[10px] font-bold text-zinc-500 hover:text-emerald-500 p-1">${account.disabled ? 'Enable' : 'Disable'}</button>
                     <button data-codex-delete="${encodedEmail}" class="text-zinc-400 dark:text-zinc-600 hover:text-rose-500 transition-colors p-1" title="Remove"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
                     <svg class="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-300 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                 </div>
@@ -1194,6 +1311,7 @@ async function loadCodexUsage(throwOnError = false) {
                 expiresAt: Number.isFinite(Number(snapshot?.expiresAt)) ? Number(snapshot.expiresAt) : account.expiresAt,
                 lastUsed: Number.isFinite(Number(snapshot?.lastUsed)) ? Number(snapshot.lastUsed) : account.lastUsed,
                 cooldownUntil: Number.isFinite(Number(snapshot?.cooldownUntil)) ? Number(snapshot.cooldownUntil) : account.cooldownUntil,
+                disabled: typeof snapshot?.disabled === 'boolean' ? snapshot.disabled : Boolean(account.disabled),
                 available: typeof snapshot?.available === 'boolean' ? snapshot.available : account.available,
                 usage: snapshot?.usage || null,
                 usageError: snapshot?.error || null,
@@ -1209,6 +1327,14 @@ async function loadCodexUsage(throwOnError = false) {
         if (throwOnError) throw error;
         return false;
     }
+}
+
+async function refreshGoogleStatus() {
+    const revision = googleAccountsRevision;
+    const response = await fetch('/api/status', { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const status = await response.json();
+    if (revision === googleAccountsRevision) updateUI(status);
 }
 
 async function refreshUsageDisplay() {
@@ -1227,9 +1353,7 @@ async function refreshUsageDisplay() {
 
     usageDisplayRefreshInFlight = (async () => {
         try {
-            const response = await fetch('/api/status', { cache: 'no-store' });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            updateUI(await response.json());
+            await refreshGoogleStatus();
             await loadCodexUsage(true);
             if ($('last-updated')) $('last-updated').textContent = new Date().toLocaleTimeString();
             if (label) label.textContent = 'Refreshed';
@@ -1496,7 +1620,17 @@ async function saveConfig() {
 
 function setupSSE() {
     const es = new EventSource('/api/sse');
-    es.addEventListener('init', e => updateUI(JSON.parse(e.data)));
+    let lastHeartbeat = Date.now();
+    es.addEventListener('ping', () => { lastHeartbeat = Date.now(); });
+    setInterval(() => {
+        if (es.readyState !== EventSource.OPEN || Date.now() - lastHeartbeat >= 30_000) {
+            void refreshGoogleStatus().catch(error => addLog(`[STATUS] Refresh failed: ${error.message}`));
+        }
+    }, 15_000);
+    es.addEventListener('init', e => {
+        lastHeartbeat = Date.now();
+        updateUI(JSON.parse(e.data));
+    });
     es.addEventListener('update', e => updateUI(JSON.parse(e.data)));
     es.addEventListener('cooldown', e => updateUI(JSON.parse(e.data)));
     es.addEventListener('flash', e => {
@@ -1533,9 +1667,14 @@ function initializeApp() {
     setupSSE();
     setupLogsInteraction();
     let hadActiveCooldowns = false;
+    let previousExpiringSuspensions = 0;
     setInterval(() => {
-        const hasActiveCooldowns = Object.values(globalCooldowns).some(expiry => expiry > Date.now());
-        if (hasActiveCooldowns || hadActiveCooldowns) {
+        const now = Date.now();
+        const hasActiveCooldowns = Object.values(globalCooldowns).some(expiry => expiry > now);
+        const expiringSuspensions = globalAccounts.flatMap(account => Object.values(account.poolSuspensions || {})).filter(
+            suspension => suspension.reason !== 'tos_violation' && !suspension.permanent && suspension.retryAt > now
+        ).length;
+        if (hasActiveCooldowns || hadActiveCooldowns || expiringSuspensions !== previousExpiringSuspensions) {
             renderAccountsTable(globalAccounts);
             renderDashboardFamilies();
             updateAccountSummary();
@@ -1547,6 +1686,7 @@ function initializeApp() {
             });
         }
         hadActiveCooldowns = hasActiveCooldowns;
+        previousExpiringSuspensions = expiringSuspensions;
     }, 1000);
     setInterval(loadCodexUsage, 60_000);
 }

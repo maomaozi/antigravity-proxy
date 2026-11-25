@@ -831,6 +831,7 @@ export function createCompletionStreamTransformer(
   hasPriorToolCalls: boolean,
   sessionId?: string,
   onUsage?: (usage: UpstreamTokenUsage, timing: StreamUsageTiming) => void,
+  startedAt?: number,
 ): TransformStream<Uint8Array, CompletionStreamEvent> {
   const decoder = new TextDecoder();
   let buffer = "";
@@ -841,11 +842,14 @@ export function createCompletionStreamTransformer(
   const toolCallIndexes = new Map<string, number>();
   let hasEmittedDone = false;
   let firstTokenAt: number | null = null;
+  const attemptStartedAt = typeof startedAt === "number" && Number.isFinite(startedAt)
+    ? startedAt
+    : Date.now();
 
   const emitUsage = (usage: UpstreamTokenUsage | undefined, now: number) => {
     if (!usage || !onUsage) return;
-    const generationDurationMs = firstTokenAt !== null && now > firstTokenAt
-      ? now - firstTokenAt
+    const generationDurationMs = now > attemptStartedAt
+      ? now - attemptStartedAt
       : null;
     try {
       onUsage(usage, {
@@ -964,6 +968,7 @@ export function createOpenAIStreamTransformer(
   hasPriorToolCalls: boolean,
   sessionId?: string,
   onUsage?: (usage: UpstreamTokenUsage, timing: StreamUsageTiming) => void,
+  startedAt?: number,
 ): ReadableWritablePair<Uint8Array, Uint8Array> {
   const canonical = createCompletionStreamTransformer(
     model,
@@ -971,6 +976,7 @@ export function createOpenAIStreamTransformer(
     hasPriorToolCalls,
     sessionId,
     onUsage,
+    startedAt,
   );
   return {
     writable: canonical.writable,

@@ -140,7 +140,7 @@ function renderUsageTable() {
                 <td class="px-3 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">${cached}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${uncached}</td>
                 <td class="px-3 py-3 text-right tabular-nums" title="${formatTokens(row.outputTokens)}">${formatTokenAmount(row.outputTokens)}</td>
-                <td class="px-3 py-3 text-right tabular-nums" title="Visible output + reported reasoning / model generation time (first token to completion)">${speed}</td>
+                <td class="px-3 py-3 text-right tabular-nums" title="Visible output + reported reasoning / final upstream attempt duration (request dispatch to completion)">${speed}</td>
                 <td class="px-3 py-3 text-right tabular-nums"${row.reasoningTokensReported ? ` title="${formatTokens(row.reasoningTokens)}"` : ''}>${reasoning}</td>
                 <td class="px-3 py-3 text-right tabular-nums">${effort}</td>
                 <td class="px-3 py-3 text-right tabular-nums font-bold" title="${formatTokens(row.totalTokens)}">${formatTokenAmount(row.totalTokens)}</td>

@@ -160,11 +160,7 @@ export function getAccountQuotaWindows(account: AntigravityAccount, id: string) 
 }
 
 export function isAccountTosSuspended(account: AntigravityAccount): boolean {
-  if (account.suspension?.reason === "tos_violation") return true;
-  for (const suspension of Object.values(account.poolSuspensions || {})) {
-    if (suspension?.reason === "tos_violation") return true;
-  }
-  return false;
+  return account.suspension?.reason === "tos_violation";
 }
 
 export function getAvailableModelCatalog(accounts: AntigravityAccount[]): SupportedModel[] {
@@ -172,6 +168,7 @@ export function getAvailableModelCatalog(accounts: AntigravityAccount[]): Suppor
   for (const account of accounts) {
     if (account.disabled || account.challenge || !account.refreshToken || isAccountTosSuspended(account)) continue;
     for (const model of account.availableModels || []) {
+      if (isAccountPoolSuspended(account, model.id)) continue;
       if (getUnavailableModelError(model.id) || /image/i.test(model.id) || SUPPORTED_MODELS.some(known => known.name === model.name)) continue;
       // Keep tier IDs as well as a convenient base alias for newly discovered models.
       const id = `antigravity-${model.id}`;
@@ -222,6 +219,149 @@ export function isAccountPoolSuspended(account: AntigravityAccount, id: string, 
   if (!suspension) return false;
   if (suspension.reason === "tos_violation" || suspension.permanent) return true;
   return suspension.retryAt > now;
+}
+
+function normalizeDisplayToken(value: string): string {
+  return normalizeModelId(value).replace(/[ _]/g, "-");
+}
+
+function matchesDisplayPatterns(values: string[], patterns?: string[]): boolean {
+  if (!patterns?.length) return false;
+  return patterns.some(pattern => {
+    try {
+      const regex = new RegExp(pattern, "i");
+      return values.some(value => regex.test(value));
+    } catch {
+      return false;
+    }
+  });
+}
+
+function isDisplayModelVisible(id: string, visibility?: { showPatterns?: string[]; hidePatterns?: string[] }): boolean {
+  const token = normalizeDisplayToken(id);
+  if (matchesDisplayPatterns([token], visibility?.showPatterns)) return true;
+  return !matchesDisplayPatterns([token], visibility?.hidePatterns);
+}
+
+function getDisplayVisibleQuotaItems(
+  account: AntigravityAccount,
+  visibility?: { showPatterns?: string[]; hidePatterns?: string[] },
+): Array<{ id: string; groupName: string; limitName?: string; familyName?: string }> {
+  const items: Array<{ id: string; groupName: string; limitName?: string; familyName?: string }> = [];
+  for (const quota of account.quota || []) {
+    const ids = quota.modelIds?.length ? quota.modelIds : quota.modelId ? [quota.modelId] : [];
+    if (ids.length) {
+      for (const id of ids) {
+        if (isDisplayModelVisible(id, visibility)) {
+          items.push({ id, groupName: quota.groupName, limitName: quota.limitName, familyName: quota.familyName });
+        }
+      }
+    } else if (isDisplayModelVisible(quota.groupName, visibility)) {
+      items.push({ id: quota.groupName, groupName: quota.groupName, limitName: quota.limitName, familyName: quota.familyName });
+    }
+  }
+  return items;
+}
+
+function resolveDisplayQuotaPoolForItem(
+  account: AntigravityAccount,
+  item: { id: string; groupName?: string; limitName?: string; familyName?: string },
+  poolRules?: Array<{ patterns: string[]; pools: string[]; preferDeclaredPool?: boolean }>,
+): string {
+  const windows = account.quotaWindows || [];
+  const names = [item.limitName, item.groupName].filter((v): v is string => Boolean(v)).map(groupKey);
+  const specific = windows.find(window => names.includes(groupKey(window.groupName)));
+  if (specific) return specific.groupName;
+  const declared = item.familyName
+    ? windows.find(window => groupKey(window.groupName) === groupKey(item.familyName!))
+    : undefined;
+  const token = normalizeDisplayToken(item.id);
+  for (const rule of poolRules || []) {
+    if (!matchesDisplayPatterns([token], rule.patterns)) continue;
+    if (rule.preferDeclaredPool && declared) return declared.groupName;
+    for (const pool of rule.pools) {
+      const existing = windows.find(window => groupKey(window.groupName) === groupKey(pool));
+      if (existing) return existing.groupName;
+    }
+    return rule.pools[0]!;
+  }
+  return declared?.groupName || item.familyName || getAccountModelPool(account, item.id);
+}
+
+/**
+ * Resolve the model pool name as displayed in the dashboard (including display
+ * groups such as "Gemini 4 Neon" or "Claude 4.6" that split a shared quota pool).
+ */
+export function getAccountModelDisplayPool(
+  account: AntigravityAccount,
+  id: string,
+  allAccounts?: AntigravityAccount[],
+): string {
+  let display: ReturnType<typeof getProxyConfig>["display"] | undefined;
+  try { display = getProxyConfig().display; } catch {}
+
+  const resolvedId = findAccountModel(account, id)?.id || normalizeModelId(id);
+  const token = normalizeDisplayToken(resolvedId);
+  const matchedQuota = getAccountModelQuotas(account, resolvedId)[0];
+  const pool = resolveDisplayQuotaPoolForItem(
+    account,
+    {
+      id: resolvedId,
+      groupName: matchedQuota?.groupName,
+      limitName: matchedQuota?.limitName,
+      familyName: matchedQuota?.familyName || getAccountModelFamily(account, resolvedId),
+    },
+    display?.poolRules,
+  );
+
+  for (const rule of display?.groups || []) {
+    if (!matchesDisplayPatterns([token], rule.patterns)) continue;
+    if (rule.separateWhen !== "different-accounts") return rule.name;
+    const members = allAccounts?.length ? allAccounts : [account];
+    const poolAccounts = members.filter(member =>
+      getDisplayVisibleQuotaItems(member, display?.visibility).some(item =>
+        resolveDisplayQuotaPoolForItem(member, item, display?.poolRules) === pool,
+      ),
+    );
+    const restricted = poolAccounts.filter(member =>
+      getDisplayVisibleQuotaItems(member, display?.visibility).some(item =>
+        resolveDisplayQuotaPoolForItem(member, item, display?.poolRules) === pool
+        && matchesDisplayPatterns([normalizeDisplayToken(item.id)], rule.patterns),
+      ),
+    );
+    if (restricted.length > 0 && restricted.length < poolAccounts.length) {
+      return rule.name;
+    }
+  }
+  return pool;
+}
+
+/**
+ * Returns true if the account has been manually disabled for the target model's pool.
+ * Disabling one pool does not affect other pools or the 10-minute window activation.
+ */
+export function isAccountPoolDisabled(
+  account: AntigravityAccount,
+  id: string,
+  allAccounts?: AntigravityAccount[],
+): boolean {
+  const disabledPools = account.disabledPools;
+  if (!disabledPools?.length) return false;
+  const disabledSet = new Set(disabledPools);
+  const displayPool = getAccountModelDisplayPool(account, id, allAccounts);
+  if (disabledSet.has(displayPool)) return true;
+
+  // Also honor explicit group-level disables even if separateWhen="different-accounts"
+  // later merges the group into its shared quota pool (e.g. when all accounts gain access).
+  const resolved = normalizeDisplayToken(findAccountModel(account, id)?.id || id);
+  let groups: Array<{ name: string; patterns: string[] }> = [];
+  try { groups = getProxyConfig().display?.groups || []; } catch {}
+  for (const rule of groups) {
+    if (disabledSet.has(rule.name) && matchesDisplayPatterns([resolved], rule.patterns)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function updateQuotaFamilies(account: AntigravityAccount): void {

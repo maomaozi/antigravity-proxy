@@ -3,6 +3,7 @@ import { ANTIGRAVITY_CLIENT_VERSION } from "../../src/models";
 import { fetchQuota, fetchQuotaWindows } from "../../src/api/quota";
 import {
   getGoogleActivationTargets,
+  googleActivationBody,
   isCodexFiveHourWindowInactive,
   isGoogleGeminiWindowInactive,
   runQuotaWindowActivationCheck,
@@ -91,6 +92,39 @@ describe("quota window activation", () => {
     await runQuotaWindowActivationCheck(runtime);
     expect(calls).toEqual([]);
     expect(account.suspension?.status).toBe('suspended');
+  });
+
+  test("sends the Antigravity system instruction and continues activation in other pools after TOS", async () => {
+    const account = googleAccount('two-pools@example.com', 1);
+    const gemini = 'gemini-3.8-flash-tiered';
+    const claude = 'claude-sonnet-4-6';
+    account.availableModels = [{ id: claude, name: 'Claude Sonnet 4.6' }, { id: gemini, name: 'Gemini 3.8 Flash' }];
+    const quota = account.quota![0]!;
+    account.quota = [
+      { ...quota, modelId: claude, groupName: 'Claude Sonnet 4.6', limitName: 'Claude and GPT models' },
+      { ...quota, modelId: gemini },
+    ];
+    expect(googleActivationBody(account, gemini)).toMatchObject({ request: {
+      systemInstruction: { parts: [{ text: 'You are Antigravity, a powerful agentic AI assistant designed by the Google Deepmind team. ' }] },
+      contents: [{ role: 'user', parts: [{ text: '.' }] }],
+    } });
+
+    const calls: string[] = [];
+    const summary = await runQuotaWindowActivationCheck({
+      refreshGoogleQuotas: async () => {}, listGoogleAccounts: () => [account],
+      getCodexUsageSnapshots: async () => [], activateCodex: async () => false, refreshCodexUsage: async () => {},
+      activateGoogle: async (current, model) => {
+        calls.push(model);
+        if (model === claude) {
+          current.poolSuspensions = { 'Claude and GPT models': { reason: 'tos_violation', model, detectedAt: 1, retryAt: 0 } };
+          throw new Error('403');
+        }
+        current.quota!.find(row => row.modelId === gemini)!.remainingFraction = 0.9;
+        return true;
+      },
+    });
+    expect(calls).toEqual([claude, gemini]);
+    expect(summary).toMatchObject({ googleActivated: 1, failures: 1 });
   });
 
   test("rechecks expired non-TOS pool suspensions even when quota windows are already active", async () => {

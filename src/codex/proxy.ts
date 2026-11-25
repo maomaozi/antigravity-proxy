@@ -107,6 +107,7 @@ export class CodexProxyService {
       }
 
       let upstream: Response;
+      let attemptStartedAt = Date.now();
       try {
         const upstreamBody = {
           ...request.body,
@@ -124,6 +125,7 @@ export class CodexProxyService {
           baseUrl: this.baseUrl,
           signal: request.signal,
         };
+        attemptStartedAt = Date.now();
         upstream = operation === "responses"
           ? await callCodexResponsesAPI(options)
           : await callCodexCompactAPI(options);
@@ -147,8 +149,8 @@ export class CodexProxyService {
           endpoint,
           upstreamSessionId,
         });
-        if (operation === "compact") return this.handleCompactSuccess(upstream, account, request, endpoint);
-        return this.handleResponsesSuccess(upstream, account, request, endpoint);
+        if (operation === "compact") return this.handleCompactSuccess(upstream, account, request, endpoint, attemptStartedAt);
+        return this.handleResponsesSuccess(upstream, account, request, endpoint, attemptStartedAt);
       }
 
       lastResponse = upstream;
@@ -171,21 +173,24 @@ export class CodexProxyService {
     return this.errorResponse(lastStatus, lastBody || JSON.stringify({ error: { message: "Codex upstream request failed" } }), lastRetryAfterMs);
   }
 
-  private async handleCompactSuccess(upstream: Response, account: CodexAccount, request: ProxyRequest, endpoint: string): Promise<Response> {
+  private async handleCompactSuccess(upstream: Response, account: CodexAccount, request: ProxyRequest, endpoint: string, attemptStartedAt: number): Promise<Response> {
     let data: any;
     try { data = await upstream.json(); } catch {
       return Response.json({ error: { message: "Codex Compact upstream returned invalid JSON", type: "upstream_error" } }, { status: 502 });
     }
-    if (data?.usage) this.recordUsage(account, request, endpoint, false, normalizeCodexUsage(data.usage), null);
+    const completedAt = Date.now();
+    const generationDurationMs = completedAt > attemptStartedAt ? completedAt - attemptStartedAt : null;
+    if (data?.usage) this.recordUsage(account, request, endpoint, false, normalizeCodexUsage(data.usage), generationDurationMs);
     return new Response(JSON.stringify(data), { status: upstream.status, headers: this.jsonHeaders(upstream.headers) });
   }
 
-  private async handleResponsesSuccess(upstream: Response, account: CodexAccount, request: ProxyRequest, endpoint: string): Promise<Response> {
+  private async handleResponsesSuccess(upstream: Response, account: CodexAccount, request: ProxyRequest, endpoint: string, attemptStartedAt: number): Promise<Response> {
     if (request.body?.stream === true) {
       if (!upstream.body) return Response.json({ error: { message: "Codex upstream response body is empty" } }, { status: 502 });
       const stream = passthroughCodexSSE(
         upstream.body,
         (usage, timing) => this.recordUsage(account, request, endpoint, true, usage, timing.generationDurationMs),
+        attemptStartedAt,
       );
       const headers = new Headers(upstream.headers);
       headers.delete("content-length");
@@ -200,7 +205,7 @@ export class CodexProxyService {
     try {
       data = await aggregateCodexResponsesSSE(upstream, timing => {
         generationDurationMs = timing.generationDurationMs;
-      });
+      }, attemptStartedAt);
     } catch (error: any) {
       if (request.signal?.aborted) {
         throw error;

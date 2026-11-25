@@ -298,15 +298,16 @@ describe("completion failure classification", () => {
     expect((await getBestAccount('sandbox', model))?.email).toBe(first.email);
   });
 
-  test("TOS_VIOLATION isolates Antigravity persistently and resists 10-minute expiry until controlled recovery", async () => {
+  test("TOS_VIOLATION isolates only the affected pool and does not expire", async () => {
     const first = getAccounts()[0]!;
     await suspendAccountPool(first.email, model, {reason:'tos_violation', appealUrl:'https://forms.gle/appeal'});
     first.poolSuspensions!['Gemini Models']!.retryAt = 0;
     expect(first.disabled).not.toBe(true);
-    expect(first.suspension).toMatchObject({ service: 'antigravity', status: 'suspended', reason: 'tos_violation' });
+    expect(first.suspension).toBeUndefined();
+    expect(first.poolSuspensions?.['Gemini Models']).toMatchObject({ status: 'suspended', reason: 'tos_violation' });
     expect(isAccountPoolSuspended(first, model)).toBe(true);
     expect(await activateGoogleModelWindow(first, model)).toBe(false);
-    expect(await getBestAccount('sandbox', 'claude-sonnet-4-6')).toBeNull();
+    expect((await getBestAccount('sandbox', 'claude-sonnet-4-6'))?.email).toBe(first.email);
     await resetAccount(first.email);
     expect(isAccountPoolSuspended(first, model)).toBe(true);
   });
@@ -420,7 +421,7 @@ describe("completion failure classification", () => {
         expect(retryExecution.response.status).toBe(403);
       }
       expect(first.disabled).not.toBe(true);
-      expect(first.suspension?.status).toBe("suspended");
+      expect(first.poolSuspensions?.['Gemini Models']?.status).toBe("suspended");
       expect(isAccountPoolSuspended(first, model)).toBe(true);
       expect(healthy.disabled).toBeUndefined();
       expect(fetchSpy).toHaveBeenCalledTimes(1);

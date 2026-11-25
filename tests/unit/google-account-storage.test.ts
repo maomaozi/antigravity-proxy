@@ -18,16 +18,18 @@ function account(): AntigravityAccount {
 }
 
 describe("Google account storage", () => {
-  test("pool suspensions and manual disables survive missing runtime state", async () => {
+  test("pool suspensions, manual pool disables, and manual disables survive missing runtime state", async () => {
     const {path,storage} = await fixture();
     const saved = account();
     saved.poolSuspensions = {'Claude and GPT models':{reason:'tos_violation',model:'claude-sonnet-4-6',detectedAt:123,retryAt:600123}};
+    saved.disabledPools = ['Gemini 4 Neon', 'Claude 4.6'];
     const manual = {...account(), email:'manual@example.com', disabled:true};
     await storage.save({accounts:[saved,manual]});
     await writeFile(`${path}.state.json`, 'invalid');
     await writeFile(`${path}.state.json.bak`, 'invalid');
     const loaded = await new GoogleAccountStorage(path).load();
     expect(loaded.accounts[0]!.poolSuspensions).toEqual(saved.poolSuspensions);
+    expect(loaded.accounts[0]!.disabledPools).toEqual(['Gemini 4 Neon', 'Claude 4.6']);
     expect(loaded.accounts[0]!.disabled).not.toBe(true);
     expect(loaded.accounts[1]!.disabled).toBe(true);
   });
@@ -50,7 +52,7 @@ describe("Google account storage", () => {
     expect(reloaded.accounts[0]!.suspension?.status).toBe('suspended');
   });
 
-  test("migrates legacy poolSuspensions TOS entries into persistent Antigravity isolation", async () => {
+  test("migrates a legacy account-level mirror to its recorded pool", async () => {
     const {path,storage} = await fixture();
     const legacy = account();
     legacy.poolSuspensions = {
@@ -61,14 +63,18 @@ describe("Google account storage", () => {
         retryAt: 200,
       },
     };
+    legacy.suspension = { service: 'antigravity', status: 'pending_verification', reason: 'tos_violation', detectedAt: 100, model: 'gemini-3.8-flash-tiered' };
+    legacy.disabled = true;
     await storage.save({accounts:[legacy]});
     const loaded = await new GoogleAccountStorage(path).load();
-    expect(loaded.accounts[0]!.suspension).toMatchObject({
-      service: 'antigravity',
-      status: 'suspended',
+    expect(loaded.accounts[0]!.suspension).toBeUndefined();
+    expect(loaded.accounts[0]!.disabled).toBe(true);
+    expect(loaded.accounts[0]!.poolSuspensions?.['Gemini Models']).toMatchObject({
+      status: 'pending_verification',
       reason: 'tos_violation',
       detectedAt: 100,
       model: 'gemini-3.8-flash-tiered',
+      permanent: true,
     });
   });
 

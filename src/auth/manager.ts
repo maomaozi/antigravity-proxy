@@ -6,11 +6,12 @@ import {
   getModelFamilyName,
   getAccountModelFamily,
   getAccountModelPool,
+  isAccountPoolDisabled,
   isAccountPoolSuspended,
   isAccountTosSuspended,
 } from "../models";
 import { type AntigravityAccount, type PoolSuspension } from "./types";
-import { loadConfig, migrateAccountTosSuspension, saveConfig } from "./storage";
+import { loadConfig, saveConfig } from "./storage";
 import { refreshAccessToken, getProjectId } from "./oauth";
 import { generateFingerprint, getAntigravityNativeHeaders } from "../utils/headers";
 import { getProxyConfig } from "../config/manager";
@@ -39,7 +40,7 @@ export function getFamilyName(modelName: string, account?: AntigravityAccount): 
 
 export async function initManager() {
   const config = await loadConfig();
-  accounts = (config.accounts || []).map(account => migrateAccountTosSuspension(account));
+  accounts = config.accounts || [];
   console.log(`[Manager] Loaded ${accounts.length} accounts from storage.`);
 }
 
@@ -60,137 +61,117 @@ export async function setAccountDisabled(
   return true;
 }
 
+export async function setAccountPoolDisabled(
+  email: string,
+  pool: string,
+  disabled: boolean,
+): Promise<boolean> {
+  const poolName = pool.trim();
+  if (!poolName) return false;
+  const account = accounts.find(candidate => candidate.email === email);
+  if (!account) return false;
+  const current = new Set(account.disabledPools || []);
+  if (disabled) current.add(poolName);
+  else current.delete(poolName);
+  const next = [...current].sort();
+  if (next.length > 0) account.disabledPools = next;
+  else delete account.disabledPools;
+  await saveAccounts(accounts);
+  return true;
+}
+
 export const POOL_SUSPENSION_RETRY_MS = 10 * 60_000;
 
 export async function suspendAccountPool(
   email: string,
   model: string,
   suspension: Pick<PoolSuspension, 'reason' | 'message' | 'appealUrl'>,
+  routingModel = model,
 ): Promise<void> {
   const account = accounts.find(candidate => candidate.email === email);
   if (!account) return;
   const detectedAt = Date.now();
   const isTos = suspension.reason === "tos_violation";
   account.poolSuspensions ||= {};
-  account.poolSuspensions[getAccountModelPool(account, model)] = {
+  const pool = getAccountModelPool(account, routingModel);
+  const existing = account.poolSuspensions[pool];
+  if (!isTos && (existing?.reason === "tos_violation" || existing?.permanent)) return;
+  account.poolSuspensions[pool] = {
     ...suspension,
     model,
     detectedAt,
     retryAt: isTos ? Number.MAX_SAFE_INTEGER : detectedAt + POOL_SUSPENSION_RETRY_MS,
-    ...(isTos ? { permanent: true } : {}),
+    ...(isTos ? { permanent: true, status: "suspended" } : {}),
   };
-  if (isTos) {
-    account.suspension = {
-      service: "antigravity",
-      status: "suspended",
-      reason: "tos_violation",
-      ...(suspension.message ? { message: suspension.message } : {}),
-      ...(suspension.appealUrl ? { appealUrl: suspension.appealUrl } : {}),
-      detectedAt,
-      model,
-    };
-  }
-  await saveAccounts(accounts);
+  await saveAccounts(accounts, true);
 }
 
 export async function clearAccountPoolSuspension(email: string, model: string): Promise<void> {
   const account = accounts.find(candidate => candidate.email === email);
   if (!account?.poolSuspensions) return;
-  if (isAccountTosSuspended(account)) {
-    // Persistent TOS isolation can only be cleared after explicit manual recovery
-    // and controlled verification.
-    return;
-  }
   const pool = getAccountModelPool(account, model);
   const existing = account.poolSuspensions[pool];
   if (!existing || existing.reason === "tos_violation" || existing.permanent) return;
   delete account.poolSuspensions[pool];
-  await saveAccounts(accounts);
+  await saveAccounts(accounts, true);
 }
 
-/**
- * Step 1 of manual TOS recovery: marks the suspended account as pending controlled
- * verification while keeping persistent TOS isolation active until verification succeeds.
- */
-export async function beginAccountTosRecovery(email: string): Promise<boolean> {
+function getTosRecoveryTarget(account: AntigravityAccount, model?: string) {
+  if (account.suspension?.reason === "tos_violation") return { pool: undefined, suspension: account.suspension };
+  const pools = account.poolSuspensions || {};
+  const recordedPool = Object.keys(pools).find(key => pools[key]?.reason === "tos_violation" && (!model || pools[key]?.model === model));
+  const pool = recordedPool || (model ? getAccountModelPool(account, model) : undefined);
+  const suspension = pool ? pools[pool] : undefined;
+  if (suspension?.reason === "tos_violation") return { pool, suspension };
+  return undefined;
+}
+
+export async function beginAccountTosRecovery(email: string, model?: string): Promise<boolean> {
   const account = accounts.find(candidate => candidate.email === email);
-  if (!account || !isAccountTosSuspended(account)) return false;
-  migrateAccountTosSuspension(account);
-  account.suspension = {
-    ...(account.suspension || {
-      service: "antigravity",
-      reason: "tos_violation",
-      detectedAt: Date.now(),
-    }),
-    service: "antigravity",
-    status: "pending_verification",
-  };
-  await saveAccounts(accounts);
+  const target = account && getTosRecoveryTarget(account, model);
+  if (!target || account?.disabled) return false;
+  target.suspension.status = "pending_verification";
+  await saveAccounts(accounts, true);
   return true;
 }
 
-/**
- * Step 2 of manual TOS recovery: completes or reverts TOS recovery after a controlled
- * verification probe. Isolation is only removed if `beginAccountTosRecovery` was initiated
- * and `verified` is true.
- */
 export async function completeAccountTosRecovery(
   email: string,
   verified: boolean,
   failureDetails?: { message?: string; appealUrl?: string; model?: string },
 ): Promise<boolean> {
   const account = accounts.find(candidate => candidate.email === email);
-  if (!account || !isAccountTosSuspended(account)) return false;
-  migrateAccountTosSuspension(account);
-  if (account.suspension?.status !== "pending_verification") {
-    return false;
-  }
+  const target = account && getTosRecoveryTarget(account, failureDetails?.model);
+  if (!account || target?.suspension.status !== "pending_verification") return false;
+  const { pool, suspension } = target;
   if (!verified) {
-    account.suspension = {
-      ...account.suspension,
-      status: "suspended",
-      ...(failureDetails?.message ? { message: failureDetails.message } : {}),
-      ...(failureDetails?.appealUrl ? { appealUrl: failureDetails.appealUrl } : {}),
-      ...(failureDetails?.model ? { model: failureDetails.model } : {}),
-    };
-    await saveAccounts(accounts);
+    suspension.status = "suspended";
+    if (failureDetails?.message) suspension.message = failureDetails.message;
+    if (failureDetails?.appealUrl) suspension.appealUrl = failureDetails.appealUrl;
+    await saveAccounts(accounts, true);
     return false;
   }
 
-  delete account.suspension;
-  if (account.poolSuspensions) {
-    for (const [pool, entry] of Object.entries(account.poolSuspensions)) {
-      if (entry?.reason === "tos_violation") {
-        delete account.poolSuspensions[pool];
-      }
-    }
-    if (Object.keys(account.poolSuspensions).length === 0) {
-      delete account.poolSuspensions;
-    }
-  }
-  clearTerminatedTosGuardsForAccount(email);
-  await saveAccounts(accounts);
+  if (pool) delete account.poolSuspensions?.[pool];
+  else delete account.suspension;
+  clearTerminatedTosGuardsForAccount(email, model => pool
+    ? getAccountModelPool(account, model) === pool
+    : !isAccountPoolSuspended(account, model));
+  await saveAccounts(accounts, true);
   return true;
 }
 
-/**
- * Executes explicit manual TOS recovery with a single controlled verification request.
- * Retains full TOS isolation if the verification probe fails.
- */
+/** Runs an explicit recovery probe for the suspended pool selected by the model. */
 export async function verifyAndRecoverTosAccount(
   email: string,
   options: { model?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<boolean> {
   const account = accounts.find(candidate => candidate.email === email);
-  if (!account || account.disabled || !isAccountTosSuspended(account)) return false;
-  if (account.suspension?.status !== "pending_verification") {
-    await beginAccountTosRecovery(email);
-  }
-  const probeModel =
-    options.model
-    || account.suspension?.model
-    || account.availableModels?.[0]?.id
-    || "gemini-3.8-flash-tiered";
+  if (!account || account.disabled) return false;
+  const target = getTosRecoveryTarget(account, options.model);
+  if (!target) return false;
+  const probeModel = options.model || target.suspension.model || account.availableModels?.[0]?.id || "gemini-3.8-flash-tiered";
+  if (target.suspension.status !== "pending_verification" && !await beginAccountTosRecovery(email, probeModel)) return false;
   const fetchImpl = options.fetchImpl ?? fetch;
 
   try {
@@ -228,7 +209,7 @@ export async function verifyAndRecoverTosAccount(
       });
       return false;
     }
-    return await completeAccountTosRecovery(email, true);
+    return await completeAccountTosRecovery(email, true, { model: probeModel });
   } catch (error: any) {
     await completeAccountTosRecovery(email, false, {
       message: error?.message,
@@ -238,10 +219,12 @@ export async function verifyAndRecoverTosAccount(
   }
 }
 
-export async function saveAccounts(newAccounts: AntigravityAccount[]) {
+export async function saveAccounts(newAccounts: AntigravityAccount[], publishImmediately = false) {
   accounts = newAccounts;
-  await saveConfig({ accounts });
-  eventBus.emit('update', { accounts });
+  const saved = saveConfig({ accounts });
+  if (publishImmediately) eventBus.emit('update', { accounts });
+  await saved;
+  if (!publishImmediately) eventBus.emit('update', { accounts });
 }
 
 function saveAccountsInBackground() {
@@ -357,7 +340,7 @@ export type AccountSelectionFailure =
   | "rate_limit_exceeded"
   | "no_available_accounts";
 
-function quotaRoutingModel(model?: string, reasoningEffort?: string): string | undefined {
+export function quotaRoutingModel(model?: string, reasoningEffort?: string): string | undefined {
   const effort = reasoningEffort?.toLowerCase();
   if (model && effort && /^(low|medium|high|xhigh)$/.test(effort) && !/-(low|medium|high|xhigh)$/i.test(model)) {
     return `${model}-${effort}`;
@@ -372,7 +355,7 @@ export function getAccountSelectionFailure(pool: "sandbox", model: string, reaso
   if (configured.length === 0) return "no_accounts";
   const supported = configured.filter(account => accountSupportsModel(account, model, reasoningEffort));
   if (supported.length === 0) return "model_not_found";
-  const enabled = supported.filter(account => !account.disabled);
+  const enabled = supported.filter(account => !account.disabled && !isAccountPoolDisabled(account, routingModel, accounts));
   if (enabled.length === 0) return "accounts_disabled";
   const verified = enabled.filter(account => !account.challenge);
   if (verified.length === 0) return "account_verification_required";
@@ -425,7 +408,7 @@ export async function getBestAccount(
           && a.refreshToken
           && !a.disabled
           && !a.challenge
-          && (!routingModel || !isAccountPoolSuspended(a, routingModel, now))
+          && (!routingModel || (!isAccountPoolSuspended(a, routingModel, now) && !isAccountPoolDisabled(a, routingModel, accounts)))
           && (!model || accountSupportsModel(a, model, reasoningEffort))
         );
         if (!guardedAccount) return null;
@@ -453,7 +436,7 @@ export async function getBestAccount(
     }
 
     const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !excludeEmails.includes(a.email)
-      && (!routingModel || !isAccountPoolSuspended(a, routingModel, now)));
+      && (!routingModel || (!isAccountPoolSuspended(a, routingModel, now) && !isAccountPoolDisabled(a, routingModel, accounts))));
 
     let candidates = usable.filter(a => {
       if (model && !accountSupportsModel(a, model, reasoningEffort)) return false;
@@ -678,7 +661,8 @@ export async function updateAccountProject(email: string, projectId: string) {
 }
 
 export function getEarliestReset(pool: 'sandbox', model?: string): string | null {
-  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !isAccountTosSuspended(a) && a.quota);
+  const usable = accounts.filter(a => a.refreshToken && !a.disabled && !a.challenge && !isAccountTosSuspended(a)
+    && (!model || (!isAccountPoolDisabled(a, model, accounts) && !isAccountPoolSuspended(a, model))) && a.quota);
   if (usable.length === 0) return null;
   let resetTimes: number[] = [];
   for (const acc of usable) {

@@ -227,4 +227,47 @@ describe("CodexProxyService", () => {
     expect(upstreamCalls).toBe(1);
     store.close();
   });
+
+  test("records duration for the final successful upstream attempt only, excluding failed retry time", async () => {
+    let upstreamCalls = 0;
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/oauth/token")) {
+        await Bun.sleep(40);
+        return Response.json({ access_token: "fresh", refresh_token: "refresh-2", expires_in: 3600 });
+      }
+      upstreamCalls++;
+      if (upstreamCalls === 1) {
+        await Bun.sleep(60);
+        return new Response('{"error":{"message":"expired"}}', { status: 401 });
+      }
+      await Bun.sleep(25);
+      return Response.json({
+        id: "cmp_ok",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 20,
+          output_tokens_details: { reasoning_tokens: 10 },
+          total_tokens: 30,
+        },
+      });
+    }) as unknown as typeof fetch;
+    const manager = await makeManager(fakeFetch);
+    const store = new SessionBindingStore(":memory:");
+    const service = new CodexProxyService({ manager, store, fetchImpl: fakeFetch, maxAttempts: 2 });
+
+    const response = await service.compact({
+      body: { model: "gpt-5-codex", input: [] },
+      model: "gpt-5-codex",
+      identity,
+      requestId: "retry-timing-1",
+      requestStartedAt: Date.now() - 200,
+    });
+    expect(response.status).toBe(200);
+    const usage = store.listRequestTokenUsage({ sessionKey: identity.key }).records[0];
+    expect(usage.durationMs).not.toBeNull();
+    expect(usage.durationMs!).toBeGreaterThanOrEqual(20);
+    expect(usage.durationMs!).toBeLessThan(90);
+    store.close();
+  });
 });

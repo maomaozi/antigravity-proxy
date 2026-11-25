@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { getAccountModelPool } from "../models";
 import { readDurableJson, writeDurableJson } from "../utils/durable-json";
 import { type AntigravityAccount } from "./types";
 
@@ -39,38 +40,27 @@ function decodeState(value: unknown): { accounts: RuntimeAccount[] } {
 }
 
 export function migrateAccountTosSuspension(account: AntigravityAccount): AntigravityAccount {
-  if (account.suspension?.reason === "tos_violation") {
-    // Legacy TOS detections used disabled=true; keep Antigravity service isolated
-    // without marking the entire Google account as manually disabled across products.
-    if (account.disabled === true) {
-      account.disabled = false;
-    }
-    account.suspension = {
-      service: "antigravity",
-      status: account.suspension.status === "pending_verification" ? "pending_verification" : "suspended",
-      reason: "tos_violation",
-      ...(account.suspension.message ? { message: account.suspension.message } : {}),
-      ...(account.suspension.appealUrl ? { appealUrl: account.suspension.appealUrl } : {}),
-      detectedAt: account.suspension.detectedAt || Date.now(),
-      ...(account.suspension.model ? { model: account.suspension.model } : {}),
-    };
+  const legacy = account.suspension;
+  if (legacy?.reason !== "tos_violation") return account;
+  // Older releases used disabled=true for TOS before recording the service explicitly.
+  if (!legacy.service && account.disabled) account.disabled = false;
+  const status = legacy.status === "pending_verification" ? "pending_verification" : "suspended";
+  const detectedAt = legacy.detectedAt || Date.now();
+  if (!legacy.model) {
+    account.suspension = { ...legacy, service: "antigravity", status, detectedAt };
+    return account;
   }
 
-  const tosPoolEntries = Object.values(account.poolSuspensions || {}).filter(
-    entry => entry && entry.reason === "tos_violation",
-  );
-  if (tosPoolEntries.length > 0 && account.suspension?.reason !== "tos_violation") {
-    const primary = tosPoolEntries[0]!;
-    account.suspension = {
-      service: "antigravity",
-      status: "suspended",
-      reason: "tos_violation",
-      ...(primary.message ? { message: primary.message } : {}),
-      ...(primary.appealUrl ? { appealUrl: primary.appealUrl } : {}),
-      detectedAt: primary.detectedAt || Date.now(),
-      ...(primary.model ? { model: primary.model } : {}),
-    };
-  }
+  const pools = account.poolSuspensions ||= {};
+  const pool = Object.keys(pools).find(key => pools[key]?.reason === "tos_violation" && pools[key]?.model === legacy.model)
+    ?? getAccountModelPool(account, legacy.model);
+  const previous = pools[pool]?.reason === "tos_violation" ? pools[pool] : undefined;
+  pools[pool] = {
+    reason: legacy.reason, message: legacy.message, appealUrl: legacy.appealUrl,
+    detectedAt, model: legacy.model, ...previous, status,
+    retryAt: Number.MAX_SAFE_INTEGER, permanent: true,
+  };
+  delete account.suspension;
   return account;
 }
 

@@ -72,6 +72,7 @@ function failureMessage(response: any): string {
 export async function aggregateCodexResponsesSSE(
   response: Response,
   onTiming?: (timing: CodexStreamTiming) => void,
+  startedAt?: number,
 ): Promise<any> {
   const reader = response.body?.getReader();
   if (!reader) throw new CodexSSEAggregationError("Codex upstream response body is empty");
@@ -80,6 +81,9 @@ export async function aggregateCodexResponsesSSE(
   let terminalResponse: any | undefined;
   let terminalType: string | undefined;
   let firstTokenAt: number | null = null;
+  const attemptStartedAt = typeof startedAt === "number" && Number.isFinite(startedAt)
+    ? startedAt
+    : Date.now();
 
   const consume = (events: ParsedSSEEvent[]): boolean => {
     for (const event of events) {
@@ -105,8 +109,8 @@ export async function aggregateCodexResponsesSSE(
             onTiming?.({
               firstTokenAt,
               completedAt: now,
-              generationDurationMs: firstTokenAt !== null && now > firstTokenAt
-                ? now - firstTokenAt
+              generationDurationMs: now > attemptStartedAt
+                ? now - attemptStartedAt
                 : null,
             });
           }
@@ -145,8 +149,9 @@ export async function aggregateCodexResponsesSSE(
 export function passthroughCodexSSE(
   source: ReadableStream<Uint8Array>,
   onUsage: (usage: CodexNormalizedUsage, timing: CodexStreamTiming) => void,
+  startedAt?: number,
 ): ReadableStream<Uint8Array> {
-  const collector = new CodexSSEUsageCollector(onUsage);
+  const collector = new CodexSSEUsageCollector(onUsage, startedAt);
   return source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       collector.push(chunk);

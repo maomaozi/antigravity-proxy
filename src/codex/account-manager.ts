@@ -10,6 +10,7 @@ const CODEX_USAGE_TIMEOUT_MS = 30_000;
 export interface CodexAccount extends CodexCredentials {
   lastUsed: number;
   cooldownUntil: number;
+  disabled?: boolean;
 }
 
 
@@ -93,6 +94,7 @@ export interface CodexPublicAccount {
   expiresAt: number;
   lastUsed: number;
   cooldownUntil: number;
+  disabled: boolean;
   available: boolean;
 }
 
@@ -163,8 +165,18 @@ export class CodexAccountManager {
       expiresAt: account.expiresAt,
       lastUsed: account.lastUsed,
       cooldownUntil: account.cooldownUntil,
-      available: account.cooldownUntil <= now && !this.isQuotaBlocked(account.email, now),
+      disabled: Boolean(account.disabled),
+      available: !account.disabled && account.cooldownUntil <= now && !this.isQuotaBlocked(account.email, now),
     }));
+  }
+
+  async setDisabled(email: string, disabled: boolean): Promise<boolean> {
+    const account = this.accounts.find(item => item.email === email);
+    if (!account) return false;
+    if (disabled) account.disabled = true;
+    else delete account.disabled;
+    await this.persist();
+    return true;
   }
 
   async upsertCredentials(credentials: CodexCredentials): Promise<CodexAccount> {
@@ -175,6 +187,7 @@ export class CodexAccountManager {
       ...credentials,
       lastUsed: previous?.lastUsed || 0,
       cooldownUntil: previous?.cooldownUntil || 0,
+      ...(previous?.disabled ? { disabled: true } : {}),
     };
     if (index >= 0) this.accounts[index] = account;
     else this.accounts.push(account);
@@ -260,7 +273,7 @@ export class CodexAccountManager {
   } = {}): Promise<CodexAccount | null> {
     const excluded = new Set(options.excludeEmails || []);
     const now = this.now();
-    const candidates = this.accounts.filter(account => !excluded.has(account.email) && account.cooldownUntil <= now && !this.isQuotaBlocked(account.email, now));
+    const candidates = this.accounts.filter(account => !account.disabled && !excluded.has(account.email) && account.cooldownUntil <= now && !this.isQuotaBlocked(account.email, now));
     if (!candidates.length) return null;
 
     const preferred = options.preferredEmail ? candidates.find(account => account.email === options.preferredEmail) : undefined;

@@ -1,6 +1,6 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
-import { createOpenAIStreamTransformer, normalizeUpstreamTokenUsage, transformToGoogleBody, transformGoogleEventToOpenAI, validateOpenAIRequestForGoogle } from "../../src/utils/transform";
+import { createCompletionStreamTransformer, createOpenAIStreamTransformer, normalizeUpstreamTokenUsage, transformToGoogleBody, transformGoogleEventToOpenAI, validateOpenAIRequestForGoogle } from "../../src/utils/transform";
 import { getProxyConfig, loadProxyConfig } from "../../src/config/manager";
 import { getSignature } from "../../src/utils/cache";
 
@@ -791,5 +791,64 @@ describe("Unit Tests: Google request validation", () => {
         { role: "tool", tool_call_id: "call_bad", content: "x" }
       ]
     })).toContain("invalid JSON");
+  });
+});
+
+describe("Unit Tests: createCompletionStreamTransformer timing", () => {
+  test("measures generationDurationMs from attempt start so buffered reasoning/tool-call bursts do not inflate speed", async () => {
+    const encoder = new TextEncoder();
+    const attemptStartedAt = Date.now() - 1200;
+    const observed: Array<{ outputTokens: number; reasoningTokens: number; generationDurationMs: number | null; firstTokenAt: number | null }> = [];
+
+    const source = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        // Simulate model thinking server-side for >1s, then flushing tool call + STOP within 5ms
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({
+            response: {
+              candidates: [{ content: { role: "model", parts: [{ functionCall: { name: "read_file", args: { path: "a.ts" } } }] } }],
+              usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 41, thoughtsTokenCount: 1594, totalTokenCount: 2635 },
+            },
+          })}\n\n`,
+        ));
+        await Bun.sleep(5);
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({
+            response: {
+              candidates: [{ finishReason: "STOP", content: { role: "model", parts: [{ text: "", thoughtSignature: "sig_1" }] } }],
+              usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 41, thoughtsTokenCount: 1594, totalTokenCount: 2635 },
+            },
+          })}\n\n`,
+        ));
+        controller.close();
+      },
+    });
+
+    const transformed = source.pipeThrough(createCompletionStreamTransformer(
+      "antigravity-gemini-4-hydrogen-sonar",
+      "req-timing-1",
+      false,
+      undefined,
+      (usage, timing) => {
+        observed.push({
+          outputTokens: usage.outputTokens,
+          reasoningTokens: usage.reasoningTokens,
+          generationDurationMs: timing.generationDurationMs,
+          firstTokenAt: timing.firstTokenAt,
+        });
+      },
+      attemptStartedAt,
+    ));
+
+    const reader = transformed.getReader();
+    while (!(await reader.read()).done) {}
+
+    expect(observed).toHaveLength(2);
+    const final = observed.at(-1)!;
+    expect(final.firstTokenAt).toBeGreaterThan(attemptStartedAt);
+    expect(final.generationDurationMs).not.toBeNull();
+    expect(final.generationDurationMs!).toBeGreaterThanOrEqual(1150);
+    const tps = (final.outputTokens + final.reasoningTokens) * 1000 / final.generationDurationMs!;
+    expect(tps).toBeLessThan(2000);
   });
 });

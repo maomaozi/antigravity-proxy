@@ -16,6 +16,7 @@ import {
   completeAccountTosRecovery,
   getAccounts,
   getBestAccount,
+  suspendAccountPool,
   verifyAndRecoverTosAccount,
 } from "../../src/auth/manager";
 import { GoogleAccountStorage } from "../../src/auth/storage";
@@ -23,7 +24,7 @@ import * as storage from "../../src/auth/storage";
 import type { AntigravityAccount } from "../../src/auth/types";
 import { getProxyConfig, loadProxyConfig } from "../../src/config/manager";
 import { collectCompletionStream } from "../../src/core/completion";
-import { getAvailableModelCatalog, isAccountTosSuspended } from "../../src/models";
+import { getAvailableModelCatalog, isAccountPoolSuspended } from "../../src/models";
 import { resolveSessionIdentity } from "../../src/session/identity";
 import {
   deleteSessionBindingsForAccount,
@@ -437,7 +438,7 @@ describe("codex -> antigravity request protection", () => {
     expect(calls).toEqual(["Bearer access-a", "Bearer refreshed-a"]);
   });
 
-  test("TOS isolation persists across restarts, skips background jobs, isolates only A, and recovers only after verified probe", async () => {
+  test("TOS isolation persists by pool and verified recovery clears only that pool", async () => {
     const dir = await mkdtemp(join(tmpdir(), "tos-persist-"));
     tempDirs.push(dir);
     const accountsPath = join(dir, "accounts.json");
@@ -478,7 +479,7 @@ describe("codex -> antigravity request protection", () => {
     }
 
     const a = getAccounts()[0]!;
-    expect(isAccountTosSuspended(a)).toBe(true);
+    expect(isAccountPoolSuspended(a, model)).toBe(true);
     expect(a.disabled).not.toBe(true);
     expect(getSessionRoutingGuard(identityA.key, model)?.status).toBe("terminated_tos");
 
@@ -486,16 +487,21 @@ describe("codex -> antigravity request protection", () => {
     const fileStorage = new GoogleAccountStorage(accountsPath);
     await fileStorage.save({ accounts: [a] });
     const reloaded = await new GoogleAccountStorage(accountsPath).load();
-    expect(isAccountTosSuspended(reloaded.accounts[0]!)).toBe(true);
-    expect(reloaded.accounts[0]!.suspension?.status).toBe("suspended");
+    expect(isAccountPoolSuspended(reloaded.accounts[0]!, model)).toBe(true);
+    expect(reloaded.accounts[0]!.poolSuspensions?.["Gemini Models"]?.status).toBe("suspended");
 
-    // 3. Background discovery / quota / activation all skip A.
-    expect(getAvailableModelCatalog([a]).some(m => m.id === "antigravity-gemini-3.8-flash")).toBe(true);
-    a.availableModels = [{ id: "gemini-4-custom-high", name: "Gemini 4 Custom" }];
-    expect(getAvailableModelCatalog([a]).some(m => m.id.includes("custom"))).toBe(false);
+    // 3. Quota collection can still contact the account. Activation skips the blocked pool.
+    const quotaRequests: string[] = [];
+    const quotaFetch = (async (url: Parameters<typeof fetch>[0]) => {
+      quotaRequests.push(String(url));
+      return new Response(null, { status: 500 });
+    }) as typeof fetch;
+    await fetchQuota(a, true, quotaFetch);
+    await fetchQuotaWindows(a, quotaFetch);
+    expect(quotaRequests).toHaveLength(2);
+    a.availableModels!.push({ id: "gemini-4-custom-high", name: "Gemini 4 Custom" });
+    expect(getAvailableModelCatalog([a]).some(m => m.id.includes("custom"))).toBe(true);
     expect(getGoogleActivationTargets(a)).toEqual([]);
-    expect(await fetchQuota(a)).toBeNull();
-    expect(await fetchQuotaWindows(a)).toBeNull();
     const activationSummary = await runQuotaWindowActivationCheck({
       refreshGoogleQuotas: async () => {},
       listGoogleAccounts: () => [a],
@@ -519,10 +525,11 @@ describe("codex -> antigravity request protection", () => {
     }
 
     // 5. Controlled manual recovery keeps isolation if verification fails, clears only if verification succeeds.
-    expect(await beginAccountTosRecovery(a.email)).toBe(true);
+    await suspendAccountPool(a.email, "claude-sonnet-4-6", { reason: "tos_violation" });
+    expect(await beginAccountTosRecovery(a.email, model)).toBe(true);
     expect(await getBestAccount("sandbox", model)).not.toEqual(expect.objectContaining({ email: a.email }));
     expect(await completeAccountTosRecovery(a.email, false)).toBe(false);
-    expect(isAccountTosSuspended(a)).toBe(true);
+    expect(isAccountPoolSuspended(a, model)).toBe(true);
 
     fetchSpy.mockRestore();
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -531,8 +538,9 @@ describe("codex -> antigravity request protection", () => {
         { headers: { "Content-Type": "text/event-stream" } },
       ),
     );
-    expect(await verifyAndRecoverTosAccount(a.email)).toBe(true);
-    expect(isAccountTosSuspended(a)).toBe(false);
+    expect(await verifyAndRecoverTosAccount(a.email, { model })).toBe(true);
+    expect(isAccountPoolSuspended(a, model)).toBe(false);
+    expect(isAccountPoolSuspended(a, "claude-sonnet-4-6")).toBe(true);
     expect(getSessionRoutingGuard(identityA.key, model)).toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import { findAccountModel } from "../models";
+import { findAccountModel, isAccountPoolSuspended } from "../models";
 import { ANTIGRAVITY_STREAM_URL } from "./endpoints";
 import {
   emitAccountFlash,
@@ -12,6 +12,7 @@ import {
   getFamilyName,
   markCooldown,
   prepareAccountForRequest,
+  quotaRoutingModel,
   suspendAccountPool,
   clearAccountPoolSuspension,
   updateAccountUsage,
@@ -417,6 +418,7 @@ async function executeCompletionInternal({
 
   const sessionId = sessionIdentity.key;
   const routingKey = sessionIdentity.source === "thread-id" ? sessionIdentity.id : undefined;
+  const routingModel = quotaRoutingModel(request.model, request.reasoningEffort) || request.model;
   const existingBinding = getSessionBinding(sessionScopeKey, request.model) || getSessionBinding(sessionIdentity.key, request.model);
   const googleUrl = ANTIGRAVITY_STREAM_URL;
   console.log(
@@ -482,6 +484,14 @@ async function executeCompletionInternal({
         releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
         isPost429Probe = false;
         return buildProtected429Error(request.model, guard, localAttempts, attemptLogs);
+      }
+
+      if (isAccountPoolSuspended(account, routingModel)) {
+        if (isPost429Probe && guard) {
+          releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
+          return buildProtected429Error(request.model, guard, localAttempts, attemptLogs);
+        }
+        continue;
       }
 
       // Enforce max 2 accounts per logical request.
@@ -644,6 +654,7 @@ async function executeCompletionInternal({
           await new Promise(resolve => setTimeout(resolve, jitterMs));
         }
 
+        const attemptStartedAt = Date.now();
         const googleRes = await fetch(googleUrl, {
           method: "POST",
           headers,
@@ -696,7 +707,7 @@ async function executeCompletionInternal({
                 reason: parsedError.reason,
                 message: parsedError.message,
                 appealUrl: parsedError.appealUrl,
-              });
+              }, routingModel);
               const terminatedGuard = upsertSessionRoutingGuard({
                 sessionScopeKey,
                 digestScopeKey,
@@ -715,7 +726,7 @@ async function executeCompletionInternal({
                 accountsTouched,
               });
               isPost429Probe = false;
-              console.warn(`[Auth] Isolated Antigravity service for ${account.email} (${parsedError.reason}); stopping rotation for session.`);
+              console.warn(`[Auth] Isolated the model pool for ${account.email}/${request.model} (${parsedError.reason}); stopping rotation for session.`);
               return buildTerminatedTosError(request.model, terminatedGuard, localAttempts, attemptLogs);
             }
             if (parsedError.isChallengeRequired) {
@@ -946,7 +957,7 @@ async function executeCompletionInternal({
           throw new Error("No response body");
         }
 
-        await clearAccountPoolSuspension(account.email, googleBody.model);
+        await clearAccountPoolSuspension(account.email, routingModel);
 
         streamTimer = setTimeout(() => {
           isStreamTimedOut = true;
@@ -988,6 +999,7 @@ async function executeCompletionInternal({
               false,
               sessionId,
               persistStreamUsage,
+              attemptStartedAt,
             ));
 
           upsertSessionRoutingGuard({
@@ -1036,6 +1048,7 @@ async function executeCompletionInternal({
               finalGenerationDurationMs = timing.generationDurationMs;
             }
           },
+          attemptStartedAt,
         ));
         let result: CompletionResult;
         try {

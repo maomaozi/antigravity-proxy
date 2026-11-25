@@ -1009,7 +1009,17 @@ export class SessionBindingStore {
     }
   }
 
-  clearTerminatedTosGuardsForAccount(email: string): number {
+  clearTerminatedTosGuardsForAccount(email: string, matchesModel?: (model: string) => boolean): number {
+    if (matchesModel) {
+      const models = this.db.query<{ model: string }, [string]>(
+        "SELECT DISTINCT model FROM session_routing_guards WHERE account_email = ? AND status = 'terminated_tos'",
+      ).all(email);
+      const remove = this.db.query(
+        "DELETE FROM session_routing_guards WHERE account_email = ? AND status = 'terminated_tos' AND model = ?",
+      );
+      return this.db.transaction(() => models.filter(({ model }) => matchesModel(model))
+        .reduce((removed, { model }) => removed + remove.run(email, model).changes, 0))();
+    }
     return this.db.query(
       "DELETE FROM session_routing_guards WHERE account_email = ? AND status = 'terminated_tos'",
     ).run(email).changes;
@@ -1144,6 +1154,6 @@ export function deleteSessionRoutingGuard(
   initSessionBindingStore().deleteRoutingGuard(sessionScopeKey, digestScopeKey, model);
 }
 
-export function clearTerminatedTosGuardsForAccount(email: string): number {
-  return initSessionBindingStore().clearTerminatedTosGuardsForAccount(email);
+export function clearTerminatedTosGuardsForAccount(email: string, matchesModel?: (model: string) => boolean): number {
+  return initSessionBindingStore().clearTerminatedTosGuardsForAccount(email, matchesModel);
 }

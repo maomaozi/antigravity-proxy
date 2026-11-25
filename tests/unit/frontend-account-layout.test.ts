@@ -268,7 +268,8 @@ describe("dashboard account provider layout", () => {
     const html = createCodexQuotaHarness().renderGoogle([{
       email:'pool@example.com', healthScore:100,
       quota:[{groupName:'Gemini 3.8 Flash',remainingFraction:1},{groupName:'Claude Sonnet 4.6',remainingFraction:1}],
-      poolSuspensions:{'Claude and GPT models':{reason:'tos_violation',message:'<service disabled>',retryAt:Date.now()+600000,appealUrl:'javascript:alert(1)'}},
+      routingPools:{'Claude Sonnet 4.6':'Claude and GPT models'},
+      poolSuspensions:{'Claude and GPT models':{reason:'tos_violation',message:'<service disabled>',retryAt:0,appealUrl:'javascript:alert(1)'}},
     }]);
     expect(html).toContain('1 POOL(S) SUSPENDED');
     expect(html).toContain('Status: SUSPENDED');
@@ -442,7 +443,7 @@ describe("dashboard account provider layout", () => {
     expect(header).toContain("Refresh usage");
     expect(main).not.toContain('id="usage-refresh-button"');
     expect(app).toContain("refreshUsageDisplay");
-    expect(app).toContain("fetch('/api/status', { cache: 'no-store' })");
+    expect(app).toContain("fetch('/api/status', { cache: 'no-store'");
     expect(app).toContain("await loadCodexUsage(true)");
   });
 
@@ -594,6 +595,41 @@ describe("dashboard account provider layout", () => {
     expect(app).toContain("flex flex-col self-start");
     expect(app.includes("min-w-0 min-h-[3rem] shrink-0")).toBe(true);
     expect(app).not.toContain("flex flex-col h-full");
+  });
+
+  test("renders per-pool disable controls and status without affecting other pools", () => {
+    const accounts = [{
+      email: "pool-toggle@example.com",
+      refreshToken: "rt",
+      healthScore: 100,
+      disabledPools: ["Gemini Models"],
+      quota: [
+        { modelId: "gemini-3.8-flash-high", groupName: "Gemini 3.8 Flash", remainingFraction: 1 },
+        { modelId: "claude-sonnet-4-6-thinking", groupName: "Claude Sonnet 4.6", remainingFraction: 1 },
+      ],
+      quotaWindows: [
+        { groupName: "Gemini Models", window: "5h", remainingFraction: 1 },
+        { groupName: "Claude and GPT models", window: "5h", remainingFraction: 1 },
+      ],
+    }];
+    const harness = createCodexQuotaHarness();
+    const stats = harness.families(accounts);
+    const gemini = stats.find((s: any) => s.name === "Gemini Models");
+    const claude = stats.find((s: any) => s.name === "Claude and GPT models");
+    expect(gemini).toMatchObject({ healthy: 0, disabledCount: 1 });
+    expect(claude).toMatchObject({ healthy: 1, disabledCount: 0 });
+
+    const poolsHtml = harness.renderPools(accounts);
+    expect(poolsHtml).toContain("1 DISABLED");
+
+    const googleHtml = harness.renderGoogle(accounts);
+    expect(googleHtml).toContain("1 POOL(S) DISABLED");
+    expect(googleHtml).toContain("Status: DISABLED");
+    expect(googleHtml).toContain("Status: OK");
+    expect(googleHtml).toContain("setGoogleAccountPoolDisabled");
+    expect(app).toContain("setCodexAccountDisabled");
+    expect(server).toContain('"/pools/disabled"');
+    expect(server).toContain('"/api/codex/accounts/"');
   });
 
 });

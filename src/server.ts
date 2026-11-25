@@ -6,7 +6,7 @@ await loadProxyConfig();
 const pkg = await Bun.file("package.json").json();
 const APP_VERSION = pkg.version || "0.0.0";
 
-import { initManager, addAccount, getAccounts, removeAccount, saveAccounts, eventBus, markCooldown, getCooldowns, resetAccount, updateAccountProject, resetAllCooldowns, setAccountDisabled, verifyAndRecoverTosAccount } from "./auth/manager";
+import { initManager, addAccount, getAccounts, removeAccount, saveAccounts, eventBus, markCooldown, getCooldowns, resetAccount, updateAccountProject, resetAllCooldowns, setAccountDisabled, setAccountPoolDisabled, verifyAndRecoverTosAccount } from "./auth/manager";
 import { type AntigravityAccount } from "./auth/types";
 import { generateAuthUrl, exchangeCode, getUserEmail, getProjectId } from "./auth/oauth";
 import { validateCompletionRequestForGoogle } from "./utils/transform";
@@ -17,7 +17,7 @@ import { executeCompletion } from "./api/completion-executor";
 import { OAUTH_CONFIG } from "./utils/headers";
 import { refreshAllQuotas, fetchQuota } from "./api/quota";
 import { createWindowActivationRuntime, startQuotaWindowActivationScheduler } from "./api/window-activation";
-import { ANTIGRAVITY_MODEL_CATALOG, getAvailableModelCatalog } from "./models";
+import { ANTIGRAVITY_MODEL_CATALOG, getAccountModelPool, getAvailableModelCatalog } from "./models";
 import { resolveCodexAffinityIdentity, resolveSessionIdentity } from "./session/identity";
 import { clearRequestTokenUsage, clearSessionBindings, deleteSessionBinding, initSessionBindingStore, listRequestTokenUsage, listSessionBindings } from "./session/store";
 import { CodexAccountManager } from "./codex/account-manager";
@@ -33,6 +33,13 @@ function getCodexModelIds() {
 
 function getSupportedModelIds() {
   return [...getAvailableModelCatalog(getAccounts()).map(model => model.id), ...getCodexModelIds()];
+}
+
+function getDashboardGoogleAccounts() {
+  return getAccounts().map(account => {
+    const models = new Set((account.quota || []).flatMap(quota => quota.modelIds?.length ? quota.modelIds : [quota.modelId || quota.groupName]));
+    return { ...account, routingPools: Object.fromEntries([...models].map(model => [model, getAccountModelPool(account, model)])) };
+  });
 }
 
 const logBuffer: string[] = [];
@@ -369,18 +376,12 @@ Bun.serve({
                     }
                 };
 
-                pingTimer = setInterval(() => {
-                    try {
-                        controller.enqueue(encoder.encode(": ping\n\n"));
-                    } catch (e) {
-                        cleanup();
-                    }
-                }, 15000);
+                pingTimer = setInterval(() => send("ping", null), 15_000);
 
                 send("init", {
                     version: APP_VERSION,
                     display: getProxyConfig().display,
-                    accounts: getAccounts(),
+                    accounts: getDashboardGoogleAccounts(),
                     supportedModels: getSupportedModelIds(),
                     antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) },
                     codexModels: getCodexModelIds(),
@@ -388,7 +389,7 @@ Bun.serve({
                     logs: logBuffer
                 });
 
-                onUpdate = (data: any) => send("update", { ...data, display: getProxyConfig().display, antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) }, supportedModels: getSupportedModelIds(), codexModels: getCodexModelIds() });
+                onUpdate = (data: any) => send("update", { ...data, accounts: getDashboardGoogleAccounts(), display: getProxyConfig().display, antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) }, supportedModels: getSupportedModelIds(), codexModels: getCodexModelIds() });
                 onFlash = (data: { email: string, status: 'success' | 'error' }) => send("flash", data);
                 onLog = (msg: string) => send("log", { message: msg });
                 onCooldown = (data: any) => send("cooldown", data);
@@ -408,7 +409,8 @@ Bun.serve({
         return new Response(stream, {
             headers: {
                 "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
                 "Connection": "keep-alive",
                 ...CORS_HEADERS,
             }
@@ -477,6 +479,15 @@ Bun.serve({
         return json({ accounts, generatedAt: Date.now() }, 200, { "Cache-Control": "no-store" });
     }
 
+    if (cleanPath.startsWith("/api/codex/accounts/") && cleanPath.endsWith("/disabled") && req.method === "POST") {
+        const email = decodeURIComponent(cleanPath.slice("/api/codex/accounts/".length, -"/disabled".length));
+        let body: any;
+        try { body = await req.json(); } catch { return jsonError("Invalid JSON body", 400); }
+        if (typeof body?.disabled !== "boolean") return jsonError("disabled must be a boolean", 400);
+        if (!email || !await codexAccountManager.setDisabled(email, body.disabled)) return jsonError("Account not found", 404);
+        return json({ email, disabled: body.disabled });
+    }
+
     if (cleanPath.startsWith("/api/codex/accounts/") && req.method === "DELETE") {
         const email = decodeURIComponent(cleanPath.slice("/api/codex/accounts/".length));
         const removed = email ? await codexAccountManager.remove(email) : false;
@@ -508,12 +519,13 @@ Bun.serve({
         return json({
             version: APP_VERSION,
             display: getProxyConfig().display,
-            accounts: getAccounts(),
+            accounts: getDashboardGoogleAccounts(),
+            cooldowns: getCooldowns(),
             codexAccounts: codexAccountManager.listPublic(),
             supportedModels: getSupportedModelIds(),
             antigravity: { ...ANTIGRAVITY_MODEL_CATALOG, chatModels: getAvailableModelCatalog(getAccounts()) },
             codexModels: getCodexModelIds()
-        });
+        }, 200, { "Cache-Control": "no-store" });
     }
 
     if (cleanPath === "/api/model-display" && req.method === "GET") {
@@ -561,6 +573,17 @@ Bun.serve({
             return new Response("OK", { status: 200, headers: CORS_HEADERS });
         }
         return new Response("Bad Request", { status: 400, headers: CORS_HEADERS });
+    }
+
+    if (cleanPath.startsWith("/api/accounts/") && cleanPath.endsWith("/pools/disabled") && req.method === "POST") {
+        const email = decodeURIComponent(cleanPath.split("/")[3] || "");
+        let body: any;
+        try { body = await req.json(); } catch { return jsonError("Invalid JSON body", 400); }
+        if (typeof body?.pool !== "string" || !body.pool.trim()) return jsonError("pool must be a non-empty string", 400);
+        if (typeof body?.disabled !== "boolean") return jsonError("disabled must be a boolean", 400);
+        if (!email || !await setAccountPoolDisabled(email, body.pool, body.disabled)) return jsonError("Account not found", 404);
+        const updated = getAccounts().find(candidate => candidate.email === email);
+        return json({ email, pool: body.pool.trim(), disabled: body.disabled, disabledPools: updated?.disabledPools || [] });
     }
 
     if (cleanPath.startsWith("/api/accounts/") && cleanPath.endsWith("/disabled") && req.method === "POST") {

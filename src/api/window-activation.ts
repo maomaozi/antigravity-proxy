@@ -18,6 +18,7 @@ import type {
 import { getProxyConfig } from "../config/manager";
 import { getAntigravityNativeHeaders } from "../utils/headers";
 import { parseGoogleError } from "../utils/errors";
+import { ANTIGRAVITY_GENERIC_IDENTITY } from "../utils/prompt-identity";
 import { fetchQuota, fetchQuotaWindows, refreshAllQuotas } from "./quota";
 import { ANTIGRAVITY_STREAM_URL } from "./endpoints";
 
@@ -62,11 +63,13 @@ export function getGoogleActivationTargets(account: AntigravityAccount): GoogleA
   if (account.disabled || account.challenge || !account.refreshToken || isAccountTosSuspended(account)) return [];
   const targets = new Map<string, GoogleActivationTarget>();
   const active = new Set<string>();
+  const canActivate = (id: string) => !/image/i.test(id) && accountSupportsModel(account, id)
+    && !isAccountPoolSuspended(account, id);
   for (const quota of account.quota || []) {
     const model = (quota.modelIds || (quota.modelId ? [quota.modelId] : []))
-      .find(id => !/image/i.test(id) && accountSupportsModel(account, id))
-      || (!account.availableModels && !quota.modelId && /gemini/i.test(quota.groupName) ? "gemini-3.8-flash-tiered" : undefined);
-    if (!model || isAccountPoolSuspended(account, model)) continue;
+      .find(canActivate)
+      || (!account.availableModels && !quota.modelId && /gemini/i.test(quota.groupName) && canActivate("gemini-3.8-flash-tiered") ? "gemini-3.8-flash-tiered" : undefined);
+    if (!model) continue;
     const windows = getAccountQuotaWindows(account, model);
     const key = windows[0]?.groupName || quota.limitName;
     if (quota.remainingFraction < 1) active.add(key);
@@ -108,9 +111,9 @@ export function isCodexFiveHourWindowInactive(usage: CodexUsage | null): boolean
   });
 }
 
-function googleActivationBody(account: AntigravityAccount, model: string): Record<string, unknown> {
+export function googleActivationBody(account: AntigravityAccount, model: string): Record<string, unknown> {
   return transformCompletionToGoogleBody({
-    model, messages: [{ role: "user", content: "." }], stream: false,
+    model, messages: [{ role: "system", content: `${ANTIGRAVITY_GENERIC_IDENTITY} ` }, { role: "user", content: "." }], stream: false,
     maxOutputTokens: 2048, thinkingBudget: 1024,
   }, account.projectId!, "", randomUUID(), false, findAccountModel(account, model));
 }
@@ -123,7 +126,7 @@ export async function activateGoogleModelWindow(
   if (!accountSupportsModel(account, model) || account.disabled || account.challenge || isAccountTosSuspended(account) || isAccountPoolSuspended(account, model)) return false;
   const send = async (forceRefresh: boolean): Promise<Response | null> => {
     const ready = await prepareAccountForRequest(account.email, forceRefresh);
-    if (!ready?.accessToken || !ready.projectId) return null;
+    if (!ready?.accessToken || !ready.projectId || ready.challenge || isAccountPoolSuspended(ready, model)) return null;
     return fetchImpl(ANTIGRAVITY_STREAM_URL, {
       method: "POST",
       headers: getAntigravityNativeHeaders(ready.accessToken),
@@ -266,7 +269,8 @@ export async function runQuotaWindowActivationCheck(
     const recoveryModels = new Set<string>();
     for (const suspension of Object.values(account.poolSuspensions || {})) {
       // TOS violations are persistently isolated and never auto-recover after 10 minutes.
-      if (suspension.reason === "tos_violation" || suspension.permanent || suspension.retryAt > Date.now() || /image/i.test(suspension.model)) continue;
+      if (suspension.reason === "tos_violation" || suspension.permanent || suspension.retryAt > Date.now()
+        || /image/i.test(suspension.model)) continue;
       recoveryModels.add(suspension.model);
       try {
         await runtime.activateGoogle(account, suspension.model);
