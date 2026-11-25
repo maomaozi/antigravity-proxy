@@ -295,6 +295,63 @@ describe("codex -> antigravity request protection", () => {
     expect(getSessionRoutingGuard(identity.key, model)?.status).toBe("pinned");
   });
 
+  test("429 protection expires one hour after the first 429 even when a probe is rate limited again", async () => {
+    const [firstAccount, secondAccount, thirdAccount] = getAccounts();
+    secondAccount!.disabled = true;
+    thirdAccount!.disabled = true;
+    const identity = resolveSessionIdentity(new Headers({ "x-session-id": "hourly-429-expiry" }), {});
+    const request = { model, messages: [{ role: "user" as const, content: "hello" }], stream: false };
+    const calls: string[] = [];
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (_url: any, init?: RequestInit) => {
+      calls.push(new Headers(init?.headers).get("Authorization") || "");
+      if (calls.length <= 2) {
+        return Response.json({ error: {
+          code: 429,
+          status: "RESOURCE_EXHAUSTED",
+          message: "Rate limit exceeded.",
+          details: [{ reason: "RATE_LIMIT_EXCEEDED", retryDelay: calls.length === 1 ? "60s" : "7200s" }],
+        } }, { status: 429 });
+      }
+      return new Response(
+        `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "Recovered" }] }, finishReason: "STOP" }] })}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }) as unknown as typeof fetch);
+
+    const startedAt = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(startedAt);
+    const execute = (requestId: string) => executeCompletion({
+      request, sessionIdentity: identity, requestId, requestStartedAt: Date.now(),
+    });
+    try {
+      expect((await execute("hourly-first")).kind).toBe("error");
+      const expiresAt = startedAt + 3_600_000;
+      expect(getSessionRoutingGuard(identity.key, model)?.protectionExpiresAt).toBe(expiresAt);
+
+      clock.mockReturnValue(startedAt + 60_000);
+      firstAccount!.quotaUpdatedAt = firstAccount!.quotaWindowsUpdatedAt = Date.now();
+      const retried = await execute("hourly-probe");
+      expect(retried.kind).toBe("error");
+      if (retried.kind !== "error") throw new Error("Expected a protected 429 after the probe");
+      expect(retried.response.headers.get("Retry-After")).toBe("3540");
+      expect(getSessionRoutingGuard(identity.key, model)?.protectionExpiresAt).toBe(expiresAt);
+
+      firstAccount!.disabled = true;
+      secondAccount!.disabled = false;
+      secondAccount!.expiresAt = expiresAt + 3_600_000;
+      clock.mockReturnValue(expiresAt - 1);
+      expect((await execute("hourly-before")).kind).toBe("error");
+      expect(calls).toEqual(["Bearer access-a", "Bearer access-a"]);
+
+      clock.mockReturnValue(expiresAt);
+      expect(getSessionRoutingGuard(identity.key, model)).toBeNull();
+      expect((await execute("hourly-expired")).kind).toBe("result");
+      expect(calls).toEqual(["Bearer access-a", "Bearer access-a", "Bearer access-b"]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test("stale/conflicting quota triggers single-flight refresh and does not mis-rotate when incomplete or conflicting", async () => {
     const a = getAccounts()[0]!;
     a.quotaUpdatedAt = Date.now() - 120_000; // stale (>60s)

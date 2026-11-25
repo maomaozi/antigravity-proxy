@@ -113,6 +113,7 @@ export interface RequestTokenUsageSummary {
 }
 
 export type SessionRoutingGuardStatus = "pinned" | "protected_429" | "terminated_tos";
+const ROUTING_429_PROTECTION_MS = 60 * 60 * 1000;
 
 export interface SessionRoutingGuard {
   sessionKey: string;
@@ -125,6 +126,7 @@ export interface SessionRoutingGuard {
   errorMessage: string | null;
   appealUrl: string | null;
   retryAt: number | null;
+  protectionExpiresAt: number | null;
   probeInProgress: boolean;
   requestDigest: string | null;
   attemptsUsed: number;
@@ -167,6 +169,7 @@ interface RoutingGuardRow {
   error_message: string | null;
   appeal_url: string | null;
   retry_at: number | null;
+  protection_expires_at: number | null;
   probe_in_progress: number;
   request_digest: string | null;
   attempts_used: number;
@@ -198,6 +201,7 @@ function mapGuardRow(row: RoutingGuardRow): SessionRoutingGuard {
     errorMessage: row.error_message ?? null,
     appealUrl: row.appeal_url ?? null,
     retryAt: row.retry_at ?? null,
+    protectionExpiresAt: row.protection_expires_at ?? null,
     probeInProgress: row.probe_in_progress === 1,
     requestDigest: row.request_digest ?? null,
     attemptsUsed: row.attempts_used ?? 0,
@@ -408,6 +412,7 @@ export class SessionBindingStore {
         error_message TEXT,
         appeal_url TEXT,
         retry_at INTEGER,
+        protection_expires_at INTEGER,
         probe_in_progress INTEGER NOT NULL DEFAULT 0,
         request_digest TEXT,
         attempts_used INTEGER NOT NULL DEFAULT 0,
@@ -442,6 +447,19 @@ export class SessionBindingStore {
     const bindingColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(session_bindings)").all();
     if (!bindingColumns.some(column => column.name === "upstream_session_id")) {
       this.db.exec("ALTER TABLE session_bindings ADD COLUMN upstream_session_id TEXT;");
+    }
+    const guardColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(session_routing_guards)");
+    if (!guardColumns.all().some(column => column.name === "protection_expires_at")) {
+      this.db.transaction(() => {
+        if (guardColumns.all().some(column => column.name === "protection_expires_at")) return;
+        this.db.exec("ALTER TABLE session_routing_guards ADD COLUMN protection_expires_at INTEGER;");
+        // Legacy rows have no separate timestamp for the first 429. Use the original guard creation time.
+        this.db.query(`
+          UPDATE session_routing_guards
+          SET protection_expires_at = created_at + ?
+          WHERE status = 'protected_429'
+        `).run(ROUTING_429_PROTECTION_MS);
+      }).immediate();
     }
   }
 
@@ -828,20 +846,21 @@ export class SessionBindingStore {
     return this.db.query("DELETE FROM session_bindings WHERE id = ?").run(id).changes > 0;
   }
 
-  getRoutingGuard(sessionKey: string, model: string): SessionRoutingGuard | null {
-    const row = this.db.query<RoutingGuardRow, [string, string]>(`
+  getRoutingGuard(sessionKey: string, model: string, now = Date.now()): SessionRoutingGuard | null {
+    const row = this.db.query<RoutingGuardRow, [string, string, number]>(`
       SELECT * FROM session_routing_guards
       WHERE session_key = ? AND model = ?
+        AND (protection_expires_at IS NULL OR protection_expires_at > ?)
       LIMIT 1
-    `).get(sessionKey, model.toLowerCase());
+    `).get(sessionKey, model.toLowerCase(), now);
     return row ? mapGuardRow(row) : null;
   }
 
-  findRoutingGuard(sessionScopeKey: string, digestScopeKey: string | undefined, model: string): SessionRoutingGuard | null {
-    const primary = this.getRoutingGuard(sessionScopeKey, model);
+  findRoutingGuard(sessionScopeKey: string, digestScopeKey: string | undefined, model: string, now = Date.now()): SessionRoutingGuard | null {
+    const primary = this.getRoutingGuard(sessionScopeKey, model, now);
     if (primary) return primary;
     if (digestScopeKey && digestScopeKey !== sessionScopeKey) {
-      return this.getRoutingGuard(digestScopeKey, model);
+      return this.getRoutingGuard(digestScopeKey, model, now);
     }
     return null;
   }
@@ -856,14 +875,14 @@ export class SessionBindingStore {
         : [input.accountEmail],
     );
 
-    const writeKey = (key: string) => {
+    const writeKey = (key: string, protectionExpiresAt: number | null) => {
       this.db.query(`
         INSERT INTO session_routing_guards (
           session_key, model, account_email, status, reason, error_code, error_status,
-          error_message, appeal_url, retry_at, probe_in_progress, request_digest,
+          error_message, appeal_url, retry_at, protection_expires_at, probe_in_progress, request_digest,
           attempts_used, account_attempts_used, accounts_touched, budget_exhausted_until,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_key, model) DO UPDATE SET
           account_email = excluded.account_email,
           status = excluded.status,
@@ -873,6 +892,7 @@ export class SessionBindingStore {
           error_message = excluded.error_message,
           appeal_url = excluded.appeal_url,
           retry_at = excluded.retry_at,
+          protection_expires_at = excluded.protection_expires_at,
           probe_in_progress = excluded.probe_in_progress,
           request_digest = COALESCE(excluded.request_digest, session_routing_guards.request_digest),
           attempts_used = excluded.attempts_used,
@@ -891,6 +911,7 @@ export class SessionBindingStore {
         input.errorMessage ?? null,
         input.appealUrl ?? null,
         input.retryAt ?? null,
+        protectionExpiresAt,
         input.probeInProgress ? 1 : 0,
         input.requestDigest ?? null,
         Math.max(0, Math.trunc(input.attemptsUsed ?? 0)),
@@ -904,9 +925,16 @@ export class SessionBindingStore {
 
     this.db.exec("BEGIN IMMEDIATE;");
     try {
-      writeKey(input.sessionScopeKey);
+      let protectionExpiresAt = null;
+      if (status === "protected_429") {
+        const existing = this.findRoutingGuard(input.sessionScopeKey, input.digestScopeKey, model, now);
+        protectionExpiresAt = existing?.status === "protected_429" && existing.accountEmail === input.accountEmail
+          ? existing.protectionExpiresAt ?? now + ROUTING_429_PROTECTION_MS
+          : now + ROUTING_429_PROTECTION_MS;
+      }
+      writeKey(input.sessionScopeKey, protectionExpiresAt);
       if (input.digestScopeKey && input.digestScopeKey !== input.sessionScopeKey) {
-        writeKey(input.digestScopeKey);
+        writeKey(input.digestScopeKey, protectionExpiresAt);
       }
       this.db.exec("COMMIT;");
     } catch (error) {
@@ -914,7 +942,7 @@ export class SessionBindingStore {
       throw error;
     }
 
-    return this.getRoutingGuard(input.sessionScopeKey, model)!;
+    return this.getRoutingGuard(input.sessionScopeKey, model, now)!;
   }
 
   tryAcquireRoutingGuardProbe(
@@ -934,8 +962,9 @@ export class SessionBindingStore {
           AND status = 'protected_429'
           AND retry_at IS NOT NULL
           AND retry_at <= ?
+          AND protection_expires_at > ?
           AND probe_in_progress = 0
-      `).run(now, sessionScopeKey, normalizedModel, now);
+      `).run(now, sessionScopeKey, normalizedModel, now, now);
 
       if (result.changes > 0) {
         if (digestScopeKey && digestScopeKey !== sessionScopeKey) {
@@ -958,8 +987,9 @@ export class SessionBindingStore {
             AND status = 'protected_429'
             AND retry_at IS NOT NULL
             AND retry_at <= ?
+            AND protection_expires_at > ?
             AND probe_in_progress = 0
-        `).run(now, digestScopeKey, normalizedModel, now);
+        `).run(now, digestScopeKey, normalizedModel, now, now);
         if (fallbackResult.changes > 0) {
           this.db.exec("COMMIT;");
           return true;

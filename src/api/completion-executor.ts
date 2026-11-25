@@ -203,16 +203,15 @@ function buildProtected429Error(
   attemptLogs: CompletionAttempt[],
   now = Date.now(),
 ): CompletionExecution {
-  const retryAt = guard.retryAt && guard.retryAt > now ? guard.retryAt : now + MIN_429_PROTECTION_RETRY_SECONDS * 1000;
+  const nextProbeAt = guard.retryAt && guard.retryAt > now ? guard.retryAt : now + MIN_429_PROTECTION_RETRY_SECONDS * 1000;
+  const retryAt = Math.max(now, Math.min(nextProbeAt, guard.protectionExpiresAt ?? nextProbeAt));
   const retryAfterSeconds = Math.max(1, Math.ceil((retryAt - now) / 1000));
   const code = guard.errorCode || (guard.reason === "upstream_429_with_quota" || guard.reason === "quota_evidence_conflict"
     ? "upstream_429_with_quota"
     : "rate_limit_exceeded");
-  const message =
-    guard.errorMessage
-    || (code === "upstream_429_with_quota"
-      ? `Upstream returned 429 for model '${model}' while account quota remains available. Retry after ${retryAfterSeconds}s.`
-      : `Account for model '${model}' is rate limited and protected from rotation. Retry after ${retryAfterSeconds}s.`);
+  const message = code === "upstream_429_with_quota"
+    ? `Upstream returned 429 for model '${model}' while account '${guard.accountEmail}' still has sufficient quota. Rotation stopped; retry after ${retryAfterSeconds}s.`
+    : `Account '${guard.accountEmail}' for model '${model}' returned 429 without confirmed quota exhaustion. Rotation stopped; retry after ${retryAfterSeconds}s.`;
   return jsonError(
     429,
     {
@@ -336,6 +335,15 @@ async function executeCompletionInternal({
   // 1. Inspect persistent routing guard before any account selection.
   let guard = findSessionRoutingGuard(sessionScopeKey, digestScopeKey, request.model);
   let isPost429Probe = false;
+  const post429ProbeExpired = () => isPost429Probe
+    && guard?.protectionExpiresAt != null
+    && guard.protectionExpiresAt <= Date.now();
+  const releasePost429Probe = () => {
+    if (!post429ProbeExpired()) {
+      releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
+    }
+    isPost429Probe = false;
+  };
 
   if (guard) {
     if (guard.status === "terminated_tos") {
@@ -472,23 +480,23 @@ async function executeCompletionInternal({
 
       if (!account || !account.accessToken) {
         if (isPost429Probe && guard) {
-          releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-          isPost429Probe = false;
+          releasePost429Probe();
           return buildProtected429Error(request.model, guard, localAttempts, attemptLogs);
         }
         break;
       }
 
+      if (post429ProbeExpired()) break;
+
       if (isPost429Probe && guard && account.email !== guard.accountEmail) {
         // Post-retryAt probe must never switch to another account B.
-        releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-        isPost429Probe = false;
+        releasePost429Probe();
         return buildProtected429Error(request.model, guard, localAttempts, attemptLogs);
       }
 
       if (isAccountPoolSuspended(account, routingModel)) {
         if (isPost429Probe && guard) {
-          releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
+          releasePost429Probe();
           return buildProtected429Error(request.model, guard, localAttempts, attemptLogs);
         }
         continue;
@@ -593,8 +601,7 @@ async function executeCompletionInternal({
 
       const handleOrdinaryFailureOnCurrentAccount = (status: number, reason: string, message?: string) => {
         if (isPost429Probe) {
-          releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-          isPost429Probe = false;
+          releasePost429Probe();
           return false;
         }
         if (
@@ -688,8 +695,7 @@ async function executeCompletionInternal({
             }
             await updateAccountUsage(account.email, false, request.model, "sandbox", 401);
             if (isPost429Probe) {
-              releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-              isPost429Probe = false;
+              releasePost429Probe();
             }
             return jsonError(401, {
               error: {
@@ -738,8 +744,7 @@ async function executeCompletionInternal({
                 message: parsedError.message,
               });
               if (isPost429Probe) {
-                releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-                isPost429Probe = false;
+                releasePost429Probe();
                 break;
               }
               deleteSessionRoutingGuard(sessionScopeKey, digestScopeKey, request.model);
@@ -751,8 +756,7 @@ async function executeCompletionInternal({
               flagModelUnsupported(account.email, request.model);
               await updateAccountUsage(account.email, false, request.model, "sandbox", status);
               if (isPost429Probe) {
-                releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-                isPost429Probe = false;
+                releasePost429Probe();
                 break;
               }
               deleteSessionRoutingGuard(sessionScopeKey, digestScopeKey, request.model);
@@ -761,8 +765,7 @@ async function executeCompletionInternal({
             }
             await updateAccountUsage(account.email, false, request.model, "sandbox", status);
             if (isPost429Probe) {
-              releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-              isPost429Probe = false;
+              releasePost429Probe();
             }
             return jsonError(status, {
               error: { message: `Access denied: ${parsedError.reason}`, type: "access_denied", code: status.toString() },
@@ -795,8 +798,7 @@ async function executeCompletionInternal({
                 + ` | UpstreamRootKeys: ${JSON.stringify(Object.keys(declaration?.parametersJsonSchema ?? declaration?.parameters ?? {}))}`);
             }
             if (isPost429Probe) {
-              releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-              isPost429Probe = false;
+              releasePost429Probe();
             } else {
               upsertSessionRoutingGuard({
                 sessionScopeKey,
@@ -861,13 +863,16 @@ async function executeCompletionInternal({
               );
             }
 
+            if (post429ProbeExpired()) {
+              return buildCompletionFailure(request.model, "sandbox", localAttempts, attemptLogs, request.reasoningEffort);
+            }
+
             // Only allow rotating to another account B when:
             // 1. Upstream explicitly reported quota exhaustion (QUOTA_EXHAUSTED / explicit quota reached)
             // 2. Fresh quota or quotaWindow data for this model confirms remainingFraction <= 0
             if (parsedError.isExplicitQuotaExhausted && quotaState.confirmedExhausted) {
               if (isPost429Probe) {
-                releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-                isPost429Probe = false;
+                releasePost429Probe();
               }
               deleteSessionRoutingGuard(sessionScopeKey, digestScopeKey, request.model);
               await updateAccountUsage(account.email, false, request.model, "sandbox", 429);
@@ -896,11 +901,6 @@ async function executeCompletionInternal({
               protectionReason === "upstream_429_with_quota" || protectionReason === "quota_evidence_conflict"
                 ? "upstream_429_with_quota"
                 : "rate_limit_exceeded";
-            const errorMessage =
-              errorCode === "upstream_429_with_quota"
-                ? `Upstream returned 429 for model '${request.model}' while account '${account.email}' still has sufficient quota. Rotation stopped; retry after ${retryAfterSeconds}s.`
-                : `Account '${account.email}' for model '${request.model}' returned 429 without confirmed quota exhaustion. Rotation stopped; retry after ${retryAfterSeconds}s.`;
-
             const protectedGuard = upsertSessionRoutingGuard({
               sessionScopeKey,
               digestScopeKey,
@@ -910,7 +910,6 @@ async function executeCompletionInternal({
               reason: protectionReason,
               errorCode,
               errorStatus: 429,
-              errorMessage,
               retryAt,
               probeInProgress: false,
               requestDigest: payloadDigest,
@@ -925,8 +924,7 @@ async function executeCompletionInternal({
           if (status < 500) {
             await updateAccountUsage(account.email, false, request.model, "sandbox", status);
             if (isPost429Probe) {
-              releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-              isPost429Probe = false;
+              releasePost429Probe();
             }
             return jsonError(status, {
               error: {
@@ -948,8 +946,7 @@ async function executeCompletionInternal({
         if (!googleRes.body) {
           clearTimers();
           if (isPost429Probe) {
-            releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-            isPost429Probe = false;
+            releasePost429Probe();
           }
           if (request.stream) {
             return jsonError(502, { error: { message: "No response body from upstream" } }, localAttempts);
@@ -1002,24 +999,15 @@ async function executeCompletionInternal({
               attemptStartedAt,
             ));
 
-          upsertSessionRoutingGuard({
-            sessionScopeKey,
-            digestScopeKey,
-            model: request.model,
-            accountEmail: account.email,
-            status: "pinned",
-            reason: null,
-            errorCode: null,
-            errorStatus: null,
-            errorMessage: null,
-            retryAt: null,
-            probeInProgress: false,
-            requestDigest: payloadDigest,
-            attemptsUsed: 0,
-            accountAttemptsUsed: 0,
-            accountsTouched: [account.email],
-            budgetExhaustedUntil: null,
-          });
+          if (!post429ProbeExpired()) {
+            upsertSessionRoutingGuard({
+              sessionScopeKey,
+              digestScopeKey,
+              model: request.model,
+              accountEmail: account.email,
+              requestDigest: payloadDigest,
+            });
+          }
           isPost429Probe = false;
 
           recordSessionBinding({
@@ -1066,24 +1054,15 @@ async function executeCompletionInternal({
           break;
         }
 
-        upsertSessionRoutingGuard({
-          sessionScopeKey,
-          digestScopeKey,
-          model: request.model,
-          accountEmail: account.email,
-          status: "pinned",
-          reason: null,
-          errorCode: null,
-          errorStatus: null,
-          errorMessage: null,
-          retryAt: null,
-          probeInProgress: false,
-          requestDigest: payloadDigest,
-          attemptsUsed: 0,
-          accountAttemptsUsed: 0,
-          accountsTouched: [account.email],
-          budgetExhaustedUntil: null,
-        });
+        if (!post429ProbeExpired()) {
+          upsertSessionRoutingGuard({
+            sessionScopeKey,
+            digestScopeKey,
+            model: request.model,
+            accountEmail: account.email,
+            requestDigest: payloadDigest,
+          });
+        }
         isPost429Probe = false;
 
         recordSessionBinding({
@@ -1123,8 +1102,7 @@ async function executeCompletionInternal({
         clearTimers();
         if (signal?.aborted) {
           if (isPost429Probe) {
-            releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
-            isPost429Probe = false;
+            releasePost429Probe();
           }
           throw error;
         }
@@ -1152,7 +1130,7 @@ async function executeCompletionInternal({
     }
   } finally {
     if (isPost429Probe) {
-      releaseSessionRoutingGuardProbe(sessionScopeKey, digestScopeKey, request.model);
+      releasePost429Probe();
     }
   }
 
